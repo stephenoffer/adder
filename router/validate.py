@@ -96,14 +96,36 @@ def debt_pool_is_addressable(sessions) -> Claim:
 
 
 def sessions_are_long(sessions, min_median: int = 200) -> Claim:
-    lens = sorted(len(s.turns) for s in sessions.values())
-    if not lens:
-        return Claim("sessions long enough for debt to matter", False, "no data",
+    """Claim: the sessions that carry the SPEND are long enough for debt to matter.
+
+    Cost-weighted on purpose. A plain median treats a 5-turn session the same as
+    a 1,800-turn one, and short sessions are numerous but nearly free: measured
+    here, sessions under 50 turns are ~47% of all sessions and 0.6% of spend.
+    Using the plain median made this claim fail while 96% of the money sat in
+    sessions well past the threshold -- the statistic was wrong, not the claim.
+    """
+    rows = [(len(s_.turns), s_.cost) for s_ in sessions.values() if s_.turns]
+    if not rows:
+        return Claim("spend sits in long sessions", False, "no data",
                      f">={min_median} turns")
-    med = lens[len(lens) // 2]
-    return Claim("sessions long enough for debt to matter", med >= min_median,
-                 f"{med:,} turns", f">={min_median} turns",
-                 "debt multiple is 1 + R/50, so short sessions carry little")
+    total = sum(c for _, c in rows)
+    if total <= 0:
+        return Claim("spend sits in long sessions", False, "no cost",
+                     f">={min_median} turns")
+    # Cost-weighted median session length.
+    rows.sort()
+    acc = 0.0
+    weighted_median = rows[-1][0]
+    for n, c in rows:
+        acc += c
+        if acc >= total / 2:
+            weighted_median = n
+            break
+    share = sum(c for n, c in rows if n >= min_median) / total
+    return Claim("spend sits in long sessions", weighted_median >= min_median,
+                 f"{weighted_median:,} turns", f">={min_median} turns",
+                 f"{share:.0%} of spend is in sessions >={min_median} turns; "
+                 f"debt multiple is 1 + R/50")
 
 
 def model_routing_is_marginal(sessions) -> Claim:

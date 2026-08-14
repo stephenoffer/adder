@@ -81,7 +81,7 @@ def main() -> int:
         return 0
 
     try:
-        tokens, what = _estimate_read_tokens(tool, inp)
+        tokens, _what = _estimate_read_tokens(tool, inp)
     except Exception:
         return 0
     if tokens < WARN_TOKENS:

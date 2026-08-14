@@ -134,7 +134,8 @@ def report(cutover: date, root: Path | str = DEFAULT_ROOT) -> str:
         out.append("  or something else changed. Do not claim a saving.")
     # A saving that cost you capability is not a saving. Check the proxies.
     try:
-        from .quality import compare as qcompare, regressions
+        from .quality import compare as qcompare
+        from .quality import regressions
 
         qb, qa = qcompare(root, cutover)
         if qb.turns and qa.turns:

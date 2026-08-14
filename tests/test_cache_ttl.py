@@ -111,5 +111,5 @@ class TestMissAttribution:
 
     def test_already_on_one_hour_is_not_told_to_switch(self):
         s = _sess(5, ttl="1h")
-        ttl, saving, why = ttl_recommendation({"s": s})
+        _ttl, saving, why = ttl_recommendation({"s": s})
         assert "already use the 1h TTL" in why or saving >= 0

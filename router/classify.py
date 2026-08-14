@@ -18,6 +18,20 @@ import re
 from dataclasses import dataclass, field
 from enum import IntEnum
 
+# The rungs, as a table rather than a literal buried in a property.
+#
+# A ladder written into code is correct the day it is written and quietly wrong
+# after the next launch. Keeping it here means `rt models ladder` can diff it
+# against the live catalog and show the drift, and a project that wants a
+# different rung can rebind one entry instead of forking the enum. Defaults
+# stay pinned: the catalog *reports*, it does not silently repoint dispatch.
+LADDER: dict[str, str] = {
+    "T0": "claude-haiku-4-5",
+    "T1": "claude-sonnet-5",
+    "T2": "claude-opus-5",
+    "T3": "claude-opus-5",
+}
+
 
 class Tier(IntEnum):
     T0 = 0   # haiku,  read-only
@@ -27,8 +41,7 @@ class Tier(IntEnum):
 
     @property
     def model(self) -> str:
-        return {0: "claude-haiku-4-5", 1: "claude-sonnet-5",
-                2: "claude-opus-5", 3: "claude-opus-5"}[int(self)]
+        return LADDER[self.name]
 
     @property
     def effort(self) -> str:

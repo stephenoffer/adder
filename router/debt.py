@@ -64,7 +64,7 @@ def token_lifetime_cost(n_tokens: int, remaining_turns: int,
 def breakeven_remaining_turns(model: str = "claude-opus-5", on: date | None = None) -> int:
     """Turns after which re-read cost exceeds generation cost. On Opus 5: 50."""
     r = rate(model, on)
-    return int(round(r.out / (r.inp * CACHE_READ_MULT)))
+    return round(r.out / (r.inp * CACHE_READ_MULT))
 
 
 @dataclass

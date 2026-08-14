@@ -4,19 +4,111 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-router"
-version = "0.1.0"
 description = "Cache- and context-aware cost router for Claude agent sessions"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+authors = [{ name = "Stephen Offer" }]
+keywords = ["claude", "claude-code", "llm", "cost", "router", "tokens", "observability"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+# Zero runtime dependencies is a feature, not an oversight: the tool reads local
+# transcript files and computes. Adding one needs a note in CONTRIBUTING.md.
 dependencies = []
+dynamic = ["version"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = [
+    "pytest>=7",
+    "pytest-cov>=4",
+    "ruff>=0.6",
+    "build>=1.2",
+    "twine>=5",
+]
+
+[project.urls]
+Homepage = "https://github.com/stephenoffer/llm-router"
+Repository = "https://github.com/stephenoffer/llm-router"
+Changelog = "https://github.com/stephenoffer/llm-router/blob/main/CHANGELOG.md"
+Issues = "https://github.com/stephenoffer/llm-router/issues"
 
 [project.scripts]
-llm-router = "router.policy:main"
+rt = "router.cli:run"
+llm-router = "router.cli:run"
 
 [tool.setuptools]
 packages = ["router"]
+include-package-data = true
+
+# The bundled catalog snapshot and the typing marker are data the wheel must
+# carry; without this setuptools ships only .py files and
+# `router/data/catalog.json` vanishes at install time while working fine from a
+# checkout.
+[tool.setuptools.package-data]
+router = ["data/*.json", "py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "router.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+filterwarnings = ["error"]
+markers = [
+    "transcripts: needs real Claude Code transcripts on this machine; skipped in CI",
+]
+
+[tool.coverage.run]
+source = ["router"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [".claude/plans"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line length is handled by the formatter, not the linter
+    "B008",   # function call in default arg — intentional in a few table defs
+    "SIM108", # ternary-vs-if is a readability call, not a rule
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["router"]

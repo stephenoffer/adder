@@ -1,5 +1,9 @@
 # The measurement bug that came first
 
+*(Figures here come from a snapshot of one machine's history. The transcript
+pool grows with every session, so a fresh `rt savings` run reports slightly
+higher totals than the ones below.)*
+
 The previous version of this analysis reported **$7,507 across 32,251 turns**.
 That was wrong, and the correction reframes every number in these docs.
 

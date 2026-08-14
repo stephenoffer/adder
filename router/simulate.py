@@ -130,7 +130,7 @@ def report(sessions, on: date | None = None) -> str:
     lines.append("  Under-prediction is the safe direction; over-prediction inflates"
                  if worst else "")
     lines.append("  the headline figure and must be corrected.")
-    return "\n".join(l for l in lines if l is not None)
+    return "\n".join(ln for ln in lines if ln is not None)
 
 
 def main(argv: list[str] | None = None) -> int:

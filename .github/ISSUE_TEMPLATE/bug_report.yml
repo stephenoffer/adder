@@ -1,0 +1,54 @@
+name: Bug report
+description: Something the tool does wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste raw transcript content.** Transcripts contain your source
+        code, file paths, and prompts. Redact or synthesise anything you include.
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The exact `rt` invocation.
+      placeholder: rt savings --max-turns 400
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Output or traceback, redacted.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `rt version` (or the commit SHA).
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version and OS
+      placeholder: "3.12.4, macOS 14.5"
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed any real transcript content, file paths, and prompts.
+          required: true
+        - label: I can reproduce this on the latest `main`.
+          required: false

@@ -1,0 +1,20 @@
+# Files to include in the source distribution beyond what setuptools infers.
+include LICENSE
+include README.md
+include CHANGELOG.md
+include CONTRIBUTING.md
+include SECURITY.md
+include pyproject.toml
+include router/py.typed
+recursive-include router/data *.json
+recursive-include tests *.py
+recursive-include docs *.md
+
+# Never ship repo plumbing or caches.
+prune .github
+prune .claude
+prune .pytest_cache
+prune .ruff_cache
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude .DS_Store

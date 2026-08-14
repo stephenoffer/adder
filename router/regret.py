@@ -24,9 +24,7 @@ in exactly the sessions where debt compounds.
 
 from __future__ import annotations
 
-import statistics
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from .cost import placement_cost
 from .horizon import DEFAULT_REMAINING, Horizon

@@ -27,10 +27,11 @@ import os
 import pickle
 import statistics
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from itertools import pairwise
 from pathlib import Path
-from typing import Iterable, Iterator
 
 from .cost import turn_cost
 from .prices import CACHE_READ_MULT, CACHE_WRITE_MULT, is_known, rate
@@ -153,7 +154,7 @@ class Session:
         times = [t.when for t in self.turns if t.when]
         return [
             (b - a).total_seconds()
-            for a, b in zip(times, times[1:])
+            for a, b in pairwise(times)
             if (b - a).total_seconds() >= 0
         ]
 
@@ -176,7 +177,7 @@ class Session:
     def compactions(self) -> int:
         """Times the context dropped sharply -- a compaction or a fresh prefix."""
         n = 0
-        for a, b in zip(self.turns, self.turns[1:]):
+        for a, b in pairwise(self.turns):
             if a.context > 50_000 and b.context < a.context * 0.6:
                 n += 1
         return n

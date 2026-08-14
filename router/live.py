@@ -17,7 +17,8 @@ from pathlib import Path
 
 from .cost import admitted_token_cost, marginal_turn_cost, placement_cost
 from .debt import debt_multiple
-from .horizon import DEFAULT_REMAINING, Horizon, load as load_horizon
+from .horizon import Horizon
+from .horizon import load as load_horizon
 from .prices import context_limit
 from .trace import DEFAULT_ROOT, Session, iter_file
 
@@ -70,7 +71,7 @@ def current_session(cwd: Path | str | None = None, root: Path | str = DEFAULT_RO
         return None
     files = sorted(d.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
     for newest in files[:3]:          # skip empty/unpriced files, don't merge them
-        turns = [t for t in iter_file(newest)]
+        turns = list(iter_file(newest))
         if turns:
             s = Session(newest.stem, d.name)
             s.turns = turns

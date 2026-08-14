@@ -1,0 +1,25 @@
+# Normalize line endings on checkin; check out native on each platform.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even on Windows checkouts.
+*.sh    text eol=lf
+scripts/rt text eol=lf
+
+# Explicit binary types (never diff or merge these).
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.pdf   binary
+*.gz    binary
+*.zip   binary
+
+# Keep generated/vendored noise out of language stats and diffs.
+docs/**       linguist-documentation
+*.md          linguist-documentation
+CHANGELOG.md  merge=union
+
+# Repo plumbing that does not belong in a `git archive` tarball.
+# Note: tests are deliberately NOT excluded — the project's claims rest on them.
+.github/       export-ignore
+.gitattributes export-ignore
+.gitignore     export-ignore

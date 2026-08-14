@@ -195,7 +195,7 @@ def report(sessions, on: date | None = None) -> str:
     lines.append("")
     lines.append(f"  Recoverable: ${rep.recoverable:,.0f}")
 
-    ttl, saving, why = ttl_recommendation(sessions, on)
+    ttl, _saving, why = ttl_recommendation(sessions, on)
     lines.append("")
     lines.append(f"  TTL recommendation: {ttl}")
     lines.append(f"    {why}")

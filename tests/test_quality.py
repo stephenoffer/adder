@@ -35,7 +35,7 @@ class TestScan:
         assert q.correction_rate == 0.5
 
     def test_tool_replies_are_not_human_prompts(self, tmp_path):
-        root = _write(tmp_path, [
+        _write(tmp_path, [
             {"type": "user", "message": {"content": [
                 {"type": "tool_result", "tool_use_id": "t1", "content": "output"}]}},
         ])

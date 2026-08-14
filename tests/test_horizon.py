@@ -53,7 +53,7 @@ class TestSurvivorEstimator:
         assert h.remaining(2_999) == 1
 
     def test_monotone_sample_shrinkage(self, h):
-        counts = [sum(1 for L in h.lengths if L > n) for n in (0, 100, 500, 1000)]
+        counts = [sum(1 for L in h.lengths if n < L) for n in (0, 100, 500, 1000)]
         assert counts == sorted(counts, reverse=True)
 
     def test_error_table_shape(self, h):

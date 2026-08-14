@@ -1,0 +1,48 @@
+name: Wrong number
+description: A reported figure looks incorrect
+labels: ["bug", "measurement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project's whole value is that its numbers are right, so these
+        reports get priority. Bring the measurement, not the intuition.
+
+        **Do not paste raw transcript content.**
+  - type: input
+    id: command
+    attributes:
+      label: Command that produced the figure
+    validations:
+      required: true
+  - type: textarea
+    id: reported
+    attributes:
+      label: What the tool reported
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: believed
+    attributes:
+      label: What you believe the correct figure is, and how you got it
+      description: >
+        An independent calculation, a billing statement, a hand count — anything
+        that is not "this looks too high".
+    validations:
+      required: true
+  - type: textarea
+    id: validate
+    attributes:
+      label: Output of `rt validate`
+      description: This re-runs the foundational claims against your own data.
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: scale
+    attributes:
+      label: Rough scale of your data
+      placeholder: "~40 sessions, ~9k turns, 6 months"
+    validations:
+      required: false

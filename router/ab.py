@@ -24,9 +24,9 @@ Running it costs money and needs credentials, so it is opt-in: `--run`.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -174,6 +174,51 @@ def run_arm(model: str, tasks: list[Task], *, max_tokens: int = 200) -> ArmResul
     return arm
 
 
+def run_arm_cli(model: str, tasks: list[Task], *, timeout: int = 180) -> ArmResult:
+    """Run tasks through the local `claude` CLI in headless mode.
+
+    Uses the credentials Claude Code already holds, so no separate API key is
+    needed. Note the CLI loads its own system prompt on every call (~25K tokens
+    of cached context), so the reported cost is Claude-Code-harness cost, not raw
+    API cost. Both arms pay it equally, so the QUALITY comparison is unaffected;
+    for cost modelling use router.cost instead of these figures.
+    """
+    import json
+    import subprocess
+
+    arm = ArmResult(model)
+    for t in tasks:
+        prompt = (f'<file path="{t.source}">\n{t.context()}\n</file>\n\n'
+                  f"{t.prompt}\n\n"
+                  "Answer strictly from the file above. Do not use any tools. "
+                  "Reply with the answer only.")
+        try:
+            proc = subprocess.run(
+                ["claude", "-p", prompt, "--model", model,
+                 "--output-format", "json", "--max-turns", "1"],
+                capture_output=True, text=True, timeout=timeout, cwd="/tmp",
+            )
+            if proc.returncode != 0:
+                arm.outcomes.append(Outcome(t.id, model, False,
+                                            error=(proc.stderr or "nonzero exit")[:120]))
+                continue
+            data = json.loads(proc.stdout)
+            text = data.get("result") or ""
+            usage = data.get("usage") or {}
+            arm.outcomes.append(Outcome(
+                t.id, model, t.check(text),
+                in_tokens=usage.get("input_tokens", 0) or 0,
+                out_tokens=usage.get("output_tokens", 0) or 0,
+                cost=float(data.get("total_cost_usd") or 0.0),
+                reply=text.strip().replace("\n", " ")[:120],
+            ))
+        except subprocess.TimeoutExpired:
+            arm.outcomes.append(Outcome(t.id, model, False, error="timeout"))
+        except (json.JSONDecodeError, ValueError) as exc:
+            arm.outcomes.append(Outcome(t.id, model, False, error=f"bad json: {exc}"[:120]))
+    return arm
+
+
 def wilson_lower_bound(passed: int, n: int, z: float = 1.96) -> float:
     """Lower bound of a 95% CI on the pass rate. Small n must not look conclusive."""
     if n == 0:
@@ -216,19 +261,19 @@ def preflight() -> list[str]:
     import shutil
 
     out = []
+    if shutil.which("claude"):
+        out.append("[ok]      claude CLI backend (uses existing Claude Code credentials)")
+        return out
     try:
         import anthropic  # noqa: F401
         out.append("[ok]      anthropic SDK installed")
     except ImportError:
-        out.append("[MISSING] anthropic SDK        -> pip install anthropic")
-
+        out.append("[MISSING] backend              -> install the claude CLI, "
+                   "or pip install anthropic")
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         out.append("[ok]      credentials in environment")
-    elif shutil.which("ant"):
-        out.append("[maybe]   ant CLI present; run `ant auth status` to confirm a profile")
     else:
-        out.append("[MISSING] credentials          -> export ANTHROPIC_API_KEY, "
-                   "or install the ant CLI and run `ant auth login`")
+        out.append("[MISSING] credentials          -> export ANTHROPIC_API_KEY")
     return out
 
 
@@ -240,6 +285,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run", action="store_true",
                     help="actually call the API (costs money, needs credentials)")
     ap.add_argument("--models", default="claude-haiku-4-5,claude-opus-5")
+    ap.add_argument("--backend", choices=("cli", "sdk"), default="cli",
+                    help="cli uses the local claude binary and existing credentials")
     ap.add_argument("--repeats", type=int, default=1,
                     help="repeat the task set N times to tighten the interval")
     a = ap.parse_args(argv)
@@ -261,15 +308,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  {len(TASKS) - len(missing)}/{len(TASKS)} task sources resolve.")
         if missing:
             print(f"  MISSING: {', '.join(missing)}")
-        blocked = [l for l in preflight() if l.startswith("[MISSING]")]
+        blocked = [ln for ln in preflight() if ln.startswith("[MISSING]")]
         if blocked:
             print("  Cannot run yet: the prerequisites above are unmet. Nothing else\n"
                   "  in this repo needs them - only this experiment calls the API.\n")
             return 1
-        print("\n  Re-run with --run to execute. Roughly a cent per arm.\n")
+        print("\n  Re-run with --run to execute. Via the claude CLI each call also\n"
+              "  loads Claude Code's own system prompt (~25K cached tokens), so budget\n"
+              "  roughly $0.02 per call -- about $0.50 for the full matrix.\n")
         return 1 if missing else 0
 
-    arms = [run_arm(m, tasks) for m in models]
+    runner = run_arm_cli if a.backend == 'cli' else run_arm
+    arms = [runner(m, tasks) for m in models]
     print()
     print(report(arms))
     print()

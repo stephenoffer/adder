@@ -24,7 +24,7 @@ def _write(tmp_path, records):
 
 def _sess(contexts, outs, sidechain=False):
     s = Session("s", "p")
-    for c, o in zip(contexts, outs):
+    for c, o in zip(contexts, outs, strict=True):
         s.turns.append(Turn("s", "p", OPUS, 0, c, 0, o, 0, sidechain))
     return s
 

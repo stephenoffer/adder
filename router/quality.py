@@ -173,9 +173,9 @@ def scan(root: Path | str, *, since: date | None = None,
                         for b in blocks
                     )
                     for b in blocks:
-                        if isinstance(b, dict) and b.get("type") == "tool_result":
-                            if b.get("is_error"):
-                                q.tool_errors += 1
+                        if (isinstance(b, dict) and b.get("type") == "tool_result"
+                                and b.get("is_error")):
+                            q.tool_errors += 1
                     text = _flat_text(content)
                     if _INTERRUPT.search(text):
                         q.interrupts += 1

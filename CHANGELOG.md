@@ -1,10 +1,82 @@
 # Changelog
 
-Improvements to make the router cut cost more reliably, without degrading the
-agent. Grouped by area; every item is in the working tree and covered by tests
-unless noted.
+All notable changes to this project are documented here.
 
-## The correction that reframes everything (1–7)
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
+this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Because this is a measurement tool, one extra rule applies: **any entry that
+changes a reported figure names the measurement behind it.** A number that moved
+without a stated reason is a regression, not a change.
+
+## [Unreleased]
+
+### Added
+
+- `router/cli.py`: a single dispatcher for every subcommand, with grouped help,
+  `--version`, and a did-you-mean suggestion on an unknown command. Modules
+  still own their own `argparse` parsers, so `rt <cmd> --help` stays accurate.
+- `python -m router` as an equivalent of the `rt` console script.
+- `rt` and `llm-router` console entry points, so a `pip install` puts the tool
+  on `PATH` without the `scripts/` launcher.
+- `CLAUDE.md`: the binding working agreement for agents and humans editing this
+  repo — invariants, layout, style, testing rules, and what an agent must not do.
+- `CONTRIBUTING.md`, `SECURITY.md` (with an explicit threat model for an offline
+  tool that reads transcripts), `CODE_OF_CONDUCT.md`, and `LICENSE` (MIT).
+- GitHub Actions CI: `ruff` plus a test matrix on Python 3.10–3.14, a macOS and
+  Windows spot check, a CLI smoke test over all 16 subcommands, and a build job
+  that asserts the wheel carries its package data.
+- **An offline-guarantee check in CI.** It parses every module under `router/`
+  and fails the build if anything except `sources.py` imports a networking
+  module. The no-network property is now enforced, not just documented.
+- Release workflow: a tag push verifies that the tag, `router.__version__`, and
+  the CHANGELOG agree before anything is built, then publishes a GitHub Release
+  with notes extracted from this file and uploads to PyPI via trusted publishing.
+- Issue templates (bug, wrong number, feature), a PR template whose checklist is
+  the CONTRIBUTING checklist, `CODEOWNERS`, and Dependabot for dev tooling and
+  Actions.
+- `.pre-commit-config.yaml`, including two project-specific hooks: one refuses to
+  commit `.jsonl` files (real transcripts contain source code and prompts), and
+  one fails if `[project.dependencies]` stops being empty.
+- `Makefile` with `help`, `test`, `cov`, `lint`, `fmt`, `check`, `smoke`,
+  `build`, `verify-dist`, `clean`, `hooks`, and `release-check`.
+- `router/py.typed` (PEP 561) and `MANIFEST.in`.
+- `.gitattributes` for line-ending normalisation and export rules.
+
+### Changed
+
+- `pyproject.toml`: real project metadata, classifiers, URLs, `dev` extras, a
+  version read dynamically from `router.__version__`, coverage config, ruff
+  config, and `--strict-markers --strict-config` with warnings as errors in
+  pytest. `package-data` now ships `router/data/*.json`, which the wheel
+  previously dropped at install time.
+- `scripts/rt` no longer dispatches; it resolves an interpreter, checks for
+  Python 3.10+ with a readable error, and hands off to `router.cli`.
+- `.gitignore` expanded from 5 lines to cover build artifacts, coverage and type
+  caches, editor and OS junk, secrets, and tool scratch output — while keeping
+  `.claude/` tracked, since the agents, hooks, and skills are part of the
+  product.
+- Piping a report into `head` now exits cleanly instead of printing a
+  `BrokenPipeError` traceback.
+
+### Fixed
+
+- 17 lint findings across `router/`, `tests/`, and `.claude/hooks/`: ambiguous
+  `l` identifiers, unused unpacked values, redundant `int(round(...))` and list
+  comprehensions, collapsible nested conditionals, and `zip()` over successive
+  pairs replaced with `itertools.pairwise`. No behaviour changed; all 278 tests
+  pass unchanged.
+
+### Housekeeping
+
+- Removed committed cache directories and OS junk from the working tree.
+
+## [0.1.0] - 2026-08-14
+
+The initial public cut. Grouped by area; every item is covered by tests unless
+noted.
+
+### The correction that reframes everything (1–7)
 
 1. **Deduplicate assistant records by `message.id`.** Claude Code writes one
    JSONL record per content block, each repeating the whole message's `usage`.
@@ -22,7 +94,7 @@ unless noted.
 7. Updated `validate.py`'s claim and expected range to match, with the reason
    recorded in-place rather than the measurement explained away.
 
-## Feasibility: savings that were impossible (8–17)
+### Feasibility: savings that were impossible (8–17)
 
 8. Per-model context limits in the price table.
 9. `fits()` / `context_limit()` predicates.
@@ -37,7 +109,7 @@ unless noted.
     as `claude-sonnet-5`.
 17. Resolve Claude Code's `[1m]` context-variant suffix.
 
-## Cache mechanics (18–34)
+### Cache mechanics (18–34)
 
 18. Per-model **cache minimums** (512 / 1024 / 2048 / 4096) — non-monotonic
     across generations; a prefix below the minimum silently does not cache.
@@ -62,7 +134,7 @@ unless noted.
 33. Batch API 50% multiplier and `batch_saving()`.
 34. `marginal_turn_cost()` — what one more turn costs right now.
 
-## Where context actually comes from (35–45)
+### Where context actually comes from (35–45)
 
 35. **New `router/context.py`**: attribute growth to its sources.
 36. Model-authored volume taken from **billed** output tokens, never estimated
@@ -81,7 +153,7 @@ unless noted.
 44. `decompose_read_cost` docstring corrected.
 45. True-cost-of-output line scaled by the measured share.
 
-## New levers (46–55)
+### New levers (46–55)
 
 46. **`tool_output_discipline`** — the read half of the pool, which no
     writing-style instruction can reach.
@@ -97,7 +169,7 @@ unless noted.
 54. Savings report ends by pointing at `rt quality`.
 55. Every modelled lever states its assumption inline.
 
-## Maintaining agent performance (56–66)
+### Maintaining agent performance (56–66)
 
 56. **New `router/quality.py`**: performance proxies from transcripts.
 57. Tool error rate (`is_error` tool results).
@@ -112,7 +184,7 @@ unless noted.
     cheaper agent that needs more turns is not cheaper.
 66. `rt quality --since DATE` as a standalone guard.
 
-## Routing policy (67–77)
+### Routing policy (67–77)
 
 67. **`p_fail` wired from the measured outcome log** — it was computed but never
     used by `decide()`.
@@ -127,7 +199,7 @@ unless noted.
 76. Four gates documented in order of veto.
 77. Restored the horizon survivor-function estimator after an accidental revert.
 
-## Session analysis (78–86)
+### Session analysis (78–86)
 
 78. **Fixed a real bug**: `current_session` fell back to parsing *every*
     transcript in the directory and reporting the union as "this session".
@@ -140,7 +212,7 @@ unless noted.
 85. Session-length constants corrected to deduplicated values.
 86. `Session.gaps/median_gap/cache_misses/compactions/base_context/out_tokens`.
 
-## Performance and robustness (87–96)
+### Performance and robustness (87–96)
 
 87. **mtime+size keyed parse cache** — the prompt hook re-reads 171 transcripts
     with no perceptible pause.
@@ -155,7 +227,7 @@ unless noted.
 95. Outcome log: `effort` / `duration_s` fields, `--json`, `--prune`.
 96. Advisor state file bounded and written atomically.
 
-## Hooks: preventing cost, not reporting it (97–104)
+### Hooks: preventing cost, not reporting it (97–104)
 
 97. **New `PreToolUse` read guard** — prices a large read *before* it lands in
     context. The only component here that prevents spend.
@@ -167,7 +239,7 @@ unless noted.
 103. Session advisor now uses the parse cache and reports context pressure.
 104. Advisor message is horizon-aware rather than quoting a countdown.
 
-## Agents, docs, tooling (105–115)
+### Agents, docs, tooling (105–115)
 
 105. `Explore` gains explicit output-bounding rules targeting the measured #1
      source of admitted context.
@@ -186,8 +258,11 @@ unless noted.
 114. README caveat that these are one workload's numbers.
 115. `CHANGELOG.md` (this file).
 
-## Tests (116)
+### Tests (116)
 
 116. **143 new tests, 263 total** (from 120), covering deduplication, TTL
      detection, fast-mode pricing, feasibility gates, cache-miss attribution,
      growth attribution, quality proxies, policy gates, and the new levers.
+
+[Unreleased]: https://github.com/stephenoffer/llm-router/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/stephenoffer/llm-router/releases/tag/v0.1.0

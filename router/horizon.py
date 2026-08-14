@@ -41,12 +41,12 @@ class Horizon:
     lengths: list[int]
 
     @classmethod
-    def from_sessions(cls, sessions, min_turns: int = 5) -> "Horizon":
+    def from_sessions(cls, sessions, min_turns: int = 5) -> Horizon:
         return cls(sorted(len(s.turns) for s in sessions.values()
                           if len(s.turns) >= min_turns))
 
     @classmethod
-    def default(cls) -> "Horizon":
+    def default(cls) -> Horizon:
         return cls([])
 
     def remaining(self, turn_index: int) -> int:

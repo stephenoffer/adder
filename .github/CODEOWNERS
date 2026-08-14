@@ -1,0 +1,10 @@
+# Default reviewer for everything.
+*                     @stephenoffer
+
+# The pieces where a wrong change is expensive and quiet.
+/router/cost.py       @stephenoffer
+/router/prices.py     @stephenoffer
+/router/trace.py      @stephenoffer
+/router/sources.py    @stephenoffer
+/.github/workflows/   @stephenoffer
+/CLAUDE.md            @stephenoffer

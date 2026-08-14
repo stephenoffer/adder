@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 
 CHARS_PER_TOKEN = 4.0
@@ -182,7 +183,7 @@ def measured_growth(sessions) -> int:
     """
     total = 0
     for s in sessions.values():
-        for a, b in zip(s.turns, s.turns[1:]):
+        for a, b in pairwise(s.turns):
             d = b.context - a.context
             if d > 0:
                 total += d

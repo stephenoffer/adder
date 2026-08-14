@@ -173,7 +173,7 @@ def decide(
 
     effort = choose_effort(tier, model)
 
-    inline_cost, sub_cost, place = placement_cost(
+    _inline_cost, _sub_cost, place = placement_cost(
         tokens_read=est_read_tokens,
         summary_tokens=max(200, int(est_read_tokens / compression)),
         remaining_turns=remaining_turns,

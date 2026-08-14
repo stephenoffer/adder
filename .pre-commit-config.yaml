@@ -1,0 +1,60 @@
+# Install with: make hooks   (pre-commit install && pre-commit install -t pre-push)
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: detect-private-key
+      - id: debug-statements
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff
+        args: [--fix]
+      # `ruff-format` is deliberately absent: several modules hand-align price
+      # and capability tables and the formatter destroys that alignment.
+
+  - repo: local
+    hooks:
+      - id: no-transcripts
+        name: no transcript data committed
+        # Real transcripts contain source code, file paths, and prompts.
+        # Fixtures must be synthesised in-test with tmp_path.
+        entry: >-
+          bash -c 'files=$(git diff --cached --name-only --diff-filter=A | grep -E "\.jsonl$" || true);
+          if [ -n "$files" ]; then echo "refusing to commit .jsonl files:"; echo "$files";
+          echo "build fixtures with tmp_path instead"; exit 1; fi'
+        language: system
+        pass_filenames: false
+
+      - id: no-runtime-deps
+        name: dependencies stay empty
+        entry: >-
+          bash -c 'python3 -c "
+          import tomllib,sys;
+          d=tomllib.load(open(\"pyproject.toml\",\"rb\"))[\"project\"][\"dependencies\"];
+          sys.exit(f\"runtime dependencies added: {d}. See CONTRIBUTING.md.\") if d else None"'
+        language: system
+        files: ^pyproject\.toml$
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest
+        entry: python3 -m pytest -q -m "not transcripts"
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]

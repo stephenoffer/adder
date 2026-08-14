@@ -38,7 +38,7 @@ from pathlib import Path
 from .cost import EFFORT_OUTPUT_MULT, turn_cost
 from .debt import decompose_read_cost, output_share_of_growth, verbosity_saving
 from .prices import CACHE_READ_MULT, rate
-from .trace import DEFAULT_ROOT, Session, load_sessions
+from .trace import DEFAULT_ROOT, load_sessions
 
 M = 1_000_000.0
 
@@ -318,7 +318,7 @@ def report(root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
 
     pool_saving, gen = combine(accumulated, pool, separate)
     realistic = pool_saving + gen
-    print(f"\n  COMBINED (substitutes compose multiplicatively on the residual):")
+    print("\n  COMBINED (substitutes compose multiplicatively on the residual):")
     print(f"    pool removed      ${pool_saving:>9,.0f} of ${accumulated:,.0f}")
     print(f"    generation + separate ${gen:>5,.0f}")
     print(f"    TOTAL             ${realistic:>9,.0f}   ({100*realistic/total:.0f}% of measured spend)")

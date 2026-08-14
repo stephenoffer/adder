@@ -1,5 +1,69 @@
+# Python bytecode
 __pycache__/
-*.pyc
-.pytest_cache/
+*.py[cod]
+*$py.class
+
+# Build / packaging artifacts
+build/
+dist/
 *.egg-info/
+*.egg
+wheels/
+.eggs/
+
+# Virtual environments
 .venv/
+venv/
+env/
+ENV/
+
+# Test, coverage, and type-check caches
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS junk
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# Agent + local tool state
+# .claude/ is tracked on purpose: agents, hooks, and skills are part of the
+# product. Only machine-local overrides and scratch output are ignored.
+.claude/settings.local.json
+.claude/**/local/
+.claude/plans/
+*.local.json
+
+# Scratch output produced by the tools themselves
+scratch/
+tmp/
+*.jsonl.bak
+outcomes.jsonl
+ab-results/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json

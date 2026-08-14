@@ -1,17 +1,38 @@
-"""Quantify what each lever is worth, with assumptions stated per estimate.
+"""What each lever is worth, unified around one root cause.
 
-Confidence tiers, so a reader can tell measurement from modelling:
-  MEASURED  - recomputed from recorded token counts; no assumptions.
-  ATTRIBUTED- exact arithmetic on recorded data, attributing cost to a cause.
-  MODELLED  - depends on a stated counterfactual assumption.
+The causal model
+----------------
+Measured: assistant output is ~105% of context growth, and context re-reads are
+~78% of spend. So there is one root cause, not four:
+
+    output tokens accumulate in the main context, and are re-read every turn
+
+That gives exactly three ways to reduce the bill, all attacking the same pool:
+
+    1. TERSENESS   - generate fewer tokens
+    2. DELEGATION  - generate them in a context that gets thrown away
+    3. SPLITTING   - reset the accumulation
+
+They are therefore **substitutes, not complements**. Reporting their sum would
+double-count; the joint ceiling is the pool itself.
+
+Model routing is a fourth, separate lever that touches only generation price. It
+is included because it is what people ask for, and it is small.
+
+Confidence tiers:
+  MEASURED   - recomputed from recorded tokens; no assumptions.
+  ATTRIBUTED - exact arithmetic assigning recorded spend to a cause.
+  MODELLED   - depends on a stated counterfactual.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from .cost import turn_cost
+from .debt import decompose_read_cost, verbosity_saving
 from .prices import CACHE_READ_MULT, rate
 from .trace import DEFAULT_ROOT, Session, load_sessions
 
@@ -22,188 +43,94 @@ M = 1_000_000.0
 class Estimate:
     lever: str
     saving: float
-    confidence: str          # MEASURED | ATTRIBUTED | MODELLED
+    confidence: str
     basis: str
     assumptions: str = ""
+    pool_fraction: float = 0.0   # share of the accumulated-output pool it removes
+    generation_saving: float = 0.0
 
     def line(self, total: float) -> str:
         pct = f"{100 * self.saving / total:.1f}%" if total else "-"
-        return f"${self.saving:>9,.2f}  {pct:>6}  [{self.confidence:<10}] {self.lever}"
+        return f"${self.saving:>9,.0f}  {pct:>6}  [{self.confidence:<10}] {self.lever}"
 
 
-def explore_savings(sessions: dict[str, Session], cheap: str = "claude-haiku-4-5") -> Estimate:
-    """MEASURED: rerun existing subagent turns at a cheap model's rates.
+def terseness(sessions, *, reduction: float = 0.30, on: date | None = None) -> Estimate:
+    """ATTRIBUTED: cut output by `reduction`, bounded by measured spend."""
+    v = verbosity_saving(sessions, reduction=reduction, on=on)
+    return Estimate(
+        f"Write {reduction:.0%} less (leverage {v.leverage:.1f}x downstream)",
+        v.total,
+        "ATTRIBUTED",
+        "reduction x measured accumulated read cost, plus generation saving",
+        "assumes output can be cut proportionally without losing task quality",
+        pool_fraction=reduction,
+        generation_saving=v.generation_saved,
+    )
 
-    Subagents run in fresh contexts, so there is no cache to lose. This is the
-    one lever with no counterfactual: same tokens, different rate card.
+
+def delegation(sessions, *, delegable_turns: float = 0.25,
+               summary_ratio: float = 0.10, sub_model: str = "claude-haiku-4-5",
+               on: date | None = None) -> Estimate:
+    """MODELLED: run some turns in a throwaway context instead of the main one.
+
+    NOT modelled as avoiding large file reads -- measured growth is diffuse
+    (median 960 tok/turn; reads >=20K are only 7% of growth), so there are few
+    big reads to move. The real mechanism is that a subagent's *own output*
+    never enters the main context; only its summary does.
     """
-    actual = saved = 0.0
-    n = 0
+    _, _, accumulated = decompose_read_cost(sessions, on)
+    kept = accumulated * delegable_turns * (1 - summary_ratio)
+
+    gen = 0.0
     for s in sessions.values():
         for t in s.turns:
-            if not t.sidechain or rate(t.model).inp <= rate(cheap).inp:
-                continue
-            actual += t.cost()
-            saved += turn_cost(
-                cheap,
-                uncached_in=t.uncached_in,
-                cache_read=t.cache_read,
-                cache_write=t.cache_write,
-                out=t.out,
-            )
-            n += 1
+            r_main, r_sub = rate(t.model, on), rate(sub_model, on)
+            if r_sub.out < r_main.out:
+                gen += t.out * delegable_turns * (r_main.out - r_sub.out) / M
     return Estimate(
-        f"Run subagents/Explore on Haiku ({n:,} existing subagent turns)",
-        actual - saved,
-        "MEASURED",
-        f"recomputed {n:,} recorded subagent turns at Haiku rates",
-        "assumes Haiku handles the same read-only work (it is the documented default for Explore)",
-    )
-
-
-def _session_read_cost(sess: Session) -> float:
-    """The actual cache-read dollars this session spent. Measured, not modelled."""
-    return sum(
-        t.cache_read * rate(t.model).inp * CACHE_READ_MULT / M for t in sess.turns
-    )
-
-
-def _admissions(sess: Session) -> list[tuple[float, int]]:
-    """(tokens_admitted, remaining_turns) per turn, from context growth.
-
-    NOT from `cache_write`: Claude Code refreshes cache segments, so summing
-    cache_creation_input_tokens overcounts admitted content ~5x (measured).
-
-    Growth alone is also not enough. These sessions hit the 1M ceiling, so
-    compaction shrinks the context and re-growth after a compaction is not new
-    admission. Reconstructed totals therefore overshoot the real bill (measured:
-    $7.8K reconstructed vs $5.6K actual). So this returns raw *weights* only;
-    callers normalise them against the session's measured read cost.
-    """
-    out: list[tuple[float, int]] = []
-    n = len(sess.turns)
-    prev = 0
-    for i, t in enumerate(sess.turns):
-        admitted = float(t.context) if i == 0 else float(max(0, t.context - prev))
-        prev = t.context
-        out.append((admitted, n - i - 1))
-    return out
-
-
-def _attributed(sess: Session) -> list[tuple[float, float, int]]:
-    """(dollars, tokens_admitted, remaining_turns), summing exactly to the
-    session's measured cache-read spend.
-
-    Each admission's share is proportional to size x longevity -- the actual
-    causal driver -- and the total is pinned to what was really spent, so
-    attribution can never exceed reality.
-    """
-    adm = _admissions(sess)
-    weights = [a * r for a, r in adm]
-    total_w = sum(weights)
-    actual = _session_read_cost(sess)
-    if total_w <= 0:
-        return [(0.0, a, r) for a, r in adm]
-    return [(actual * w / total_w, a, r) for w, (a, r) in zip(weights, adm)]
-
-
-def amortization_profile(sessions: dict[str, Session]) -> tuple[Estimate, list[tuple[str, float, int]]]:
-    """ATTRIBUTED: the measured cache-read bill, decomposed by what admitted it."""
-    total = 0.0
-    worst: list[tuple[str, float, int]] = []
-    for s in sessions.values():
-        c = sum(d for d, _, _ in _attributed(s))
-        total += c
-        worst.append((s.project, c, s.n_turns))
-    worst.sort(key=lambda x: -x[1])
-
-    actual = sum(_session_read_cost(s) for s in sessions.values())
-    if actual and total > actual * 1.001:
-        raise AssertionError(
-            f"attribution ${total:,.2f} exceeds measured cache-read spend ${actual:,.2f}"
-        )
-    return (
-        Estimate(
-            "Cache-read spend, attributed to the content that caused it",
-            total,
-            "ATTRIBUTED",
-            "measured cache-read dollars, split by admission size x remaining turns",
-            "this is the pool the placement lever draws from, not a saving by itself",
-        ),
-        worst[:5],
-    )
-
-
-def delegation_savings(
-    sessions: dict[str, Session],
-    *,
-    delegable_fraction: float = 0.30,
-    compression: float = 10.0,
-    sub_model: str = "claude-haiku-4-5",
-) -> Estimate:
-    """MODELLED: route a fraction of admitted content through a cheap subagent.
-
-    Bounded by the measured bill: a delegated admission still costs 1/compression
-    of its amortised share, plus one cheap fresh read. Conservative defaults --
-    30% delegable at 10:1 -- because both are guesses, not measurements.
-    """
-    saving = 0.0
-    for s in sessions.values():
-        r_sub = rate(sub_model)
-        for dollars, tokens, _ in _attributed(s):
-            moved_cost = dollars * delegable_fraction
-            if moved_cost <= 0:
-                continue
-            kept = moved_cost / compression                       # summary still amortised
-            read_once = tokens * delegable_fraction * r_sub.inp / M
-            saving += max(0.0, moved_cost - kept - read_once)
-    return Estimate(
-        f"Delegate reads to subagents ({delegable_fraction:.0%} of admitted content, "
-        f"{compression:.0f}:1 compression)",
-        saving,
+        f"Delegate {delegable_turns:.0%} of turns to subagents "
+        f"({summary_ratio:.0%} summary returned)",
+        kept + gen,
         "MODELLED",
-        "measured cache-read spend re-priced as delegated reads",
-        f"assumes {delegable_fraction:.0%} of admitted content is delegable and "
-        f"compresses {compression:.0f}:1; both are estimates, not measurements",
+        "measured accumulated read cost, re-priced with delegated output excluded",
+        f"assumes {delegable_turns:.0%} of turns are delegable and compress to "
+        f"{summary_ratio:.0%}; both are estimates",
+        pool_fraction=delegable_turns * (1 - summary_ratio),
+        generation_saving=gen,
     )
 
 
-def split_savings(sessions: dict[str, Session], *, max_turns: int = 300) -> Estimate:
-    """MODELLED: cap session length, restarting context at a floor.
+def splitting(sessions, *, max_turns: int = 300, on: date | None = None) -> Estimate:
+    """MODELLED: cap session length so accumulation resets.
 
-    Context cost over a session is roughly the sum of per-turn context. Capping
-    length resets that growth. Assumes a restarted session re-establishes a
-    baseline context equal to the session's own minimum observed context.
+    Uses each session's own measured baseline as the restart floor -- justified
+    because baseline context is only ~5-8% of median context (measured).
     """
     saving = 0.0
     for s in sessions.values():
-        if s.n_turns <= max_turns:
+        if s.n_turns <= max_turns or not s.turns:
             continue
-        r = rate(s.turns[0].model).inp * CACHE_READ_MULT
+        r = rate(s.turns[0].model, on).inp * CACHE_READ_MULT
         actual = sum(t.context for t in s.turns) * r / M
         floor = min(t.context for t in s.turns)
-        # After each cap, context restarts at `floor` and regrows at the observed slope.
         slope = max(0.0, (s.peak_context - floor) / max(1, s.n_turns))
-        simulated = 0.0
-        for i in range(s.n_turns):
-            simulated += (floor + slope * (i % max_turns)) * r / M
+        simulated = sum(
+            (floor + slope * (i % max_turns)) * r / M for i in range(s.n_turns)
+        )
         saving += max(0.0, actual - simulated)
+    _, _, acc = decompose_read_cost(sessions, on)
     return Estimate(
         f"Split sessions longer than {max_turns} turns",
         saving,
         "MODELLED",
-        "re-simulates context growth with periodic resets",
-        "assumes work is separable at turn boundaries and a restart re-reads only "
-        "the session's minimum observed context; real handoffs cost more",
+        "re-simulates context growth with periodic resets to measured baseline",
+        "assumes work is separable at turn boundaries; real handoffs cost more",
+        pool_fraction=min(1.0, saving / acc) if acc else 0.0,
     )
 
 
-def model_routing_savings(sessions: dict[str, Session]) -> Estimate:
-    """MODELLED: per-turn downgrade, but only where the cache gate allows it.
-
-    This is the original ask. It is included honestly: the gate refuses on warm
-    contexts, so the reachable saving is small.
-    """
+def model_routing(sessions, on: date | None = None) -> Estimate:
+    """MODELLED: per-turn downgrade where the cache gate permits. The original ask."""
     from .cost import switch_is_profitable
 
     saving = 0.0
@@ -212,7 +139,8 @@ def model_routing_savings(sessions: dict[str, Session]) -> Estimate:
         for t in s.turns:
             if t.model.startswith("claude-haiku"):
                 continue
-            d = switch_is_profitable("claude-opus-5", "claude-haiku-4-5", t.context, t.out)
+            d = switch_is_profitable("claude-opus-5", "claude-haiku-4-5",
+                                     t.context, t.out, on=on)
             if d:
                 saving += d.saving
                 eligible += 1
@@ -221,50 +149,89 @@ def model_routing_savings(sessions: dict[str, Session]) -> Estimate:
         saving,
         "MODELLED",
         "cache-gated switch applied per recorded turn",
-        "assumes a cheaper model would have produced acceptable output on those turns "
-        "(unverifiable from transcripts alone)",
+        "assumes a cheaper model would have sufficed on those turns "
+        "(not verifiable from transcripts)",
     )
 
 
-def report(root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300) -> None:
+def explore_on_haiku(sessions, cheap: str = "claude-haiku-4-5",
+                     on: date | None = None) -> Estimate:
+    """MEASURED: rerun existing subagent turns at a cheap model's rates."""
+    actual = saved = 0.0
+    n = 0
+    for s in sessions.values():
+        for t in s.turns:
+            if not t.sidechain or rate(t.model, on).inp <= rate(cheap, on).inp:
+                continue
+            actual += t.cost(on)
+            saved += turn_cost(cheap, uncached_in=t.uncached_in, cache_read=t.cache_read,
+                               cache_write=t.cache_write, out=t.out, on=on)
+            n += 1
+    return Estimate(
+        f"Run subagents/Explore on Haiku ({n:,} existing subagent turns)",
+        actual - saved,
+        "MEASURED",
+        f"recomputed {n:,} recorded subagent turns at Haiku rates",
+        "",
+    )
+
+
+def combine(pool: float, levers: list[Estimate], separate: list[Estimate]) -> tuple[float, float]:
+    """Combine substitute levers multiplicatively on the residual pool.
+
+    They are substitutes, so their savings do not add: applying terseness leaves
+    less pool for splitting to remove. Residual after all of them is the product
+    of each one's residual, which is both more accurate than max() (too
+    conservative) and than the sum (double-counts).
+    """
+    residual = 1.0
+    for e in levers:
+        residual *= max(0.0, 1.0 - min(1.0, e.pool_fraction))
+    pool_saving = pool * (1.0 - residual)
+    gen = sum(e.generation_saving for e in levers) + sum(e.saving for e in separate)
+    return pool_saving, gen
+
+
+def report(root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
+           on: date | None = None) -> None:
     sessions = load_sessions(root)
-    total = sum(s.cost for s in sessions.values())
+    total = sum(s.cost(on) if callable(getattr(s, "cost", None)) else s.cost
+                for s in sessions.values())
     if not total:
         print(f"No priced turns found under {root}")
         return
 
-    pool, worst = amortization_profile(sessions)
-    estimates = [
-        explore_savings(sessions),
-        delegation_savings(sessions),
-        split_savings(sessions, max_turns=max_turns),
-        model_routing_savings(sessions),
-    ]
+    read_total, baseline, accumulated = decompose_read_cost(sessions, on)
+    pool = [terseness(sessions, on=on), delegation(sessions, on=on),
+            splitting(sessions, max_turns=max_turns, on=on)]
+    separate = [model_routing(sessions, on), explore_on_haiku(sessions, on=on)]
 
-    print(f"\n  Measured spend: ${total:,.2f} across {len(sessions)} sessions\n")
+    print(f"\n  Measured spend ${total:,.0f} across {len(sessions)} sessions")
+    print(f"  Root cause: ${accumulated:,.0f} of it is prior assistant output being re-read")
+    print(f"  (measured cache-read ${read_total:,.0f}; only ${baseline:,.0f} is irreducible baseline)\n")
+
+    print("  SUBSTITUTES - all three attack the same pool; they do not add")
     print(f"  {'saving':>10} {'of tot':>6}  {'confidence':<12} lever")
-    print("  " + "-" * 78)
-    for e in sorted(estimates, key=lambda e: -e.saving):
+    print("  " + "-" * 80)
+    for e in sorted(pool, key=lambda e: -e.saving):
+        print("  " + e.line(total))
+    print(f"  {'':>10} {'':>6}  joint ceiling = the pool itself: ${accumulated:,.0f} "
+          f"({100*accumulated/total:.0f}%)")
+
+    print("\n  SEPARATE LEVERS (additive with the above)")
+    for e in sorted(separate, key=lambda e: -e.saving):
         print("  " + e.line(total))
 
-    overlapping = [e for e in estimates if e.lever.startswith(("Split", "Delegate"))]
-    if len(overlapping) == 2:
-        naive = sum(e.saving for e in overlapping)
-        print(f"\n  NOT ADDITIVE: Split (${overlapping[0].saving:,.0f}) and Delegate "
-              f"(${overlapping[1].saving:,.0f}) both draw from the same "
-              f"${pool.saving:,.0f} cache-read pool.")
-        print(f"  Naive sum ${naive:,.0f} would double-count; combined realistic ceiling "
-              f"is the pool itself, ${pool.saving:,.0f}.")
+    pool_saving, gen = combine(accumulated, pool, separate)
+    realistic = pool_saving + gen
+    print(f"\n  COMBINED (substitutes compose multiplicatively on the residual):")
+    print(f"    pool removed      ${pool_saving:>9,.0f} of ${accumulated:,.0f}")
+    print(f"    generation + separate ${gen:>5,.0f}")
+    print(f"    TOTAL             ${realistic:>9,.0f}   ({100*realistic/total:.0f}% of measured spend)")
 
-    print(f"\n  Context pool: {pool.line(total)}")
-    print(f"    {pool.basis}")
-    print("\n  Sessions whose admitted content cost the most:")
-    for proj, cost, n in worst:
-        print(f"    ${cost:>8,.2f}  {n:>5,} turns  {proj[:52]}")
-
-    print("\n  Assumptions behind the modelled figures:")
-    for e in estimates:
-        if e.confidence == "MODELLED" and e.assumptions:
+    print("\n  Assumptions behind modelled figures:")
+    for e in pool + separate:
+        if e.confidence != "MEASURED" and e.assumptions:
             print(f"    - {e.lever.split('(')[0].strip()}: {e.assumptions}")
     print()
 

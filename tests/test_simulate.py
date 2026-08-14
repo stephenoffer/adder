@@ -7,8 +7,8 @@ the claim.
 
 import pytest
 
-from router.simulate import Intervention, admissions, evaluate, simulate
-from router.trace import Session, Turn
+from adder.simulate import Intervention, admissions, evaluate, simulate
+from adder.trace import Session, Turn
 
 OPUS = "claude-opus-5"
 

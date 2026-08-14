@@ -2,9 +2,9 @@
 
 import pytest
 
-from router.cache import EXPIRY_FIXABLE, EXPIRY_UNFIXABLE, analyse, ttl_recommendation
-from router.cost import cache_miss_cost, choose_ttl, effort_saving, fanout_cost
-from router.trace import Session, Turn
+from adder.cache import EXPIRY_FIXABLE, EXPIRY_UNFIXABLE, analyse, ttl_recommendation
+from adder.cost import cache_miss_cost, choose_ttl, effort_saving, fanout_cost
+from adder.trace import Session, Turn
 
 OPUS = "claude-opus-5"
 

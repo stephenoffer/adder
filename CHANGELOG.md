@@ -13,11 +13,40 @@ without a stated reason is a regression, not a change.
 
 ### Added
 
-- `router/cli.py`: a single dispatcher for every subcommand, with grouped help,
+- **A cross-provider model catalog, refreshed from public data.** adder
+  previously knew nine hardcoded Claude models. It now carries ~500 models from
+  every major lab -- Anthropic, OpenAI, Google, and the open-weight families --
+  with price, context window, cache rates, tool support, licence, and arena
+  rating, as *data* rather than code. `adder/catalog.py` layers it
+  bundled snapshot < user cache < project override < first-party Claude table,
+  merging field by field so a failed refresh cannot blank a price we already
+  had and a project can pin one rate without forking the file.
+- `adder models` -- browse the catalog, `adder models show <name>` for one model,
+  `adder models refresh` to pull the sources, and `adder models ladder`, which
+  re-derives each rung of the T0/T1/T2 ladder from the catalog and prints the
+  drift against the constants in `classify.py`. The ladder reports; it never
+  silently repoints dispatch.
+- `adder pick "<task>"` -- rank every model that clears the gates by cost in *this*
+  session's economics, not by sticker price, and `adder pick --combos`, which
+  prices four multi-model plans (single, cascade, draft-review, panel) and
+  states the assumption that decides each one.
+- `adder/sources.py` -- the only module in the package that opens a socket.
+  Opt-in, honours `ADDER_OFFLINE=1`, fails soft when a source is down, and
+  replays saved captures via `adder models refresh --from lmarena=page.html` so the
+  parsers are testable without a network.
+- `ADDER_CATALOG=<path>` pins the whole catalog to one file, so a
+  recommendation can be reproduced on another machine.
+- `adder models refresh --if-stale [--max-age DAYS]` checks the local catalog's age
+  and returns before opening a socket if it is current, so the refresh can be
+  put on a timer without hammering two public endpoints.
+- 90 tests across `tests/test_catalog.py`, `test_sources.py`, `test_select.py`,
+  and `test_models.py`.
+
+- `adder/cli.py`: a single dispatcher for every subcommand, with grouped help,
   `--version`, and a did-you-mean suggestion on an unknown command. Modules
-  still own their own `argparse` parsers, so `rt <cmd> --help` stays accurate.
-- `python -m router` as an equivalent of the `rt` console script.
-- `rt` and `llm-router` console entry points, so a `pip install` puts the tool
+  still own their own `argparse` parsers, so `adder <cmd> --help` stays accurate.
+- `python -m adder` as an equivalent of the `adder` console script.
+- `adder` and `adder` console entry points, so a `pip install` puts the tool
   on `PATH` without the `scripts/` launcher.
 - `CLAUDE.md`: the binding working agreement for agents and humans editing this
   repo — invariants, layout, style, testing rules, and what an agent must not do.
@@ -26,10 +55,10 @@ without a stated reason is a regression, not a change.
 - GitHub Actions CI: `ruff` plus a test matrix on Python 3.10–3.14, a macOS and
   Windows spot check, a CLI smoke test over all 16 subcommands, and a build job
   that asserts the wheel carries its package data.
-- **An offline-guarantee check in CI.** It parses every module under `router/`
+- **An offline-guarantee check in CI.** It parses every module under `adder/`
   and fails the build if anything except `sources.py` imports a networking
   module. The no-network property is now enforced, not just documented.
-- Release workflow: a tag push verifies that the tag, `router.__version__`, and
+- Release workflow: a tag push verifies that the tag, `adder.__version__`, and
   the CHANGELOG agree before anything is built, then publishes a GitHub Release
   with notes extracted from this file and uploads to PyPI via trusted publishing.
 - Issue templates (bug, wrong number, feature), a PR template whose checklist is
@@ -40,18 +69,48 @@ without a stated reason is a regression, not a change.
   one fails if `[project.dependencies]` stops being empty.
 - `Makefile` with `help`, `test`, `cov`, `lint`, `fmt`, `check`, `smoke`,
   `build`, `verify-dist`, `clean`, `hooks`, and `release-check`.
-- `router/py.typed` (PEP 561) and `MANIFEST.in`.
+- `adder/py.typed` (PEP 561) and `MANIFEST.in`.
 - `.gitattributes` for line-ending normalisation and export rules.
 
 ### Changed
 
+- **Renamed the project from `llm-router` to `adder`.** The old name advertised
+  the least interesting output — routing is emitted last, and `policy.decide`
+  declines to emit it when the modelled saving does not clear the cost of the
+  routing turn — and implied a request path the tool has never had. `adder` names
+  the operation instead: a full adder's second output is the carry, and the carry
+  is what this measures. Reasoning in [docs/naming.md](docs/naming.md). No
+  reported figure moves; this is a rename, not a measurement change.
+
+  Breaking, and there is no compatibility shim, because nothing was ever
+  published under the old names:
+
+  | was | is |
+  |---|---|
+  | `rt <cmd>` | `adder <cmd>` |
+  | `llm-router` console script | removed |
+  | `pip install llm-router` | `pip install adder-cli` |
+  | `import router` / `python -m router` | `import adder` / `python -m adder` |
+  | `LLM_ROUTER_OFFLINE`, `LLM_ROUTER_CATALOG`, `LLM_ROUTER_HOME` | `ADDER_OFFLINE`, `ADDER_CATALOG`, `ADDER_HOME` |
+  | `ROUTER_LOG`, `ROUTER_STATE`, `ROUTER_TRACE_CACHE`, `ROUTER_GUARD_BLOCK`, `ROUTER_WARN_*` | `ADDER_LOG`, `ADDER_STATE`, `ADDER_TRACE_CACHE`, `ADDER_GUARD_BLOCK`, `ADDER_WARN_*` |
+  | `RT_PYTHON` | `ADDER_PYTHON` |
+  | `~/.claude/llm-router/`, `./.llm-router/` | `~/.claude/adder/`, `./.adder/` |
+  | `~/.claude/router-outcomes.jsonl` | `~/.claude/adder-outcomes.jsonl` |
+  | `/route`, `/route-init`, `/route-doctor` | `/adder`, `/adder-init`, `/adder-doctor` |
+
+  The outcome log is the only one of these holding data worth keeping:
+  `mv ~/.claude/router-outcomes.jsonl ~/.claude/adder-outcomes.jsonl`. The trace
+  cache and the advisor state rebuild themselves. The `route-t0` / `route-t1` /
+  `route-t2` subagents keep their names — they are named for what they do, and
+  they are referenced from users' project configs.
+
 - `pyproject.toml`: real project metadata, classifiers, URLs, `dev` extras, a
-  version read dynamically from `router.__version__`, coverage config, ruff
+  version read dynamically from `adder.__version__`, coverage config, ruff
   config, and `--strict-markers --strict-config` with warnings as errors in
-  pytest. `package-data` now ships `router/data/*.json`, which the wheel
+  pytest. `package-data` now ships `adder/data/*.json`, which the wheel
   previously dropped at install time.
-- `scripts/rt` no longer dispatches; it resolves an interpreter, checks for
-  Python 3.10+ with a readable error, and hands off to `router.cli`.
+- `scripts/adder` no longer dispatches; it resolves an interpreter, checks for
+  Python 3.10+ with a readable error, and hands off to `adder.cli`.
 - `.gitignore` expanded from 5 lines to cover build artifacts, coverage and type
   caches, editor and OS junk, secrets, and tool scratch output — while keeping
   `.claude/` tracked, since the agents, hooks, and skills are part of the
@@ -61,7 +120,7 @@ without a stated reason is a regression, not a change.
 
 ### Fixed
 
-- 17 lint findings across `router/`, `tests/`, and `.claude/hooks/`: ambiguous
+- 17 lint findings across `adder/`, `tests/`, and `.claude/hooks/`: ambiguous
   `l` identifiers, unused unpacked values, redundant `int(round(...))` and list
   comprehensions, collapsible nested conditionals, and `zip()` over successive
   pairs replaced with `itertools.pairwise`. No behaviour changed; all 278 tests
@@ -121,7 +180,7 @@ noted.
 24. `choose_ttl()` — picks 5m vs 1h from measured idle gaps.
 25. `fanout_cost()` — N parallel calls over a shared prefix all miss the cache;
     staggering the first turns N writes into 1 write + (N−1) reads.
-26. **New `router/cache.py`**: cache efficiency and rebuild waste.
+26. **New `adder/cache.py`**: cache efficiency and rebuild waste.
 27. Per-rebuild **cause attribution**: model switch, idle expiry, post-compaction,
     growth.
 28. Recoverable vs unrecoverable classification — an idle gap beyond 1h is not
@@ -136,7 +195,7 @@ noted.
 
 ### Where context actually comes from (35–45)
 
-35. **New `router/context.py`**: attribute growth to its sources.
+35. **New `adder/context.py`**: attribute growth to its sources.
 36. Model-authored volume taken from **billed** output tokens, never estimated
     from text.
 37. Handles two traps that made estimation wrong: Opus 5 returns thinking text
@@ -166,12 +225,12 @@ noted.
 51. Terseness `pool_fraction` scaled by measured share.
 52. Pool documented as two halves so lever ranking follows the data.
 53. Removed the `callable(getattr(...))` hack via `Session.cost_on(date)`.
-54. Savings report ends by pointing at `rt quality`.
+54. Savings report ends by pointing at `adder quality`.
 55. Every modelled lever states its assumption inline.
 
 ### Maintaining agent performance (56–66)
 
-56. **New `router/quality.py`**: performance proxies from transcripts.
+56. **New `adder/quality.py`**: performance proxies from transcripts.
 57. Tool error rate (`is_error` tool results).
 58. Correction rate (operator redirect phrasing).
 59. Interrupt rate.
@@ -180,9 +239,9 @@ noted.
 62. Tool replies and injected meta-messages excluded from "human prompts".
 63. `regressions()` with a noise tolerance.
 64. Before/after windowing by date.
-65. **`rt verify` refuses to claim a clean saving when a proxy regressed** — a
+65. **`adder verify` refuses to claim a clean saving when a proxy regressed** — a
     cheaper agent that needs more turns is not cheaper.
-66. `rt quality --since DATE` as a standalone guard.
+66. `adder quality --since DATE` as a standalone guard.
 
 ### Routing policy (67–77)
 
@@ -234,7 +293,7 @@ noted.
 98. Prices against the *current* session, not a global average.
 99. Detects already-bounded commands (`head`, `wc`, `-n`) and stays silent.
 100. Flags unbounded verbose commands (`cat`, `find`, `git log`, recursive greps).
-101. Advisory by default; `ROUTER_GUARD_BLOCK=1` escalates to a confirmation.
+101. Advisory by default; `ADDER_GUARD_BLOCK=1` escalates to a confirmation.
 102. Never fires below a cost threshold, and never breaks a turn.
 103. Session advisor now uses the parse cache and reports context pressure.
 104. Advisor message is horizon-aware rather than quoting a countdown.
@@ -249,8 +308,8 @@ noted.
 109. `route-doctor` rewritten: leads with the measured split, warns that terseness
      only reaches half of it, prefers effort over downgrade, requires the
      feasibility check.
-110. `rt help` usage screen; new commands registered.
-111. `rt trace --json` and `--no-cache`.
+110. `adder help` usage screen; new commands registered.
+111. `adder trace --json` and `--no-cache`.
 112. `--verify` replaced pinned dollar figures with structural invariants,
      including an input+output reconciliation check.
 113. README rewritten around the corrected numbers, and leads with the
@@ -264,5 +323,5 @@ noted.
      detection, fast-mode pricing, feasibility gates, cache-miss attribution,
      growth attribution, quality proxies, policy gates, and the new levers.
 
-[Unreleased]: https://github.com/stephenoffer/llm-router/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/stephenoffer/llm-router/releases/tag/v0.1.0
+[Unreleased]: https://github.com/stephenoffer/adder/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/stephenoffer/adder/releases/tag/v0.1.0

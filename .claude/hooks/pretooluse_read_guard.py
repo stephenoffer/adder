@@ -12,7 +12,7 @@ file read into a long session costs dollars, not cents -- and a subagent that
 returns a 500-token summary of the same file costs a few cents.
 
 The hook is ADVISORY by default: it injects the price and the alternative, and
-lets the model decide. Set ROUTER_GUARD_BLOCK=1 to escalate to a confirmation
+lets the model decide. Set ADDER_GUARD_BLOCK=1 to escalate to a confirmation
 prompt above the hard threshold instead. It never blocks silently, and it never
 fires on small reads.
 
@@ -35,7 +35,7 @@ sys.path.insert(0, str(REPO))
 # Advise above this; ask for confirmation above the hard threshold.
 WARN_TOKENS = int(os.environ.get("ROUTER_GUARD_WARN", "15000"))
 HARD_TOKENS = int(os.environ.get("ROUTER_GUARD_HARD", "60000"))
-BLOCK = os.environ.get("ROUTER_GUARD_BLOCK", "") == "1"
+BLOCK = os.environ.get("ADDER_GUARD_BLOCK", "") == "1"
 
 CHARS_PER_TOKEN = 4
 
@@ -89,8 +89,8 @@ def main() -> int:
 
     # Price it against the CURRENT session, not a global average.
     try:
-        from router.cost import admitted_token_cost, placement_cost
-        from router.live import analyse, current_session
+        from adder.cost import admitted_token_cost, placement_cost
+        from adder.live import analyse, current_session
 
         sess = current_session(payload.get("cwd"))
         if sess is None or sess.n_turns < 5:

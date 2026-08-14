@@ -8,8 +8,8 @@ a list price, an inline placement that the harness cannot actually perform.
 
 import pytest
 
-from router.catalog import Catalog, Entry
-from router.select import (
+from adder.catalog import Catalog, Entry
+from adder.select import (
     UNUSABLE_GIVEN_LOSS,
     Need,
     combos,

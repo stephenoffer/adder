@@ -2,8 +2,8 @@
 
 import pytest
 
-from router.classify import Tier, classify
-from router.policy import decide, routing_overhead
+from adder.classify import Tier, classify
+from adder.policy import decide, routing_overhead
 
 OPUS = "claude-opus-5"
 
@@ -12,7 +12,7 @@ class TestClassifierPrecision:
     @pytest.mark.parametrize("task", [
         "what does cost.py do",
         "where is the retry logic",
-        "list the files in router/",
+        "list the files in adder/",
         "which function computes the rate",
     ])
     def test_short_read_only_goes_cheap(self, task):

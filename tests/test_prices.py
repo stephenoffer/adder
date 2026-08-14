@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from router.prices import (
+from adder.prices import (
     BATCH_MULT,
     CACHE_WRITE_MULT,
     MODELS,

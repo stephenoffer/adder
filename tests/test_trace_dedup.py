@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from router.trace import Session, Turn, iter_file, load_sessions, summarize
+from adder.trace import Session, Turn, iter_file, load_sessions, summarize
 
 OPUS = "claude-opus-5"
 
@@ -116,7 +116,7 @@ class TestSessionMetrics:
 
 class TestParseCache:
     def test_cache_returns_the_same_totals(self, tmp_path, monkeypatch):
-        import router.trace as tr
+        import adder.trace as tr
 
         monkeypatch.setattr(tr, "CACHE_PATH", tmp_path / ".cache")
         _write(tmp_path, [_rec("m1"), _rec("m2")])
@@ -125,7 +125,7 @@ class TestParseCache:
         assert cold["s"].n_turns == warm["s"].n_turns == 2
 
     def test_a_corrupt_cache_is_ignored(self, tmp_path, monkeypatch):
-        import router.trace as tr
+        import adder.trace as tr
 
         bad = tmp_path / ".cache"
         bad.write_bytes(b"not a pickle")
@@ -134,7 +134,7 @@ class TestParseCache:
         assert load_sessions(tmp_path, use_cache=True)["s"].n_turns == 1
 
     def test_summarize_counts_deduped_turns(self, tmp_path, monkeypatch):
-        import router.trace as tr
+        import adder.trace as tr
 
         monkeypatch.setattr(tr, "CACHE_PATH", tmp_path / ".cache")
         _write(tmp_path, [_rec("m1"), _rec("m1"), _rec("m2")])

@@ -2,14 +2,14 @@
 
 import pytest
 
-from router.debt import (
+from adder.debt import (
     breakeven_remaining_turns,
     debt_multiple,
     decompose_read_cost,
     token_lifetime_cost,
     verbosity_saving,
 )
-from router.trace import Session, Turn
+from adder.trace import Session, Turn
 
 OPUS = "claude-opus-5"
 

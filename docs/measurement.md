@@ -1,7 +1,7 @@
 # The measurement bug that came first
 
 *(Figures here come from a snapshot of one machine's history. The transcript
-pool grows with every session, so a fresh `rt savings` run reports slightly
+pool grows with every session, so a fresh `adder savings` run reports slightly
 higher totals than the ones below.)*
 
 The previous version of this analysis reported **$7,507 across 32,251 turns**.
@@ -76,5 +76,5 @@ Estimating model output from text lengths undercounts it roughly sixtyfold.
 These figures are from one machine's transcripts, dominated by one workload.
 The *shares* (output vs tool output, cache hit rate, gap distribution) are what
 drive the advice, and they will differ for you — which is the point of measuring
-rather than assuming. Run `rt savings` against your own history before believing
+rather than assuming. Run `adder savings` against your own history before believing
 any number here.

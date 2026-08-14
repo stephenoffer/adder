@@ -34,7 +34,7 @@ body:
   - type: textarea
     id: validate
     attributes:
-      label: Output of `rt validate`
+      label: Output of `adder validate`
       description: This re-runs the foundational claims against your own data.
       render: text
     validations:

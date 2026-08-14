@@ -4,9 +4,9 @@ Every lever trades tokens for something, and a degraded agent usually looks
 *cheaper per turn* while needing more turns to finish. Cost numbers alone will
 happily certify a regression.
 
-`rt quality` reads performance proxies straight from the transcripts — tool
+`adder quality` reads performance proxies straight from the transcripts — tool
 error rate, correction rate, interrupt rate, turns per prompt, rework ratio —
-and `rt verify` refuses to claim a clean saving when any of them regressed:
+and `adder verify` refuses to claim a clean saving when any of them regressed:
 
 ```
   Cost per turn ROSE $0.0029. The intervention did not land.
@@ -19,5 +19,5 @@ and `rt verify` refuses to claim a clean saving when any of them regressed:
 ```
 
 Typical use: apply one lever, then a week later run
-`rt verify --since 2026-08-01` and read both halves of the output before
+`adder verify --since 2026-08-01` and read both halves of the output before
 concluding anything.

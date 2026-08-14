@@ -27,13 +27,13 @@ jobs:
           python-version: "3.12"
       - id: check
         run: |
-          VERSION=$(python -c "import router; print(router.__version__)")
+          VERSION=$(python -c "import adder; print(adder.__version__)")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "router.__version__ = $VERSION"
+          echo "adder.__version__ = $VERSION"
           if [ "${{ github.ref_type }}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME#v}"
             if [ "$TAG" != "$VERSION" ]; then
-              echo "::error::tag v$TAG does not match router.__version__ $VERSION"
+              echo "::error::tag v$TAG does not match adder.__version__ $VERSION"
               exit 1
             fi
             if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
@@ -121,7 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/llm-router
+      url: https://pypi.org/p/adder-cli
     permissions:
       id-token: write   # OIDC for trusted publishing; no API token stored
     steps:

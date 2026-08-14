@@ -16,7 +16,7 @@ On Opus 5 that is `$25/MTok + $0.50/MTok per turn` — a multiple of `1 + R/50`:
 Past **50 remaining turns**, re-reading an output token costs more than
 generating it did. Every cost tool reports only the generation cost.
 
-`rt debt` computes this against your own transcripts.
+`adder debt` computes this against your own transcripts.
 
 ## Why this is not a model router
 

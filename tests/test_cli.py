@@ -1,8 +1,8 @@
 """The dispatcher and the repo-level invariants it is supposed to preserve.
 
 These tests exist because the failure modes here are silent: a command that
-falls out of the table still works via `python -m router.<name>` and nobody
-notices it vanished from `rt help`; a stray `import urllib` in a report module
+falls out of the table still works via `python -m adder.<name>` and nobody
+notices it vanished from `adder help`; a stray `import urllib` in a report module
 breaks the offline guarantee without breaking a single other test.
 """
 
@@ -15,8 +15,8 @@ from typing import ClassVar
 
 import pytest
 
-from router import __version__
-from router.cli import COMMANDS, main, usage
+from adder import __version__
+from adder.cli import COMMANDS, main, usage
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
@@ -43,15 +43,15 @@ class TestCommandTable:
     def test_appears_in_usage(self, cmd):
         assert cmd.name in usage()
 
-    def test_every_router_module_with_a_main_is_registered(self):
-        """A new report module must be reachable from `rt`, not just importable."""
+    def test_every_adder_module_with_a_main_is_registered(self):
+        """A new report module must be reachable from `adder`, not just importable."""
         registered = {c.module for c in COMMANDS}
         exempt = {
-            "router.cli",        # the dispatcher itself
-            "router.__main__",   # `python -m router`
-            "router.sources",    # reachable as `rt models refresh`, not top-level
+            "adder.cli",        # the dispatcher itself
+            "adder.__main__",   # `python -m adder`
+            "adder.sources",    # reachable as `adder models refresh`, not top-level
         }
-        for path in sorted((REPO / "router").glob("*.py")):
+        for path in sorted((REPO / "adder").glob("*.py")):
             if path.name.startswith("_"):
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -60,18 +60,18 @@ class TestCommandTable:
             )
             if not has_main:
                 continue
-            mod = f"router.{path.stem}"
+            mod = f"adder.{path.stem}"
             if mod in exempt:
                 continue
             assert mod in registered, (
-                f"{mod} defines main() but is not in COMMANDS in router/cli.py"
+                f"{mod} defines main() but is not in COMMANDS in adder/cli.py"
             )
 
 
 class TestDispatch:
     def test_no_args_prints_usage(self, capsys):
         assert main([]) == 0
-        assert "rt <command>" in capsys.readouterr().out
+        assert "adder <command>" in capsys.readouterr().out
 
     @pytest.mark.parametrize("flag", ["help", "-h", "--help"])
     def test_help_flags(self, flag, capsys):
@@ -112,7 +112,7 @@ class TestVersion:
 
         cfg = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
         assert "version" in cfg["project"].get("dynamic", []), (
-            "pyproject must take version from router.__version__, not restate it"
+            "pyproject must take version from adder.__version__, not restate it"
         )
 
 
@@ -126,7 +126,7 @@ class TestRepoInvariants:
 
     def test_no_network_imports_outside_sources(self):
         offenders = []
-        for path in sorted((REPO / "router").rglob("*.py")):
+        for path in sorted((REPO / "adder").rglob("*.py")):
             if path.name == "sources.py":
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -141,7 +141,7 @@ class TestRepoInvariants:
                     if m.split(".")[0] in self.NETWORK_MODULES:
                         offenders.append(f"{path.name}:{node.lineno} imports {m}")
         assert not offenders, (
-            "router/sources.py is the only module allowed to reach the network:\n"
+            "adder/sources.py is the only module allowed to reach the network:\n"
             + "\n".join(offenders)
         )
 
@@ -171,5 +171,5 @@ class TestRepoInvariants:
 
     def test_every_command_is_in_the_docs(self):
         docs = (REPO / "docs" / "commands.md").read_text(encoding="utf-8")
-        missing = [c.name for c in COMMANDS if f"rt {c.name}" not in docs]
+        missing = [c.name for c in COMMANDS if f"adder {c.name}" not in docs]
         assert not missing, f"undocumented in docs/commands.md: {missing}"

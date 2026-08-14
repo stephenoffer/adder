@@ -29,9 +29,9 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 # Advise once per threshold crossing, not on every prompt.
-WARN_SPEND = float(os.environ.get("ROUTER_WARN_SPEND", "15.0"))     # USD this session
-WARN_CONTEXT = int(os.environ.get("ROUTER_WARN_CONTEXT", "400000")) # tokens
-STATE = Path(os.environ.get("ROUTER_STATE", Path.home() / ".claude" / ".router-advisor.json"))
+WARN_SPEND = float(os.environ.get("ADDER_WARN_SPEND", "15.0"))     # USD this session
+WARN_CONTEXT = int(os.environ.get("ADDER_WARN_CONTEXT", "400000")) # tokens
+STATE = Path(os.environ.get("ADDER_STATE", Path.home() / ".claude" / ".adder-advisor.json"))
 
 # Keep the state file from growing without bound across many sessions.
 MAX_STATE_ENTRIES = 500
@@ -67,8 +67,8 @@ def main() -> int:
         payload = {}
 
     try:
-        from router.cost import admitted_token_cost
-        from router.live import analyse, current_session
+        from adder.cost import admitted_token_cost
+        from adder.live import analyse, current_session
     except ImportError:
         return 0
 

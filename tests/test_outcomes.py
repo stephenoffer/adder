@@ -2,7 +2,7 @@
 
 import pytest
 
-from router.outcomes import Outcome, calibration, load, p_fail, record
+from adder.outcomes import Outcome, calibration, load, p_fail, record
 
 
 @pytest.fixture

@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Do not open a public issue. Report privately through GitHub's
-[Report a vulnerability](https://github.com/stephenoffer/llm-router/security/advisories/new)
+[Report a vulnerability](https://github.com/stephenoffer/adder/security/advisories/new)
 form, or email the maintainer listed in `pyproject.toml`.
 
 Expect an acknowledgement within 3 business days and an assessment within 10.
@@ -31,8 +31,8 @@ here.
   `~/.claude/` or elsewhere outside a path the user explicitly named. The tool
   is read-only over user data by design; a violation of that is a bug of the
   highest severity.
-- Any **network call outside `router/sources.py`**, or any call inside it that
-  fires without an explicit user command, or that ignores `LLM_ROUTER_OFFLINE=1`.
+- Any **network call outside `adder/sources.py`**, or any call inside it that
+  fires without an explicit user command, or that ignores `ADDER_OFFLINE=1`.
 - **Transcript content leaking off the machine** by any path — a report that
   posts data, a log that writes prompts somewhere world-readable, an error
   message that dumps source code into a third-party service.
@@ -59,9 +59,9 @@ For anyone auditing before running it:
 - **Reads:** `~/.claude/projects/**/*.jsonl` (or a `root` you pass), plus its
   own catalog cache.
 - **Writes:** stdout, and only paths you name explicitly (`--out`, `--log`).
-  The bundled snapshot in `router/data/` is never written at runtime.
-- **Network:** only `rt models refresh` / `router.sources`, only when invoked
-  directly, and never when `LLM_ROUTER_OFFLINE=1` is set.
+  The bundled snapshot in `adder/data/` is never written at runtime.
+- **Network:** only `adder models refresh` / `adder.sources`, only when invoked
+  directly, and never when `ADDER_OFFLINE=1` is set.
 - **Credentials:** none. The tool has no API key, reads no keychain, and sends
   no authenticated request.
 

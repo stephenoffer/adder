@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from router.sources import (
+from adder.sources import (
     FetchFailed,
     Offline,
     fetch,
@@ -141,7 +141,7 @@ class TestAggregatorParser:
 
 class TestRefresh:
     def test_replaying_captures_needs_no_network(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("LLM_ROUTER_OFFLINE", "1")
+        monkeypatch.setenv("ADDER_OFFLINE", "1")
         (tmp_path / "a.html").write_text(ARENA_PAGE)
         (tmp_path / "o.json").write_text(OPENROUTER_PAGE)
         cat, results = refresh(offline_files={"lmarena": tmp_path / "a.html",
@@ -152,7 +152,7 @@ class TestRefresh:
         assert set(e.sources) == {"openrouter", "lmarena"}
 
     def test_one_dead_source_degrades_instead_of_failing(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("LLM_ROUTER_OFFLINE", "1")
+        monkeypatch.setenv("ADDER_OFFLINE", "1")
         (tmp_path / "o.json").write_text(OPENROUTER_PAGE)
         cat, results = refresh(offline_files={"openrouter": tmp_path / "o.json"})
         by = {r.name: r for r in results}
@@ -161,12 +161,12 @@ class TestRefresh:
         assert cat.provenance["sources"][1]["error"]
 
     def test_offline_env_var_blocks_the_socket(self, monkeypatch):
-        monkeypatch.setenv("LLM_ROUTER_OFFLINE", "1")
+        monkeypatch.setenv("ADDER_OFFLINE", "1")
         with pytest.raises(Offline):
             fetch("https://example.invalid/")
 
     def test_provenance_records_what_actually_happened(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("LLM_ROUTER_OFFLINE", "1")
+        monkeypatch.setenv("ADDER_OFFLINE", "1")
         (tmp_path / "o.json").write_text(OPENROUTER_PAGE)
         cat, _ = refresh(offline_files={"openrouter": tmp_path / "o.json"})
         assert cat.provenance["refreshed_at"]

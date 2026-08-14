@@ -20,7 +20,7 @@ because its reachable share halved. **Effort** is new and ranks third: it is the
 only output-side lever that does *not* invalidate the prompt cache, so unlike a
 model downgrade it costs nothing to apply mid-session.
 
-Run `rt savings` to compute this table against your own history.
+Run `adder savings` to compute this table against your own history.
 
 ## Cache efficiency: a lever that turned out not to be available
 
@@ -41,4 +41,4 @@ $296 comes from gaps **longer than an hour** — which no TTL setting covers. Th
 tool says so rather than claiming a saving: that is a session-boundary problem,
 and it reinforces the splitting lever instead.
 
-`rt cache` reports this for your transcripts.
+`adder cache` reports this for your transcripts.

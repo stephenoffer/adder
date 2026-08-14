@@ -11,8 +11,8 @@ body:
     id: command
     attributes:
       label: Command
-      description: The exact `rt` invocation.
-      placeholder: rt savings --max-turns 400
+      description: The exact `adder` invocation.
+      placeholder: adder savings --max-turns 400
     validations:
       required: true
   - type: textarea
@@ -33,7 +33,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: Output of `rt version` (or the commit SHA).
+      description: Output of `adder version` (or the commit SHA).
     validations:
       required: true
   - type: input

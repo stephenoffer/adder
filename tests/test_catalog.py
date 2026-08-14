@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from router.catalog import (
+from adder.catalog import (
     SCHEMA,
     Catalog,
     Entry,
@@ -136,18 +136,18 @@ class TestCatalog:
 
 class TestLayering:
     def test_project_override_beats_the_user_cache(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("LLM_ROUTER_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("ADDER_HOME", str(tmp_path / "home"))
         Catalog([Entry(key="m", id="m", inp=9.0, out=9.0, context=1000)]).save(
             tmp_path / "home" / "catalog.json")
         Catalog([Entry(key="m", id="m", inp=1.0, out=1.0)]).save(
-            tmp_path / "proj" / ".llm-router" / "catalog.json")
+            tmp_path / "proj" / ".adder" / "catalog.json")
         cat = load(cwd=tmp_path / "proj", include_first_party=False)
         e = cat.get("m")
         assert e.inp == 1.0          # override wins the price
         assert e.context == 1000     # and keeps everything it did not say
 
     def test_first_party_claude_rates_beat_anything_scraped(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("LLM_ROUTER_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("ADDER_HOME", str(tmp_path / "home"))
         Catalog([Entry(key="claude-opus-5", id="anthropic/claude-opus-5",
                        inp=999.0, out=999.0, verified=False)]).save(
             tmp_path / "home" / "catalog.json")
@@ -156,14 +156,14 @@ class TestLayering:
 
     def test_a_corrupt_cache_degrades_instead_of_crashing(self, tmp_path, monkeypatch):
         """A bad cache file must not take down every cost report on the machine."""
-        monkeypatch.setenv("LLM_ROUTER_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("ADDER_HOME", str(tmp_path / "home"))
         bad = tmp_path / "home" / "catalog.json"
         bad.parent.mkdir(parents=True)
         bad.write_text("{not json")
         assert load(cwd=tmp_path).get("claude-opus-5") is not None
 
     def test_first_party_layer_covers_every_priced_claude_model(self):
-        from router.prices import MODELS
+        from adder.prices import MODELS
 
         cat = load()
         for mid in MODELS:

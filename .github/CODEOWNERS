@@ -2,9 +2,9 @@
 *                     @stephenoffer
 
 # The pieces where a wrong change is expensive and quiet.
-/router/cost.py       @stephenoffer
-/router/prices.py     @stephenoffer
-/router/trace.py      @stephenoffer
-/router/sources.py    @stephenoffer
+/adder/cost.py        @stephenoffer
+/adder/prices.py      @stephenoffer
+/adder/trace.py       @stephenoffer
+/adder/sources.py     @stephenoffer
 /.github/workflows/   @stephenoffer
 /CLAUDE.md            @stephenoffer

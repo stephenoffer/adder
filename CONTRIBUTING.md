@@ -9,21 +9,21 @@ it is the binding version of everything below.
 ## Setup
 
 ```bash
-git clone https://github.com/stephenoffer/llm-router && cd llm-router
+git clone https://github.com/stephenoffer/adder && cd adder
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 make check          # lint + tests; should be clean before you change anything
 ```
 
-No install is strictly required — `./scripts/rt help` works from a bare
-checkout on Python 3.10+. The editable install is only to get `rt` on your
+No install is strictly required — `./scripts/adder help` works from a bare
+checkout on Python 3.10+. The editable install is only to get `adder` on your
 `PATH` and the dev tools available.
 
 ## The one rule that matters
 
 **A wrong number is worse than no number.** Anything that changes a reported
 figure needs the measurement behind it, in the PR description. "This looks more
-correct" is not a reason; "re-ran `rt validate` on 171 files, the ratio moved
+correct" is not a reason; "re-ran `adder validate` on 171 files, the ratio moved
 from 1.02 to 0.98, here is the output" is.
 
 ## Before you open a PR
@@ -46,7 +46,7 @@ Checklist:
 - [ ] Tests pass, and new behaviour has a new test in the same commit.
 - [ ] `ruff check .` is clean.
 - [ ] No new runtime dependency (see below if you think you need one).
-- [ ] No network call outside `router/sources.py`.
+- [ ] No network call outside `adder/sources.py`.
 - [ ] Tests do not read the real `~/.claude` directory.
 - [ ] `git status` has no untracked junk.
 - [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` if the change is
@@ -55,14 +55,14 @@ Checklist:
 
 ## Adding a command
 
-1. `router/<name>.py` with a `main(argv: list[str] | None = None) -> int` and
+1. `adder/<name>.py` with a `main(argv: list[str] | None = None) -> int` and
    its own `argparse` parser.
-2. One `Command(...)` row in `COMMANDS` in `router/cli.py`.
+2. One `Command(...)` row in `COMMANDS` in `adder/cli.py`.
 3. `tests/test_<name>.py`.
 4. A row in `docs/commands.md` and, if it is user-facing, in the README table.
 
 The dispatcher deliberately does not re-declare per-command flags. Each module
-owns its own parser so `rt <name> --help` is always accurate.
+owns its own parser so `adder <name> --help` is always accurate.
 
 ## Dependencies
 
@@ -77,7 +77,7 @@ Dev-only tools (`pytest`, `ruff`, `build`, `twine`) go in
 
 ## Test conventions
 
-- One test module per router module, same name: `router/cache.py` ->
+- One test module per router module, same name: `adder/cache.py` ->
   `tests/test_cache_ttl.py` style names are fine as long as the mapping is
   obvious.
 - Build fixtures with `tmp_path`. Never touch the real transcript directory.
@@ -108,7 +108,7 @@ distrust.
 
 ## Reporting a bug
 
-Open an issue with the `rt` command you ran, the output you got, the output you
+Open an issue with the `adder` command you ran, the output you got, the output you
 expected, and your Python version. **Do not paste raw transcript content** —
 it contains your source code and prompts. Redact or synthesise.
 

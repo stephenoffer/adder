@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/stephenoffer/llm-router/security/advisories/new
+    url: https://github.com/stephenoffer/adder/security/advisories/new
     about: Report privately. Never open a public issue for a security problem.
   - name: Question or idea
-    url: https://github.com/stephenoffer/llm-router/discussions
+    url: https://github.com/stephenoffer/adder/discussions
     about: Ask before you build. Especially for anything adding a dependency.

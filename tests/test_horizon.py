@@ -3,7 +3,7 @@ direction, so these tests pin the corrected behaviour."""
 
 import pytest
 
-from router.horizon import DEFAULT_REMAINING, MIN_SAMPLES, Horizon
+from adder.horizon import DEFAULT_REMAINING, MIN_SAMPLES, Horizon
 
 
 class TestEmptyHorizon:

@@ -3,7 +3,7 @@
 
 # Shell scripts must stay LF even on Windows checkouts.
 *.sh    text eol=lf
-scripts/rt text eol=lf
+scripts/adder  text eol=lf
 
 # Explicit binary types (never diff or merge these).
 *.png   binary

@@ -31,5 +31,5 @@ body:
       description: See CONTRIBUTING.md. These are hard rules, not preferences.
       options:
         - label: This needs no new runtime dependency.
-        - label: This needs no network call outside `router/sources.py`.
+        - label: This needs no network call outside `adder/sources.py`.
         - label: This writes nothing under `~/.claude/`.

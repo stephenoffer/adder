@@ -1,6 +1,6 @@
 """Tests that lock in the empirical claims the design rests on.
 
-If any of these fail, the plan's conclusions no longer hold and the router's
+If any of these fail, the plan's conclusions no longer hold and adder's
 gates are unsafe.
 """
 
@@ -8,7 +8,7 @@ from datetime import date
 
 import pytest
 
-from router.cost import (
+from adder.cost import (
     M,
     admitted_token_cost,
     escalation_is_profitable,
@@ -16,7 +16,7 @@ from router.cost import (
     switch_is_profitable,
     turn_cost,
 )
-from router.prices import CACHE_READ_MULT, rate
+from adder.prices import CACHE_READ_MULT, rate
 
 OPUS, HAIKU, SONNET = "claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5"
 

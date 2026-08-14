@@ -6,7 +6,7 @@ has already been violated at least once.
 
 ## What this is
 
-`llm-router` reads Claude Code transcript files off the local disk and reports
+`adder` reads Claude Code transcript files off the local disk and reports
 what a session costs, where the cost comes from, and what each intervention is
 worth. It is a measurement tool that happens to make routing recommendations.
 
@@ -19,18 +19,18 @@ recommendation that someone acts on.
 1. **No runtime dependencies.** `[project.dependencies]` stays empty. The tool
    must run from a bare Python 3.10+ checkout with no install step. If you
    believe you need a dependency, say so in the PR and expect to justify it.
-2. **No network in library code.** `router/sources.py` is the single exception
-   and it is opt-in, explicit, and honours `LLM_ROUTER_OFFLINE=1`. Everything
+2. **No network in library code.** `adder/sources.py` is the single exception
+   and it is opt-in, explicit, and honours `ADDER_OFFLINE=1`. Everything
    else — every report, every gate, every test — is pure computation over local
    files. Never add an implicit fetch to make a report "more accurate".
 3. **No mutation of user data.** The tool reads `~/.claude/projects/**`. It does
    not write there, rename there, or delete there. Ever. Outputs go to stdout or
    to a path the user named.
-4. **Read-only means read-only.** `rt live`, `rt trace`, `rt debt`, `rt context`,
-   `rt cache`, `rt quality`, `rt horizon` must never change state on disk.
+4. **Read-only means read-only.** `adder live`, `adder trace`, `adder debt`, `adder context`,
+   `adder cache`, `adder quality`, `adder horizon` must never change state on disk.
 5. **Every claim is testable or it is not made.** A number in the README, a
    docstring, or a report either comes from a function under test or it is
-   labelled as an estimate with its assumptions written down. `rt validate`
+   labelled as an estimate with its assumptions written down. `adder validate`
    exists so the foundational claims can be re-run against new data; if you
    change a claim, change `validate.py` with it.
 
@@ -59,21 +59,21 @@ These are load-bearing. Each one cost real money to discover.
 ## Layout
 
 ```
-router/            library + one module per report; each owns its own main(argv)
+adder/            library + one module per report; each owns its own main(argv)
   cli.py           the only dispatcher; maps command name -> module, lazily
   cost.py          the cost model — the piece everything else calls
   prices.py        hand-maintained first-party Claude rates, date-aware
   catalog.py       provider-agnostic model data (bundled < cache < project)
   sources.py       the only module that opens a socket
   data/            bundled catalog snapshot shipped in the wheel
-tests/             one test module per router module, same name
+tests/             one test module per adder module, same name
 docs/              the reasoning; the README is the summary of it
-scripts/rt         launcher for a checkout; delegates to router.cli
+scripts/adder      launcher for a checkout; delegates to adder.cli
 .claude/           agents, hooks, and skills — part of the product, tracked
 ```
 
-**Adding a command:** write `router/<name>.py` with a `main(argv) -> int`, add
-one `Command(...)` row to `COMMANDS` in `router/cli.py`, add `tests/test_<name>.py`,
+**Adding a command:** write `adder/<name>.py` with a `main(argv) -> int`, add
+one `Command(...)` row to `COMMANDS` in `adder/cli.py`, add `tests/test_<name>.py`,
 and add a row to `docs/commands.md`. The dispatcher does not duplicate flags —
 each module owns its own parser.
 
@@ -83,7 +83,7 @@ each module owns its own parser.
 - Module docstrings explain **why the module exists and what it got wrong**, not
   what the functions are named. Match the density of the existing ones.
 - Comments explain the non-obvious decision, not the syntax.
-- Type-annotate public functions. `router/py.typed` claims the package is typed;
+- Type-annotate public functions. `adder/py.typed` claims the package is typed;
   keep that honest.
 - `ruff check .` clean before commit. Line length 100.
 
@@ -140,5 +140,5 @@ make lint          # ruff check
 make fmt           # ruff check --fix + format
 make check         # lint + test, what CI runs
 make clean         # remove caches and build artifacts
-./scripts/rt help  # the tool's own command list
+./scripts/adder help  # the tool's own command list
 ```

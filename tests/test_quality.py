@@ -2,7 +2,7 @@
 
 import json
 
-from router.quality import QualityStats, regressions, scan
+from adder.quality import QualityStats, regressions, scan
 
 OPUS = "claude-opus-5"
 

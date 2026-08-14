@@ -2,7 +2,7 @@
 
 import pytest
 
-from router.ab import TASKS, ArmResult, Outcome, report, wilson_lower_bound
+from adder.ab import TASKS, ArmResult, Outcome, report, wilson_lower_bound
 
 
 class TestCheckers:

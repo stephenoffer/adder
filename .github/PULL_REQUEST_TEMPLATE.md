@@ -14,7 +14,7 @@
 - [ ] `make check` passes (`ruff check .` + `pytest`)
 - [ ] New behaviour has a test in this PR
 - [ ] No new runtime dependency
-- [ ] No network call outside `router/sources.py`
+- [ ] No network call outside `adder/sources.py`
 - [ ] Nothing writes under `~/.claude/`
 - [ ] Tests use `tmp_path`, not the real transcript directory
 - [ ] `CHANGELOG.md` updated under `## [Unreleased]` if user-visible

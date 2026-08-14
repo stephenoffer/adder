@@ -2,11 +2,11 @@
 
 import pytest
 
-from router.classify import Tier
-from router.cost import escalation_is_profitable, placement_cost, switch_is_profitable
-from router.policy import choose_effort, decide
-from router.savings import cache_discipline, effort_reduction, tool_output_discipline
-from router.trace import Session, Turn
+from adder.classify import Tier
+from adder.cost import escalation_is_profitable, placement_cost, switch_is_profitable
+from adder.policy import choose_effort, decide
+from adder.savings import cache_discipline, effort_reduction, tool_output_discipline
+from adder.trace import Session, Turn
 
 OPUS, HAIKU = "claude-opus-5", "claude-haiku-4-5"
 

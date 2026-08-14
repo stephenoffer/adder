@@ -4,8 +4,8 @@ from datetime import date
 
 import pytest
 
-from router.trace import Session, Turn
-from router.verify import Window, _day, compare, report
+from adder.trace import Session, Turn
+from adder.verify import Window, _day, compare, report
 
 OPUS = "claude-opus-5"
 
@@ -39,20 +39,20 @@ class TestReport:
 
     def test_reports_a_real_improvement(self, monkeypatch):
         sess = self._sessions(2000, 500, 400_000, 100_000)
-        monkeypatch.setattr("router.verify.load_sessions", lambda root: sess)
+        monkeypatch.setattr("adder.verify.load_sessions", lambda root: sess)
         text = report(date(2026, 8, 1))
         assert "saved" in text and "ROSE" not in text
 
     def test_compare_splits_on_the_cutover(self, monkeypatch):
         sess = self._sessions(2000, 500, 400_000, 100_000)
-        monkeypatch.setattr("router.verify.load_sessions", lambda root: sess)
+        monkeypatch.setattr("adder.verify.load_sessions", lambda root: sess)
         b, a = compare(date(2026, 8, 1))
         assert b.turns == 50 and a.turns == 50
         assert b.out_per_turn == 2000 and a.out_per_turn == 500
 
     def test_refuses_to_claim_saving_when_cost_rose(self, monkeypatch):
         sess = self._sessions(2000, 500, 100_000, 400_000)   # terser but bigger context
-        monkeypatch.setattr("router.verify.load_sessions", lambda root: sess)
+        monkeypatch.setattr("adder.verify.load_sessions", lambda root: sess)
         text = report(date(2026, 8, 1))
         assert "ROSE" in text and "Do not claim a saving" in text
 
@@ -62,7 +62,7 @@ class TestReport:
         s1.turns = [_turn("2026-07-01T00:00:00Z", 1400, 290_000, "a") for _ in range(40)]
         s2 = Session("b", "p")
         s2.turns = [_turn("2026-09-01T00:00:00Z", 700, 360_000, "b") for _ in range(160)]
-        monkeypatch.setattr("router.verify.load_sessions", lambda root: {"a": s1, "b": s2})
+        monkeypatch.setattr("adder.verify.load_sessions", lambda root: {"a": s1, "b": s2})
         text = report(date(2026, 8, 1))
         assert "CANCELLED OUT" in text
         assert "verbosity effect" in text and "session-length effect" in text
@@ -70,10 +70,10 @@ class TestReport:
     def test_handles_one_sided_data(self, monkeypatch):
         s = Session("s", "p")
         s.turns = [_turn("2026-07-01T00:00:00Z", 500, 100_000) for _ in range(10)]
-        monkeypatch.setattr("router.verify.load_sessions", lambda root: {"s": s})
+        monkeypatch.setattr("adder.verify.load_sessions", lambda root: {"s": s})
         assert "Not enough data" in report(date(2026, 8, 1))
 
     def test_always_states_the_uncontrolled_caveat(self, monkeypatch):
         sess = self._sessions(2000, 500, 400_000, 100_000)
-        monkeypatch.setattr("router.verify.load_sessions", lambda root: sess)
+        monkeypatch.setattr("adder.verify.load_sessions", lambda root: sess)
         assert "not an A/B" in report(date(2026, 8, 1))

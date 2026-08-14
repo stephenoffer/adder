@@ -3,8 +3,8 @@ pin every figure to measured reality and check the levers compose correctly."""
 
 import pytest
 
-from router.debt import decompose_read_cost
-from router.savings import (
+from adder.debt import decompose_read_cost
+from adder.savings import (
     combine,
     delegation,
     explore_on_haiku,
@@ -12,7 +12,7 @@ from router.savings import (
     splitting,
     terseness,
 )
-from router.trace import Session, Turn
+from adder.trace import Session, Turn
 
 OPUS = "claude-opus-5"
 

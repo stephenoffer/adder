@@ -21,6 +21,12 @@ How to work:
 3. Quote only the lines that carry the answer. Never paste whole files or long blocks.
 4. If the answer is "not found", say so plainly and list where you looked.
 
+Bound your own command output. Unbounded `cat`, `find`, `git log`, and recursive
+greps are the largest single source of wasted context measured in this project —
+`Bash` results alone accounted for ~4.1M tokens of context growth. Pipe through
+`head`, use `grep -n -m`, `wc -l` for counts, and `--name-only` for file lists.
+This costs you nothing: you can always run a second, narrower command.
+
 Target under 500 words unless the caller explicitly asks for more. If you are
 about to return a large block of code, stop and return its location and a
 description of what it does instead.

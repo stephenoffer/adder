@@ -2,9 +2,17 @@
 
 The finding this module exists for
 ----------------------------------
-Measured across 169 transcripts, assistant output accounts for ~105% of context
-growth. The context of a long agent session is, almost entirely, the model's own
+Measured across this machine's transcripts, assistant output accounts for ~50%
+of main-chain context growth -- the largest single source, and the only one the
+model itself controls. Much of a long session's context is the model's own
 previous words being re-read.
+
+(An earlier version of this analysis reported ~105%. That figure came from
+records that multi-counted every multi-block turn; see `trace.iter_file`. The
+duplicates inflated output ~1.78x while leaving context deltas untouched. The
+corrected share is ~50%, and `verbosity_saving` now scales by the measured
+share rather than assuming all growth is output -- otherwise every terseness
+claim is roughly double what it can deliver.)
 
 That makes an output token a **liability, not an expense**. It is billed once at
 generation, and then again as cached input on every remaining turn:
@@ -16,15 +24,15 @@ generation, and then again as cached input on every remaining turn:
 On Opus 5 that is $25/MTok + $0.50/MTok per remaining turn, so the multiple over
 sticker price is `1 + R/50`:
 
-    R=50    2x        R=607  13x  (measured median session)
-    R=1000 21x        R=3478 71x  (measured worst session)
+    R=50    2.0x      R=340   7.8x  (measured median session)
+    R=759  16.2x      R=1854 38.1x  (measured p90 and worst session)
 
-Every cost tool in existence reports the generation cost and misses the rest. On
-this dataset that is $704 reported against $4,225 incurred.
+Every cost tool in existence reports the generation cost and misses the rest.
 
 The actionable consequence is unusual: **terseness compounds**. Halving output
-does not save 10% of a bill that is 90% input -- it halves the thing that
-*creates* the input.
+does not save 8% of a bill that is 92% input -- it halves the largest single
+contributor to the input. But it is bounded by the output share of growth: at
+50%, cutting output by 30% removes at most 15% of the accumulated pool, not 30%.
 """
 
 from __future__ import annotations
@@ -90,8 +98,9 @@ def decompose_read_cost(sessions, on: date | None = None) -> tuple[float, float,
     ~35% on this dataset, because compaction drops content. Measured decomposition
     is used instead so the saving can never be overstated.
 
-    The `accumulated` share is what verbosity controls: assistant output is ~105%
-    of context growth, so essentially all non-baseline context is prior output.
+    `accumulated` is the pool the three substitute levers compete over. Only the
+    measured output share of it (~50%) is reachable by verbosity alone; the rest
+    is tool results and user input. `verbosity_saving` applies that scaling.
     """
     total = baseline = 0.0
     for s in sessions.values():
@@ -106,22 +115,50 @@ def decompose_read_cost(sessions, on: date | None = None) -> tuple[float, float,
     return total, baseline, max(0.0, total - baseline)
 
 
+def output_share_of_growth(sessions) -> float:
+    """Measured share of main-chain context growth that is assistant output.
+
+    Delegates to `router.context` so there is one definition of this number.
+    Returns 1.0 only when growth cannot be measured, which is the conservative
+    direction for a *bound* but the optimistic one for a *claim* -- so callers
+    that cannot measure it should say so.
+    """
+    from .context import output_share_of_growth as _share
+
+    try:
+        share = _share(sessions)
+    except Exception:
+        return 1.0
+    if share <= 0.0:
+        return 1.0
+    return min(1.0, share)
+
+
 def verbosity_saving(sessions, *, reduction: float = 0.30,
+                     output_share: float | None = None,
                      on: date | None = None) -> VerbosityImpact:
     """What a proportional cut in output verbosity is worth.
 
-    Re-read saving is taken as `reduction` x the MEASURED accumulated read cost,
-    not a forward projection. Context above baseline is prior output, so cutting
-    output by x% cuts that term by ~x%.
+    Re-read saving is `reduction` x `output_share` x the MEASURED accumulated
+    read cost -- not a forward projection, and not the whole pool.
+
+    `output_share` is the fraction of context growth that is actually assistant
+    output (~0.50 measured here). Assuming 1.0 is the single easiest way to
+    over-claim this lever by 2x: the other half of the pool is tool results and
+    user input, which no amount of terseness touches.
     """
     _, _, accumulated = decompose_read_cost(sessions, on)
+    if output_share is None:
+        output_share = output_share_of_growth(sessions)
+    output_share = max(0.0, min(1.0, output_share))
     gen = 0.0
     total_out = 0
     for s in sessions.values():
         for t in s.turns:
             total_out += t.out
             gen += t.out * reduction * rate(t.model, on).out / M
-    return VerbosityImpact(total_out, reduction, gen, accumulated * reduction)
+    return VerbosityImpact(total_out, reduction,
+                           gen, accumulated * reduction * output_share)
 
 
 def report(sessions, on: date | None = None) -> str:
@@ -131,7 +168,7 @@ def report(sessions, on: date | None = None) -> str:
     lines.append("  Context debt: what an output token really costs")
     lines.append("")
     lines.append(f"  {'remaining turns':>16}{'multiple of sticker price':>28}")
-    for R in (0, be, 200, 607, 1000, 3478):
+    for R in (0, be, 200, 340, 759, 1854):
         lines.append(f"  {R:>16,}{debt_multiple(R):>27.1f}x")
     lines.append("")
     lines.append(f"  Past {be} remaining turns, re-reading an output token costs more")
@@ -149,9 +186,17 @@ def report(sessions, on: date | None = None) -> str:
     lines.append(f"    measured cache-read       ${total_read:>9,.0f}")
     lines.append(f"      irreducible baseline    ${baseline:>9,.0f}   (system prompt, tools, CLAUDE.md)")
     lines.append(f"      accumulated prior output${accumulated:>9,.0f}   <- what verbosity controls")
+    share = output_share_of_growth(sessions)
     if gen_cost:
-        lines.append(f"    true cost of output is {(gen_cost + accumulated)/gen_cost:.1f}x the reported figure")
+        attributable = accumulated * share
+        lines.append(f"    of which attributable to output ${attributable:>9,.0f}   "
+                     f"({100*share:.0f}% measured output share)")
+        lines.append(f"    true cost of output is {(gen_cost + attributable)/gen_cost:.1f}x "
+                     f"the reported figure")
 
+    lines.append("")
+    lines.append(f"  Assistant output is {100*share:.0f}% of measured context growth, so a")
+    lines.append("  verbosity cut can only reach that share of the accumulated pool.")
     lines.append("")
     lines.append("  Value of writing less:")
     lines.append(f"  {'cut':>6}{'generation':>13}{'re-read':>12}{'total':>11}{'leverage':>11}")

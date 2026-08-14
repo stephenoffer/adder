@@ -4,4 +4,36 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
 export PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m "router.$1" "${@:2}"
+
+usage() {
+  cat <<'USAGE'
+rt <command> [args]   —  cost tooling for Claude agent sessions
+
+  Measure (read-only, no API calls, no network)
+    trace     [root] [--json] [--verify]   total spend, by model and session
+    live      [--cwd DIR]                  this session: cost/turn, next-turn cost
+    debt      [root]                       what an output token really costs
+    context   [root]                       where context growth comes from
+    cache     [root]                       cache hit rate and rebuild waste
+    quality   [root] [--since DATE]        agent-performance proxies
+    horizon   [root]                       remaining-turns estimate vs the countdown
+
+  Decide
+    policy    "<task>" [--json]            route a task: inline vs delegate
+    outcomes  [--log PATH]                 escalation calibration (p_fail)
+
+  Evaluate
+    savings   [root] [--max-turns N]       what each lever is worth
+    verify    --since DATE [root]          did a change actually land?
+    validate  [root]                       re-test the claims everything rests on
+    regret    [root]                       dollar regret of the horizon estimator
+    ab        --help                       controlled A/B on answer quality
+
+Every report is computed locally from transcript files. Start with `rt live`.
+USAGE
+}
+
+case "${1:-help}" in
+  ""|help|-h|--help) usage ;;
+  *) exec python3 -m "router.$1" "${@:2}" ;;
+esac

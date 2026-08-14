@@ -59,11 +59,17 @@ def output_drives_context(sessions, min_turns: int = 30) -> Claim:
         out += sum(t.out for t in s.turns[:-1])
         n += 1
     if not growth or n < 5:
-        return Claim("output drives context growth", False, "insufficient data",
-                     "0.85-1.15x", f"only {n} non-compacting sessions")
+        return Claim("output is the largest growth source", False, "insufficient data",
+                     "0.35-0.75x", f"only {n} non-compacting sessions")
     r = out / growth
-    return Claim("output drives context growth", 0.85 <= r <= 1.15,
-                 f"{r:.2f}x", "0.85-1.15x", f"{n} non-compacting sessions")
+    # Expected range was 0.85-1.15x while the parser multi-counted every turn
+    # with more than one content block, which inflated output ~1.78x without
+    # touching context deltas (duplicate records carry an identical context).
+    # Deduplicated, the ratio is ~0.50x: output is still the single largest
+    # source of growth, but roughly half of it is read content, and a terseness
+    # claim scaled to 1.0x over-claims about twofold.
+    return Claim("output is the largest growth source", 0.35 <= r <= 0.75,
+                 f"{r:.2f}x", "0.35-0.75x", f"{n} non-compacting sessions")
 
 
 def input_side_dominates(sessions) -> Claim:
@@ -160,6 +166,32 @@ def countdown_would_underestimate(sessions) -> Claim:
                  "justifies using the survivor function instead of a countdown")
 
 
+def composition_is_conservative(sessions) -> Claim:
+    """Claim: the multiplicative composition model never overstates savings.
+
+    The headline figure combines substitute levers as
+    `pool * (1 - prod(1 - f_i))`. Re-simulating each session's real context
+    trajectory under the same interventions shows whether that approximation
+    over- or under-predicts. Under-prediction is safe; over-prediction inflates
+    the headline and must be corrected.
+    """
+    from .simulate import Intervention, evaluate
+
+    rows = evaluate(sessions, [
+        Intervention(terseness=0.30),
+        Intervention(delegation=0.25),
+        Intervention(terseness=0.30, delegation=0.25, split_turns=300),
+    ])
+    worst = 0.0
+    for _, sim, pred in rows:
+        if sim > 0:
+            worst = max(worst, (pred - sim) / sim)
+    return Claim("composition model never overstates", worst <= 0.05,
+                 f"{worst:+.0%}", "<=+5%",
+                 "simulated trajectory vs multiplicative prediction; "
+                 "negative means conservative")
+
+
 CHECKS = (
     output_drives_context,
     input_side_dominates,
@@ -169,6 +201,7 @@ CHECKS = (
     attribution_is_bounded,
     horizon_is_calibrated,
     countdown_would_underestimate,
+    composition_is_conservative,
 )
 
 

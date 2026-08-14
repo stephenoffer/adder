@@ -2,6 +2,10 @@
 
 Answers the question that actually changes behaviour mid-session: "what is this
 conversation costing me per turn right now, and what will the next big read cost?"
+
+Everything here is priced from the session's own measured turns, so the advice
+adapts to the model, cache TTL, and context actually in play rather than to a
+global average.
 """
 
 from __future__ import annotations
@@ -11,13 +15,23 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cost import admitted_token_cost, placement_cost
+from .cost import admitted_token_cost, marginal_turn_cost, placement_cost
+from .debt import debt_multiple
 from .horizon import DEFAULT_REMAINING, Horizon, load as load_horizon
-from .trace import DEFAULT_ROOT, Session, Turn, iter_turns
+from .prices import context_limit
+from .trace import DEFAULT_ROOT, Session, iter_file
 
-# Session-length priors measured from this machine's transcripts.
-MEDIAN_SESSION_TURNS = 607
-P90_SESSION_TURNS = 1159
+# Descriptive session-length stats, measured on deduplicated transcripts. These
+# are for reporting only -- remaining turns comes from `horizon`, because a
+# countdown from a median is badly wrong on a heavy-tailed length distribution.
+# (The pre-deduplication figures were 607/1159; every multi-block turn was being
+# counted once per content block. See `trace.iter_file`.)
+MEDIAN_SESSION_TURNS = 340
+P90_SESSION_TURNS = 759
+
+# Above this share of the model's window, compaction is imminent and the next
+# turns are the most expensive of the session.
+CONTEXT_PRESSURE = 0.75
 
 
 def slug_for(cwd: Path | str | None = None) -> str:
@@ -45,22 +59,23 @@ def find_project_dir(cwd: Path | str | None = None, root: Path | str = DEFAULT_R
 
 
 def current_session(cwd: Path | str | None = None, root: Path | str = DEFAULT_ROOT) -> Session | None:
-    """Most recently modified transcript for this working directory."""
+    """Most recently modified transcript for this working directory.
+
+    Reads only that one file. An earlier version fell back to parsing every
+    transcript in the directory and treating the union as one session, which
+    reported the sum of unrelated conversations as "this session".
+    """
     d = find_project_dir(cwd, root)
     if d is None:
         return None
     files = sorted(d.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not files:
-        return None
-    newest = files[0]
-    turns = [t for t in iter_turns(newest.parent) if t.session == newest.stem]
-    if not turns:
-        turns = [t for t in iter_turns(newest.parent)]
-    if not turns:
-        return None
-    s = Session(newest.stem, d.name)
-    s.turns = turns
-    return s
+    for newest in files[:3]:          # skip empty/unpriced files, don't merge them
+        turns = [t for t in iter_file(newest)]
+        if turns:
+            s = Session(newest.stem, d.name)
+            s.turns = turns
+            return s
+    return None
 
 
 @dataclass
@@ -72,6 +87,23 @@ class LiveReport:
     projected_remaining: int
     projected_total: float
     model: str
+    out_per_turn: int = 0
+    median_gap: float = 0.0
+    ttl: str = "5m"
+
+    @property
+    def context_pressure(self) -> float:
+        """How full the model's window is. Past ~0.75 compaction is imminent."""
+        return self.context / max(1, context_limit(self.model))
+
+    @property
+    def next_turn_cost(self) -> float:
+        return marginal_turn_cost(self.context, self.out_per_turn, self.model)
+
+    @property
+    def debt_multiple(self) -> float:
+        """What a token written now really costs, vs its sticker price."""
+        return debt_multiple(self.projected_remaining, self.model)
 
     def read_cost(self, tokens: int) -> tuple[float, float, str]:
         """What reading `tokens` inline costs vs delegating it, from here."""
@@ -85,11 +117,12 @@ class LiveReport:
 
 
 def analyse(sess: Session, *, horizon: Horizon | None = None) -> LiveReport:
-    """Analyse a live session.
+    """Price the session so far and project the rest of it.
 
     `remaining` comes from the empirical survivor function, not a countdown from
-    a typical session length. The countdown is badly wrong late in long sessions
-    (at turn 600 it says 0 when ~350 remain), which is where the money is.
+    a median length. Session length is heavy-tailed and close to memoryless, so
+    reaching turn 600 is evidence of being in a LONG session, not of being near
+    its end -- a countdown says 7 turns left where the data says ~350.
     """
     spent = sess.cost
     n = sess.n_turns
@@ -105,6 +138,9 @@ def analyse(sess: Session, *, horizon: Horizon | None = None) -> LiveReport:
         projected_remaining=remaining,
         projected_total=spent + per_turn * remaining,
         model=last.model,
+        out_per_turn=sess.out_tokens // max(1, n),
+        median_gap=sess.median_gap(),
+        ttl=last.ttl,
     )
 
 
@@ -115,12 +151,22 @@ def render(sess: Session | None) -> str:
     out = [
         f"  This session: {r.turns:,} turns · {r.context:,} tokens in context · "
         f"${r.spent:,.2f} spent (${r.per_turn:.3f}/turn)",
+        f"  Model {r.model} · cache TTL {r.ttl} · "
+        f"context {r.context_pressure:.0%} of the {context_limit(r.model):,}-token window",
     ]
     if r.projected_remaining:
         out.append(
             f"  Sessions that reach turn {r.turns:,} typically run ~{r.projected_remaining:,} "
-            f"more → ~${r.projected_total:,.2f} total"
+            f"more turns → ~${r.projected_total:,.2f} total"
         )
+    out.append(f"  One more turn at this context costs ~${r.next_turn_cost:.3f}.")
+
+    if r.context_pressure >= CONTEXT_PRESSURE:
+        out.append("")
+        out.append("  ⚠ Context is near the window limit. The next turns are the most")
+        out.append("    expensive of the session, and compaction is imminent — which")
+        out.append("    rebuilds the cache at 1.25x instead of reading it at 0.10x.")
+
     out.append("")
     out.append("  Cost of reading a file into THIS context from here:")
     out.append(f"    {'file size':>12}  {'inline':>10}  {'delegated':>10}   verdict")
@@ -133,15 +179,24 @@ def render(sess: Session | None) -> str:
         f"  Every 10K tokens added to this context now costs ~${cost10k:,.2f} "
         f"over the rest of the session."
     )
+    out.append(
+        f"  An output token written now costs {r.debt_multiple:.1f}x its sticker price, "
+        f"once downstream re-reads are counted."
+    )
     return "\n".join(out)
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(prog="router.live")
     ap.add_argument("--cwd", default=None)
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     print()
     print(render(current_session(a.cwd)))
     print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

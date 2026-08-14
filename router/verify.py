@@ -7,6 +7,12 @@ shorter sessions) can be confirmed or falsified against real data.
 
 Cost per turn is the headline metric because it captures both halves: writing
 less reduces generation cost now and context-read cost on every later turn.
+
+Cost alone is not enough to call a win. A degraded agent usually looks *cheaper
+per turn* while needing more turns, more corrections, and more retries to finish
+the same work -- so a cost-only verifier will happily certify a regression. The
+report therefore ends with the measured performance proxies from
+`router.quality` and refuses to claim a saving when any of them regressed.
 """
 
 from __future__ import annotations
@@ -126,6 +132,31 @@ def report(cutover: date, root: Path | str = DEFAULT_ROOT) -> str:
     else:
         out.append(f"  Cost per turn ROSE ${-saved_per_turn:.4f}. The intervention did not land,")
         out.append("  or something else changed. Do not claim a saving.")
+    # A saving that cost you capability is not a saving. Check the proxies.
+    try:
+        from .quality import compare as qcompare, regressions
+
+        qb, qa = qcompare(root, cutover)
+        if qb.turns and qa.turns:
+            regs = regressions(qb, qa)
+            out.append("")
+            out.append("  Agent performance across the same cutover:")
+            bd, ad = qb.as_dict(), qa.as_dict()
+            for k in ("tool_error_rate", "correction_rate", "turns_per_prompt"):
+                fmt = "{:.3f}" if k != "turns_per_prompt" else "{:.1f}"
+                out.append(f"    {k:<20}{fmt.format(bd[k]):>10} -> {fmt.format(ad[k]):>10}"
+                           f"{_delta(bd[k], ad[k]):>10}")
+            if regs:
+                out.append("")
+                out.append("    REGRESSED: " + "; ".join(regs))
+                if saved_per_turn > 0:
+                    out.append("    Cost fell, but the agent got worse. Do not claim")
+                    out.append("    a saving without accounting for the extra work.")
+            else:
+                out.append("    No proxy regressed beyond noise.")
+    except Exception:
+        pass
+
     out.append("")
     out.append("  Caveat: this is an uncontrolled before/after, not an A/B. Task mix")
     out.append("  changes between periods too. Treat a small move as noise.")

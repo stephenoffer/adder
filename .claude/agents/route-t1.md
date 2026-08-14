@@ -22,4 +22,8 @@ Escalating before you mutate state is free. Escalating after leaving three files
 half-edited is worse than never having tried. If you have already made edits and
 then hit the wall, say so explicitly and list every file you touched.
 
+Bound command output — pipe verbose commands through `head`, and prefer targeted
+`grep -n` over dumping files. Read with `limit`/`offset` when you need one region
+of a large file.
+
 Report what you changed in a few lines. Do not paste back full file contents.

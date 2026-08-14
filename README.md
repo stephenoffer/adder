@@ -1,224 +1,70 @@
 # llm-router
 
-Cost tooling for Claude agent sessions, built around a measured finding: in a
-long session, **an output token is a liability, not an expense**.
+Cost tooling for Claude Code agent sessions. It reads your local transcript
+files and tells you where the money actually goes — no network, no API key, no
+model calls.
 
-## The finding
+The finding it is built around: **in a long session, an output token is a
+liability, not an expense.** It is billed once when generated, then again as
+cached input on every remaining turn. At a 340-turn median session that is
+**7.8x** the price every other cost tool reports.
 
-Measured across 169 real transcripts (~$7.4K list-equivalent):
+## Quick start
+
+```bash
+git clone <this repo> && cd llm-router
+./scripts/rt live       # this session: cost/turn, next-turn cost, pressure
+./scripts/rt trace      # total spend across all your sessions
+./scripts/rt savings    # what each lever is worth on your own history
+```
+
+Python 3.10+, no dependencies. Put `scripts/` on your `PATH` to drop the
+`./scripts/` prefix.
+
+## Commands
+
+```
+rt live                     this session: cost/turn, next-turn cost, pressure
+rt trace [--json]           total spend, by model and session
+rt debt                     what an output token really costs
+rt context                  where context growth comes from
+rt cache                    cache hit rate and rebuild waste, by cause
+rt quality [--since DATE]   agent-performance proxies
+rt policy "<task>"          route a task: inline vs delegate
+rt savings                  what each lever is worth
+rt verify --since DATE      did a change actually land?
+rt outcomes                 escalation calibration (p_fail)
+rt horizon                  remaining-turns estimate vs the naive countdown
+rt validate                 re-test the claims everything rests on
+rt regret                   dollar regret of the horizon estimator
+rt ab                       controlled A/B on answer quality
+```
+
+Full reference: [docs/commands.md](docs/commands.md).
+
+## What it found
+
+Measured across 171 transcript files (50 sessions, 18,163 turns, $4,456
+list-equivalent):
+
+- **92% of spend is input-side**, 78% cache reads alone. Output is 8%.
+- The five biggest levers compose to **~$2,999, or 67% of measured spend** —
+  and the biggest of them is splitting long sessions, not writing less.
+- Per-turn model downgrades are worth **$21**, and often lose money: the prompt
+  cache is model-scoped, so moving a warm session to a cheaper model makes input
+  2x more expensive.
+
+## Read more
 
 | | |
 |---|---|
-| Input-side spend | 90% (cache-read alone: 78%) |
-| Output-side spend | 10% |
-| **Assistant output as share of context growth** | **~105%** |
+| [Measurement](docs/measurement.md) | the dedup bug that halved the numbers, and what survived it |
+| [Cost model](docs/cost-model.md) | why an output token costs 7.8x sticker, and why this is not a model router |
+| [Levers](docs/levers.md) | what each intervention is worth, including the one that wasn't available |
+| [Quality](docs/quality.md) | how a saving is checked against agent-performance regression |
+| [Commands](docs/commands.md) | full CLI reference and what ships |
 
-The context of a long agent session is, almost entirely, the model's own
-previous words being re-read. So the input-side 90% is a *symptom*; output is the
-cause. An output token is billed once at generation, then again as cached input
-on every remaining turn:
+263 tests, no network, no API key.
 
-```
-true_cost(1 token, R remaining turns) = rate_out + rate_in * 0.10 * R
-```
-
-On Opus 5 that is `$25/MTok + $0.50/MTok per turn` — a multiple of `1 + R/50`:
-
-| remaining turns | 0 | 50 | 200 | 607 | 1,000 | 3,478 |
-|---|---|---|---|---|---|---|
-| **cost vs sticker** | 1.0x | 2.0x | 5.0x | 13.1x | 21.0x | **70.6x** |
-
-Past **50 remaining turns**, re-reading an output token costs more than
-generating it did. On this dataset: **$704 generated, $5,320 in downstream
-re-reads.** Every cost tool reports the $704.
-
-## Why this is not a model router
-
-Existing routers (RouteLLM, NotDiamond, Martian, OpenRouter auto, vLLM Semantic
-Router) pick a model per request and price it `in x rate_in + out x rate_out`.
-That is correct for stateless APIs and wrong for agent sessions.
-
-Worse, the obvious move actively loses money. Opus 5 reads cached context at
-$0.50/MTok; Haiku 4.5 reads it fresh at $1.00/MTok — the cache is model-scoped,
-so downgrading a warm conversation makes input **2x more expensive**. Break-even
-is `output > context / 40`: at the measured median context (544K) that needs
-13.6K output tokens per turn. The measured average is **818**.
-
-Per-turn model routing is worth ~**$55** of the $7.4K here. It ships, correctly
-gated, as the smallest of five levers.
-
-## One root cause, three substitutes
-
-Because output accumulating in context is the root cause, there are exactly three
-ways to attack it — and they are **substitutes, not complements**:
-
-| Lever | Worth | Confidence |
-|---|---|---|
-| Split sessions >300 turns | $3,794 | modelled |
-| Write 30% less (leverage **7.6x**) | $1,813 | attributed |
-| Delegate 25% of turns to subagents | $1,342 | modelled |
-| *(separate)* per-turn model downgrade | $55 | modelled |
-| *(separate)* Explore/subagents on Haiku | $42 | **measured** |
-
-Summing the first three double-counts. Composed multiplicatively on the residual:
-**~$4,950, or 67% of measured spend.**
-
-## The result that changes the advice
-
-Running the built-in verifier across a real cutover date:
-
-```
-output tokens / turn    1,352 ->    760    -43.8%
-cost / turn           $0.2299 -> $0.2326    +1.2%
-median context        290,791 -> 353,721   +21.6%
-turns / session           389 ->    776    +99.7%
-
-  verbosity effect      x0.562
-  session-length effect x1.997
-  predicted context     x1.123   (product)
-  actual context        x1.216
-```
-
-**Writing 44% less produced no saving, because sessions got twice as long.**
-Cost per turn tracks context, context tracks *cumulative* output, and cumulative
-output is `output-per-turn x session-length`. The two factors multiply, so
-terseness only pays if session length is held constant.
-
-This is why the tool reports failure rather than claiming a win — and why session
-length, not verbosity or model choice, is the dominant lever.
-
-## The unobservable at the centre of it
-
-Every placement decision multiplies by `remaining_turns` — a forecast, not a
-fact. The obvious estimator is a countdown from a typical session length. Against
-the measured distribution it is badly wrong, and wrong in the expensive direction:
-
-| at turn | countdown says | actual median | error |
-|---|---|---|---|
-| 400 | 168 | 456 | 2.7x under |
-| 600 | 0 | 350 | **infinite** |
-| 1,000 | 0 | 309 | **infinite** |
-
-Session length is heavy-tailed and close to memoryless — mean remaining turns
-stays near 500–670 regardless of position. **Reaching turn 600 is evidence you
-are in a long session, not evidence you are near its end.**
-
-The countdown therefore told the router to skip delegation in exactly the
-sessions that cost the most. Replacing it with the empirical survivor function
-flips real decisions:
-
-```
-turn   600  countdown remaining=  0   saving=$0.03  overhead=$0.36  decline
-turn   600  empirical remaining=350   saving=$1.29  overhead=$0.36  ROUTE
-```
-
-## Claims are re-tested, not asserted
-
-Every conclusion here came from one machine's transcripts at one moment. `rt
-validate` re-measures all eight foundational claims against live data and fails
-loudly when one stops holding:
-
-```
-[PASS] output drives context growth              1.02x   (38 non-compacting sessions)
-[PASS] input-side dominates spend                  90%
-[PASS] addressable pool >> baseline              12.6x
-[PASS] sessions long enough for debt to matter     594 turns
-[PASS] model routing is a minor lever              0.7%
-[PASS] attribution never exceeds measured spend  $5,860
-[PASS] horizon estimated from local data           50 sessions
-[PASS] countdown estimator is unsafe               infinite
-```
-
-This matters because the headline claim nearly died. An OLS fit of growth on
-output suggested output drove only **37%** of context, not ~100%. That was an
-artifact — output and tool results correlate, so OLS pushed shared variance into
-the intercept, and compacted sessions polluted the fit. The clean test (sessions
-that never compacted) gives **1.02x**, confirming the original claim. The lesson
-is about method, not the number.
-
-## Install
-
-```bash
-python3 -m pytest tests/ -q          # 120 tests, no network, no API key
-cp .claude/agents/*.md ~/.claude/agents/
-```
-
-`Explore.md` overrides the built-in Explore to run on Haiku. As of v2.1.198
-Explore *inherits* the session model, so on an Opus session all exploration runs
-at 5x the necessary rate. Four lines of YAML, no code path involved.
-
-## Use
-
-```bash
-scripts/rt validate                   # re-test the 8 claims everything rests on
-scripts/rt debt                       # true cost of an output token, and of writing less
-scripts/rt horizon                    # remaining-turns estimate vs the naive countdown
-scripts/rt savings                    # every lever, with confidence tiers
-scripts/rt verify --since 2026-08-01  # did an intervention actually land?
-scripts/rt live                       # this session: $/turn, cost of the next read
-scripts/rt trace --verify             # reproduce the headline figures
-scripts/rt policy "refactor auth"     # route one task
-```
-
-In Claude Code: `/route-doctor`, `/route <task>`, `/route-init`.
-
-## As a library
-
-```python
-from router.debt import debt_multiple, decompose_read_cost
-from router.cost import switch_is_profitable
-
-debt_multiple(607)          # 13.1  -- output token cost multiple at median session
-decompose_read_cost(sess)   # (measured_total, irreducible_baseline, addressable)
-
-d = switch_is_profitable("claude-opus-5", "claude-haiku-4-5",
-                         ctx_tokens=544_000, est_out_tokens=818)
-bool(d)     # False
-d.reason    # 'loses $0.2506: re-reading 544,000 tok uncached on ...'
-```
-
-Gates return a `Decision`, falsy when the action loses money, always explaining
-why in `.reason`. Nothing returns a bare bool.
-
-## Design decisions worth knowing
-
-- **Declining to route is the default.** A routing turn re-reads the whole
-  context: ~$0.25 at 500K tokens on Opus, before doing anything useful. If the
-  modelled saving does not clear that, the router says "do it inline".
-- **The classifier abstains a lot.** Text cannot predict how deep a coding task
-  goes; it fires only on high-precision extremes and otherwise routes *up*.
-- **Cheap tiers are read-only.** `route-t0` cannot write, so escalating away from
-  it can never leave half-applied edits. `route-t1` must escalate before its
-  first edit.
-- **Prices are date-aware.** Sonnet 5's introductory $2/$10 reverts to $3/$15 on
-  2026-08-31, a 50% jump that moves every threshold.
-- **Every attribution is bounded by measured spend.** Three over-claiming bugs
-  were caught during development by self-checks that assert attributed cost can
-  never exceed the recorded bill:
-  - `cache_write` overcounts admitted content ~5x (Claude Code refreshes cache
-    segments);
-  - context-growth reconstruction overshoots because compaction shrinks contexts;
-  - forward-projecting output debt overshot the real bill by ~35%.
-
-## Limitations, stated plainly
-
-- **Nothing here proves a quality-neutral saving.** Transcripts contain only what
-  Opus produced; no counterfactual quality claim is derivable from replay. The
-  live A/B (objective pass criteria) is not built.
-- **`verify --since` is uncontrolled**, not an A/B. Task mix changes between
-  periods too. It is honest enough to report failure, which it currently does.
-- **MODELLED figures rest on stated assumptions** — 25% of turns delegable, 10:1
-  compression, sessions separable at turn boundaries. Only the Explore figure and
-  the debt decomposition are measured.
-- **Public benchmarks will show parity, not a win.** RouterArena and RouteLLM's
-  MT-Bench setup are single-turn and stateless, so they cannot exercise context
-  amortisation. The defensible claim is "better on stateful agentic workloads".
-- **Cost is list-price equivalent.** Subscription seats do not pay per token; the
-  optimisation target is unchanged either way.
-- **The horizon prior is this workload's number.** With fewer than 5 local
-  sessions the estimator falls back to a flat 450-turn prior calibrated to long
-  sessions. On a short-session workload that over-estimates and makes the router
-  route too eagerly. `rt validate` flags when the fallback is in use.
-- `CLAUDE_CODE_SUBAGENT_MODEL` and org `availableModels` allowlists silently
-  override model choice. Verify from the transcript's `message.model`, never from
-  an agent's own claim.
+These figures come from one machine's transcripts, dominated by one workload.
+Run `rt savings` against your own history before believing any of them.

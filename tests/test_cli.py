@@ -21,6 +21,25 @@ from adder.cli import COMMANDS, main, usage
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
+def pyproject() -> dict:
+    """`pyproject.toml` as a dict, on every interpreter the project claims.
+
+    `tomllib` is 3.11+, and the two invariants parsed out of this file -- the
+    version is dynamic, and there are no runtime dependencies -- are the two
+    most expensive ones to break. Skipping them on 3.10 would leave the oldest
+    supported interpreter unguarded, so the dev extra carries `tomli` there and
+    CI runs the real assertion on 3.10 like everywhere else.
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            pytest.skip("needs tomllib (3.11+) or tomli; run `pip install -e '.[dev]'`")
+    return tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+
+
 class TestCommandTable:
     def test_names_are_unique(self):
         names = [c.name for c in COMMANDS]
@@ -108,9 +127,7 @@ class TestVersion:
 
     def test_pyproject_reads_version_dynamically(self):
         """A hardcoded version in pyproject drifts from the package. Catch it."""
-        import tomllib
-
-        cfg = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+        cfg = pyproject()
         assert "version" in cfg["project"].get("dynamic", []), (
             "pyproject must take version from adder.__version__, not restate it"
         )
@@ -146,9 +163,7 @@ class TestRepoInvariants:
         )
 
     def test_no_runtime_dependencies(self):
-        import tomllib
-
-        cfg = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+        cfg = pyproject()
         assert cfg["project"]["dependencies"] == [], (
             "the tool must run from a bare checkout; see CONTRIBUTING.md"
         )

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-router"
+version = "0.1.0"
+description = "Cache- and context-aware cost router for Claude agent sessions"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+llm-router = "router.policy:main"
+
+[tool.setuptools]
+packages = ["router"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

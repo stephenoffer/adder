@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Launcher so the router works from any directory, installed or not.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(dirname "$here")"
+export PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m "router.$1" "${@:2}"

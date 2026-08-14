@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .cost import admitted_token_cost, placement_cost
+from .horizon import DEFAULT_REMAINING, Horizon, load as load_horizon
 from .trace import DEFAULT_ROOT, Session, Turn, iter_turns
 
 # Session-length priors measured from this machine's transcripts.
@@ -83,11 +84,18 @@ class LiveReport:
         return inline, sub, ("delegate" if d else "inline")
 
 
-def analyse(sess: Session, *, horizon: int = MEDIAN_SESSION_TURNS) -> LiveReport:
+def analyse(sess: Session, *, horizon: Horizon | None = None) -> LiveReport:
+    """Analyse a live session.
+
+    `remaining` comes from the empirical survivor function, not a countdown from
+    a typical session length. The countdown is badly wrong late in long sessions
+    (at turn 600 it says 0 when ~350 remain), which is where the money is.
+    """
     spent = sess.cost
     n = sess.n_turns
     last = sess.turns[-1]
-    remaining = max(0, horizon - n)
+    h = horizon if horizon is not None else load_horizon()
+    remaining = h.remaining(n)
     per_turn = spent / max(1, n)
     return LiveReport(
         turns=n,
@@ -110,8 +118,8 @@ def render(sess: Session | None) -> str:
     ]
     if r.projected_remaining:
         out.append(
-            f"  At the median session length ({MEDIAN_SESSION_TURNS} turns), "
-            f"~{r.projected_remaining:,} turns left → ~${r.projected_total:,.2f} total"
+            f"  Sessions that reach turn {r.turns:,} typically run ~{r.projected_remaining:,} "
+            f"more → ~${r.projected_total:,.2f} total"
         )
     out.append("")
     out.append("  Cost of reading a file into THIS context from here:")

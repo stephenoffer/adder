@@ -71,18 +71,23 @@ class TestAmortization:
 
 class TestCacheGate:
     def test_breakeven_is_ctx_over_40_optimistic_case(self):
-        """Opus->Haiku, uncached switch: profitable iff out > ctx/40."""
+        """Opus->Haiku, uncached switch: profitable iff out > ctx/40.
+
+        `check_context=False` isolates the pure break-even arithmetic; 400K does
+        not fit Haiku, and the feasibility gate is tested separately below.
+        """
         ctx = 400_000
-        below = switch_is_profitable(OPUS, HAIKU, ctx, ctx // 40 - 500)
-        above = switch_is_profitable(OPUS, HAIKU, ctx, ctx // 40 + 500)
+        below = switch_is_profitable(OPUS, HAIKU, ctx, ctx // 40 - 500, check_context=False)
+        above = switch_is_profitable(OPUS, HAIKU, ctx, ctx // 40 + 500, check_context=False)
         assert not below and above
 
     def test_realistic_write_multiplier_is_stricter(self):
         """1.25x cache write moves break-even from ctx/40 to ~ctx/26.7."""
         ctx = 400_000
         at_40 = ctx // 40 + 100
-        assert switch_is_profitable(OPUS, HAIKU, ctx, at_40)
-        assert not switch_is_profitable(OPUS, HAIKU, ctx, at_40, switch_in_mult=1.25)
+        assert switch_is_profitable(OPUS, HAIKU, ctx, at_40, check_context=False)
+        assert not switch_is_profitable(
+            OPUS, HAIKU, ctx, at_40, switch_in_mult=1.25, check_context=False)
 
     def test_declines_on_measured_median_session(self):
         """544K ctx, 818 avg output tokens -> must refuse. This is the case

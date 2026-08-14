@@ -87,10 +87,59 @@ terseness only pays if session length is held constant.
 This is why the tool reports failure rather than claiming a win — and why session
 length, not verbosity or model choice, is the dominant lever.
 
+## The unobservable at the centre of it
+
+Every placement decision multiplies by `remaining_turns` — a forecast, not a
+fact. The obvious estimator is a countdown from a typical session length. Against
+the measured distribution it is badly wrong, and wrong in the expensive direction:
+
+| at turn | countdown says | actual median | error |
+|---|---|---|---|
+| 400 | 168 | 456 | 2.7x under |
+| 600 | 0 | 350 | **infinite** |
+| 1,000 | 0 | 309 | **infinite** |
+
+Session length is heavy-tailed and close to memoryless — mean remaining turns
+stays near 500–670 regardless of position. **Reaching turn 600 is evidence you
+are in a long session, not evidence you are near its end.**
+
+The countdown therefore told the router to skip delegation in exactly the
+sessions that cost the most. Replacing it with the empirical survivor function
+flips real decisions:
+
+```
+turn   600  countdown remaining=  0   saving=$0.03  overhead=$0.36  decline
+turn   600  empirical remaining=350   saving=$1.29  overhead=$0.36  ROUTE
+```
+
+## Claims are re-tested, not asserted
+
+Every conclusion here came from one machine's transcripts at one moment. `rt
+validate` re-measures all eight foundational claims against live data and fails
+loudly when one stops holding:
+
+```
+[PASS] output drives context growth              1.02x   (38 non-compacting sessions)
+[PASS] input-side dominates spend                  90%
+[PASS] addressable pool >> baseline              12.6x
+[PASS] sessions long enough for debt to matter     594 turns
+[PASS] model routing is a minor lever              0.7%
+[PASS] attribution never exceeds measured spend  $5,860
+[PASS] horizon estimated from local data           50 sessions
+[PASS] countdown estimator is unsafe               infinite
+```
+
+This matters because the headline claim nearly died. An OLS fit of growth on
+output suggested output drove only **37%** of context, not ~100%. That was an
+artifact — output and tool results correlate, so OLS pushed shared variance into
+the intercept, and compacted sessions polluted the fit. The clean test (sessions
+that never compacted) gives **1.02x**, confirming the original claim. The lesson
+is about method, not the number.
+
 ## Install
 
 ```bash
-python3 -m pytest tests/ -q          # 108 tests, no network, no API key
+python3 -m pytest tests/ -q          # 120 tests, no network, no API key
 cp .claude/agents/*.md ~/.claude/agents/
 ```
 
@@ -101,7 +150,9 @@ at 5x the necessary rate. Four lines of YAML, no code path involved.
 ## Use
 
 ```bash
+scripts/rt validate                   # re-test the 8 claims everything rests on
 scripts/rt debt                       # true cost of an output token, and of writing less
+scripts/rt horizon                    # remaining-turns estimate vs the naive countdown
 scripts/rt savings                    # every lever, with confidence tiers
 scripts/rt verify --since 2026-08-01  # did an intervention actually land?
 scripts/rt live                       # this session: $/turn, cost of the next read
@@ -164,6 +215,10 @@ why in `.reason`. Nothing returns a bare bool.
   amortisation. The defensible claim is "better on stateful agentic workloads".
 - **Cost is list-price equivalent.** Subscription seats do not pay per token; the
   optimisation target is unchanged either way.
+- **The horizon prior is this workload's number.** With fewer than 5 local
+  sessions the estimator falls back to a flat 450-turn prior calibrated to long
+  sessions. On a short-session workload that over-estimates and makes the router
+  route too eagerly. `rt validate` flags when the fallback is in use.
 - `CLAUDE_CODE_SUBAGENT_MODEL` and org `availableModels` allowlists silently
   override model choice. Verify from the transcript's `message.model`, never from
   an agent's own claim.

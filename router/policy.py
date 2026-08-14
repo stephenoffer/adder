@@ -145,7 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     import json
 
-    from .live import MEDIAN_SESSION_TURNS, analyse, current_session
+    from .horizon import DEFAULT_REMAINING, load as load_horizon
+    from .live import analyse, current_session
 
     ap = argparse.ArgumentParser(prog="router.policy")
     ap.add_argument("task", nargs="*")
@@ -164,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
             rem = rem if rem is not None else r.projected_remaining
             model = r.model
     ctx = ctx if ctx is not None else 100_000
-    rem = rem if rem is not None else MEDIAN_SESSION_TURNS
+    rem = rem if rem is not None else load_horizon().remaining(0)
 
     p = decide(" ".join(a.task), context_tokens=ctx, remaining_turns=rem,
                session_model=model, est_read_tokens=a.read_tokens)

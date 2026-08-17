@@ -31,7 +31,42 @@ purely because its reachable share halved. **Effort** is new and ranks third: it
 only output-side lever that does *not* invalidate the prompt cache, so unlike a
 model downgrade it costs nothing to apply mid-session.
 
-Run `adder savings` to compute this table against your own history.
+Run `adder savings` to compute this table against your own history:
+
+```
+  Measured spend $4,818 across 53 sessions
+  Root cause: $3,541 of it is prior context being re-read
+
+  SUBSTITUTES - all attack the same pool; they do not add
+  $    1,941   40.3%  [MODELLED  ] Split sessions longer than 300 turns
+  $      873   18.1%  [MODELLED  ] Delegate 25% of turns to subagents
+  $      865   17.9%  [MODELLED  ] Drop effort high -> medium
+  $      703   14.6%  [ATTRIBUTED] Cut tool output admitted to context by 40%
+  $      648   13.5%  [ATTRIBUTED] Write 30% less (leverage 4.7x downstream)
+
+  COMBINED (substitutes compose multiplicatively on the residual):
+    TOTAL             $    3,253   (68% of measured spend)
+```
+
+Read the second line first. **$3,541 of a $4,818 bill, 73% of it, was not new
+work at all.** It was context that had already been paid for once, being
+re-read. Everything below that line is a different way of attacking the same
+$3,541, which is why five levers worth 104% on paper come to 68% in reality.
+
+The ranking is probably not what you expected: the top lever is not writing
+style or model choice, it is *ending sessions sooner*, because session length is
+the multiplier on everything else.
+
+### How much to trust each row
+
+| Label | Means | Trust |
+|---|---|---|
+| `MEASURED` | counted directly from your transcripts | high |
+| `ATTRIBUTED` | a share of a measured pool, split by a stated rule | medium |
+| `MODELLED` | derived from assumptions, which are printed next to the number | check the assumptions |
+
+The `MODELLED` rows are the weak link, and the tool says so instead of quietly
+rounding them up.
 
 ## The levers that are not trades
 
@@ -158,3 +193,75 @@ each lever in isolation against the read pool and has no restart term to solve.
   behind, which is the case the number is taken from.
 
 `adder prefix` reports this for your transcripts.
+
+## The whole workload under one regime
+
+`adder savings` prices each lever on its own. That answers "which one is
+biggest", not "what would my bill be". `adder plan` answers the second: it
+replays every recorded turn under a **regime**, a concrete operating
+configuration you could actually follow, and prices both sides of it.
+
+```bash
+adder plan --target 10
+```
+
+```
+  Measured spend            $     5,025   20,808 turns, 84 sessions
+  Replay of the same turns  $     5,025   residual -0.0% -- everything below is relative to this
+  Restart cadence, solved rather than assumed: 19 turns: k* = sqrt(2W/(m*r*g)) at a
+  $0.1033 restart [measured], 961 tok/turn of growth and a 0.115x re-read multiplier.
+  A restart is charged what an opening actually costs -- 74% of it is a cache read.
+  Delegation threshold, likewise: delegate reads over ~285 tok: below that the
+  400-token brief and the summary cost more than the 9 re-reads they avoid.
+
+  regime                                          total  vs baseline  tok deleg.
+  -----------------------------------------------------------------------------
+  as run                                    $     5,025         1.0x           -
+  delegate reads over 300 tok               $     1,552         3.2x         99%
+  + right-size the subagent                 $     1,039         4.8x         99%
+  + split sessions at 19 turns              $       761         6.6x         99%
+  + effort high -> medium                   $       746         6.7x         99%
+  + 30% terser, 40% less tool output        $       735         6.8x         99%
+  + start sessions on claude-sonnet-5       $       477        10.5x         99%
+
+  Target 10x means getting $5,025 down to $503.
+  The regime above reaches 10.5x. Target met, on these assumptions;
+  run `adder quality` before and after, because none of this is free.
+```
+
+**Both thresholds are solved, not chosen.** `19 turns` used to be a round `300`,
+and `300 tokens` used to be a round `5,000`. Both are set by the prompt cache,
+and both were being guessed. The arithmetic is in the two sections above.
+
+The delegation threshold is the less intuitive of the two. A shorter restart
+cycle leaves fewer re-reads to avoid, which should *raise* the threshold, and it
+does, but only to ~300 tokens. Admitting a token to an Opus context costs 2.00x
+its input rate as a cache write, while reading it once on Haiku costs 1.00x of a
+rate five times lower. Delegation is not only a carry play, and `5,000` was
+leaving most of it unused.
+
+Three things make this different from the savings table.
+
+**It reproduces your bill before it quotes a discount.** The second line is the
+whole guarantee: replay the transcripts with no regime applied and the total has
+to come back as the number you actually paid. It does, to −0.0%. Every multiple
+below it is a ratio against that. `adder validate` re-checks it, because two
+ordering bugs in the replay were caught by exactly this line and nothing else
+would have caught them.
+
+**Both sides are on the books.** A delegated read still has to be read by
+somebody, that somebody still writes a summary, and some fraction of those runs
+come back wrong and get redone on Opus. All three are charged. The saving is
+smaller than the version that only counts what left your context, and it is the
+one you would actually get.
+
+**Delegability is measured, not assumed.** Every earlier estimate here used
+"assume 25% of turns are delegable", which is a guess with a percent sign on it
+and is not a rule anyone can follow. The regime triggers on something the
+transcript records exactly, which is how many tokens a step would pull into
+context. So "delegate anything over 5,000 tokens" is checkable, followable, and
+the 23% that matches is a measurement.
+
+When no configuration on the grid meets the target, the report says so and names
+the floor, instead of searching until it finds a number that flatters the
+question.

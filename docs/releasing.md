@@ -20,7 +20,7 @@ decision on the old number.
 
 `adder/__version__` in `adder/__init__.py` is the single source of truth.
 `pyproject.toml` reads it dynamically — never restate a version there, and
-`tests/test_cli.py` fails if you do.
+`tests/cli/test_dispatch.py` fails if you do.
 
 ## Steps
 

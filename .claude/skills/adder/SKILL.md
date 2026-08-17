@@ -35,6 +35,13 @@ Ask for a **compact** result — findings and `file:line` citations, not file
 contents. The subagent's reply is re-read on every remaining turn of this
 session, so a verbose reply erases the saving that justified delegating.
 
+**If the plan lists cheaper cross-vendor subagents:** that block is
+information, not a dispatch instruction. The `model` argument of the Agent tool
+only accepts Claude models — a GPT or open-weight model is reachable from here
+only through an MCP tool or an external call, and its prices in that table come
+from an aggregator, not a first-party list. Dispatch the named Claude agent as
+above. Mention the alternative only if the user asked how to spend less.
+
 **If the subagent replies `ESCALATE: <reason>`:** dispatch once more at the next
 tier up (route-t0 → route-t1 → route-t2), including the reason in the new brief.
 Escalate at most once. If a tier already edited files before escalating, tell the
@@ -47,12 +54,27 @@ instead of a guess (`p_fail` starts at a cautious 0.5 prior and converges as
 history accumulates):
 
 ```bash
-/Users/stephen.offer/Desktop/llm-router/scripts/adder outcomes --help   # see current calibration with: adder outcomes
+adder outcomes record --tier T1 --model claude-sonnet-5 --project <name>
+adder outcomes record --tier T0 --model claude-haiku-4-5 --project <name> --escalated
 ```
 
-Record via python: `from adder.outcomes import Outcome, record` — set
-`escalated=True` if any tier replied `ESCALATE`, and pass the tier, model, and
-project. This is the only mechanism that makes adder adaptive over time.
+Pass `--escalated` if that tier replied `ESCALATE`; leave it off if the tier
+finished the work. One line per dispatch.
+
+If you would rather not log by hand, `adder outcomes import --write` recovers
+the same rows from the transcripts — every `Agent` dispatch, the tier it went
+to, and whether the result was an error or an `ESCALATE:` reply. It is
+idempotent, so run it whenever. What it cannot see is a subagent that returned a
+confident wrong answer and was believed; neither can a hand-written record, so
+the derived rate is a lower bound either way.
+
+Recording is what makes adder adaptive over time — until a tier has history, `p_fail` stays on a
+prior and the router is forbidden from routing below whatever the classifier
+asked for, however cheap the rung looks.
+
+`adder outcomes` with no arguments shows the calibration and, more usefully, how
+far each tier still is from being allowed to take work: how many more runs it
+needs and what failure rate it has to beat.
 
 ## Verify
 

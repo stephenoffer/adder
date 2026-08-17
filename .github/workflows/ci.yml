@@ -63,7 +63,7 @@ jobs:
           done
       - name: Offline guarantee
         shell: bash
-        # Nothing outside adder/sources.py may open a socket. This asserts it
+        # Nothing outside adder/pricing/sources.py may open a socket. This asserts it
         # rather than trusting review to catch a stray import.
         run: |
           python - <<'PY'
@@ -84,7 +84,7 @@ jobs:
                       if m.split(".")[0] in NET:
                           bad.append(f"{f}:{node.lineno}: imports {m}")
           if bad:
-              print("network import outside adder/sources.py:")
+              print("network import outside adder/pricing/sources.py:")
               print("\n".join(bad))
               sys.exit(1)
           print("offline guarantee holds")

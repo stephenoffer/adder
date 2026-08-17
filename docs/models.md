@@ -72,9 +72,40 @@ p_fail  = p_loss × UNUSABLE_GIVEN_LOSS                  # one named prior, curr
 ```
 
 Both are printed. `p_loss` is derived from measured public votes; `p_fail`
-carries a prior that is visible and adjustable, and `outcomes.p_fail` replaces
-the whole thing with measured retry history from your own sessions as soon as
-there is any.
+carries a prior that is visible and adjustable.
+
+That prior was the weakest thing in this module, so it gets two defences.
+
+**It is fitted where it can be.** The outcome log records how often a tier
+really escalated. The arena says how often that tier's model loses a comparison
+to the escalation target. The ratio of those two *is* the constant:
+
+```
+unusable_given_loss = measured_escalation_rate / modelled_preference_loss
+```
+
+Wherever there is enough history the number stops being a prior and becomes a
+fit with a sample size attached, and the row says which it used. Three cases
+refuse the fit rather than produce a confident quotient: a tier with nothing to
+escalate to (a model compared with itself gives a preference loss of 0.5, not
+0, so this has to be rejected by identity and not by a threshold), an unrated
+model, and a gap that sits inside the arena's own error bars.
+
+**Where it cannot be fitted, its influence is measured instead.** `adder pick
+--combos --sensitivity` sweeps the constant across the range it is plausibly
+wrong over and reports whether the winning plan changes:
+
+```
+  stable: single (deepseek-v4-flash) wins across the whole plausible range of
+  unusable_given_loss over [0.15, 0.60]
+```
+
+Most of the time the cost gaps between plans are wider than any plausible value
+of the constant can move, and saying so is worth more than another decimal
+place. When they are not, the output says `UNSTABLE`, names the value where the
+winner flips, and tells you to prefer the plan that wins at the pessimistic
+end — because a recommendation that turns on an unmeasured number is a coin
+flip with a dollar sign on it.
 
 Arena Elo measures human preference on chat and web-dev prompts. It does not
 measure multi-file agentic tool use, which is what these sessions actually do.
@@ -82,7 +113,28 @@ Anything derived from it is labelled MODELLED for that reason. The `webdev`
 board is preferred over `text` because a router that ranks on prose picks a
 prose model.
 
-### 3. Quoting a placement that does not exist
+### 3. Reading a rating as if it had no error bar
+
+The arena publishes a 95% interval with every rating, and the first version of
+this code threw it away. At the top of the webdev board the half-width is about
+10 points, so the 17-point gap between the first and second model is two
+overlapping intervals — a difference the source itself does not claim. Deriving
+a confident 52% preference loss from it is inventing precision.
+
+Comparisons are now conservative: the candidate is taken at the bottom of its
+interval and the reference at the top of its own, so the estimate never claims
+a substitute is closer to the reference than the evidence supports, and a
+ranking says outright when the arena cannot separate two models. The correction
+is worth about three points of `p_loss` on current data — small, and worth
+stating at its real size rather than dramatising.
+
+One related disclosure: the arena ranks reasoning efforts as separate
+contestants (`claude-opus-5-max` and `claude-opus-5-high` are different rows)
+while the price table has one price per model. The catalog keeps the best
+rating and records which variant earned it, and any row quoting a max-effort
+rating against default-effort pricing says so.
+
+### 4. Quoting a placement that does not exist
 
 Two gates catch this:
 
@@ -93,7 +145,7 @@ Two gates catch this:
   external call — it cannot *be* the session. `adder pick --harness any` relaxes
   this for harnesses that route natively.
 
-There is a third, quieter one. Anthropic charges 0.10x input to read a cached
+There is a quieter one. Anthropic charges 0.10x input to read a cached
 prefix and 1.25x to write it. Other providers do not, and some publish nothing.
 Since the dominant term in a long session is `cache_read × remaining_turns`, a
 multiplier borrowed from Anthropic and applied to another vendor is not a
@@ -130,6 +182,13 @@ decides it:
 | **draft-review** | review is much cheaper than generation | the reviewer needs the context the drafter explored |
 | **panel** | the answer is checkable | N runs fail together and agreement looks like consensus |
 
+The panel row reports **no** quality number. The obvious formula lifts the
+rating by the best-of-N win rate, which requires the N runs to fail
+independently; runs of one model on one prompt do not, and nobody has published
+the correlation. Any number there would be a constant picked to make the row
+look reasonable, so the column is empty and the cost — which is exact — still
+gets priced.
+
 A cascade's quality is not the strong model's rating. It is the strong model's
 rating discounted by the failures detection misses, because an undetected
 failure is precisely the case where the cascade did not work:
@@ -141,6 +200,64 @@ quality       = elo_strong - p_fail × (1 - detection) × (elo_strong - elo_chea
 
 Lower detection makes a cascade look cheaper *because it is worse*. Both
 numbers are printed so that trade is visible rather than hidden in an average.
+
+## Where a substitution is actually safe
+
+`adder policy` will name another vendor's model, but only under one placement.
+
+The standing objection to "just use a cheaper model" is the prompt cache: it is
+model-scoped, so moving a warm session rebuilds the whole prefix, and on this
+machine's history per-turn model downgrades were worth $21 out of $4,818. That
+objection is about the *session*. It does not apply to a subagent, which starts
+cold — no prefix to invalidate, a summary that costs the same to carry no
+matter who produced it, and a failure contained to one run.
+
+So delegation is the one placement where the vendor is genuinely free, and it
+is the only one `policy.substitutes()` says anything about. Even there it
+prices the substitute as a cascade rather than a swap:
+
+```
+expected = subagent_run + p_fail × cost_of_redoing_it_on_the_claude_tier
+```
+
+and it holds the substitute to the tier's quality tolerance — 120 Elo points at
+T0, 40 at T2, because a lookup can afford a weaker model and a multi-file
+refactor cannot.
+
+Both sides of that comparison are the **subagent leg only** — what the model
+charges to do the work. The summary it returns is admitted and carried at the
+session model's rate no matter who produced it, so including that term would
+apply the escalation multiplier to a cost neither candidate controls, and on a
+long session it is large enough to swamp the difference the choice is actually
+about.
+
+`p_fail` itself is two numbers composed, not one. The outcome log measures how
+often *this tier* escalates on this project; the arena measures how much weaker
+the *substitute* is than the model that tier names. Neither answers the question
+alone, so `select.blend_p_fail` treats them as independent failure modes —
+`measured + (1 - measured) x elo_gap` — and each row says which basis it used.
+
+Run it on this repo's own measurements and the answer is usually no:
+
+```
+  - cheapest cross-vendor subagent (qwen3.8) saves $0.136 against $0.160 of routing overhead;
+    the placement was the lever, not the vendor
+```
+
+A 14-cent saving on a subagent that a routing turn cost 16 cents to choose is
+not a saving. The substitution only clears the bar on genuinely large reads,
+where the subagent's own run is a real number rather than a rounding error:
+
+```
+  Cheaper subagents that clear this tier's quality bar (a subagent starts cold, so
+  there is no model-scoped cache to rebuild; priced including escalation):
+    qwen3.8                      $  1.181 vs $2.020   saves $0.839  elo 1,669, p_fail 19% (elo)
+    kimi-k3                      $  1.583 vs $2.020   saves $0.437  elo 1,674, p_fail 18% (elo)  [open weights]
+```
+
+That is the same shape as every other finding here. The money is in what enters
+the context and how long it stays, not in the per-token price of whoever
+answers.
 
 ## Keeping the ladder honest
 

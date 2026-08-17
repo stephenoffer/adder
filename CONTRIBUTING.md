@@ -46,7 +46,7 @@ Checklist:
 - [ ] Tests pass, and new behaviour has a new test in the same commit.
 - [ ] `ruff check .` is clean.
 - [ ] No new runtime dependency (see below if you think you need one).
-- [ ] No network call outside `adder/sources.py`.
+- [ ] No network call outside `adder/pricing/sources.py`.
 - [ ] Tests do not read the real `~/.claude` directory.
 - [ ] `git status` has no untracked junk.
 - [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` if the change is
@@ -55,11 +55,18 @@ Checklist:
 
 ## Adding a command
 
-1. `adder/<name>.py` with a `main(argv: list[str] | None = None) -> int` and
-   its own `argparse` parser.
-2. One `Command(...)` row in `COMMANDS` in `adder/cli.py`.
-3. `tests/test_<name>.py`.
+1. `adder/<layer>/<subject>/<name>.py` with a
+   `main(argv: list[str] | None = None) -> int` and its own `argparse` parser.
+   Which layer, and why: `docs/structure.md`. Reports go under `measure/`,
+   recommendations under `decide/`, checks of a recommendation under
+   `evaluate/`. The foundation — `util`, `pricing`, `core` — holds no commands.
+2. One `Command(...)` row in `COMMANDS` in `adder/cli/commands.py`.
+3. `tests/<the same path>/test_<name>.py`.
 4. A row in `docs/commands.md` and, if it is user-facing, in the README table.
+
+If adding the file makes its directory the 13th Python file, split the
+directory first — `tests/repo/test_structure.py` will fail otherwise, and the
+message will say where.
 
 The dispatcher deliberately does not re-declare per-command flags. Each module
 owns its own parser so `adder <name> --help` is always accurate.
@@ -77,9 +84,10 @@ Dev-only tools (`pytest`, `ruff`, `build`, `twine`) go in
 
 ## Test conventions
 
-- One test module per router module, same name: `adder/cache.py` ->
-  `tests/test_cache_ttl.py` style names are fine as long as the mapping is
-  obvious.
+- The test tree mirrors the package tree, directory for directory:
+  `adder/measure/window/cache.py` -> `tests/measure/window/test_cache*.py`.
+  A `test_<module>_<aspect>.py` second file is fine; a test at the top of
+  `tests/` is not.
 - Build fixtures with `tmp_path`. Never touch the real transcript directory.
 - Warnings are errors. If a dependency-free change raises a `DeprecationWarning`
   on a newer Python, fix the code rather than filtering the warning.

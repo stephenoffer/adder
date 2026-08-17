@@ -20,3 +20,13 @@ delegate wide searches rather than running them inline.
 Report outcomes faithfully: if tests fail, say so with the output; if you skipped
 part of the task, say that. Summarize what changed in a few lines rather than
 pasting file contents back.
+
+**Return under 1,000 tokens.** Everything you hand back is admitted to the
+caller's context and re-read on every remaining turn of their session, so a
+return is charged hundreds of times over while your own reads are charged once
+and thrown away. That asymmetry is the whole reason you exist. Measured on this
+machine, subagent returns run 193 tokens at the median and 3,723 at p90 — the
+budget is set where that tail is, not where the centre is.
+
+If the answer genuinely does not fit, return the findings and the `file:line`
+citations to reach the rest, never the contents.

@@ -37,6 +37,54 @@ Copy to `.claude/agents/` in the target project, or `~/.claude/agents/` for all
 projects. **Show a diff against any existing file and get confirmation before
 overwriting** — a user may already have an Explore agent they rely on.
 
+## The hook, which is the part that actually prevents spend
+
+Everything else adder ships is a report, and a report saves nothing until
+somebody acts on it. The agent files and the PreToolUse guard are the only two
+components that act without being obeyed, and `adder bench` prices that pair on
+its own — on the author's history, **1.5x of the 1.6x "installed and changed
+nothing" figure is the guard**. Offer it, and say what it does before writing
+anything.
+
+`.claude/hooks/pretooluse_read_guard.py` prices a read **before** it lands in
+context and injects the price plus the alternative. It is advisory: it never
+denies a call, and it never blocks silently.
+
+```json
+{"hooks": {"PreToolUse": [{"matcher": "Read|Bash|Grep",
+   "hooks": [{"type": "command",
+              "command": "python3 /abs/path/.claude/hooks/pretooluse_read_guard.py"}]}]}}
+```
+
+Rules for offering it:
+
+- **Read the user's existing `settings.json` and show a diff first.** A hooks
+  block is easy to clobber; another PreToolUse hook may already be registered
+  and both must survive.
+- It fires on a **cost** (`ADDER_GUARD_MIN_COST`, default $0.25), not a token
+  count, because the same read is worth interrupting for at turn 400 and not at
+  turn 3. Do not suggest tuning it before running `adder bench`, which reports
+  whether the dollar gate or the token floor is the binding constraint — on this
+  workload it is the floor, so tuning the dollar gate would change nothing.
+- `ADDER_GUARD_BLOCK=1` escalates from advice to a confirmation prompt on very
+  large reads. Off by default, and it should stay off until the user has seen
+  the advisory version fire a few times.
+
+## Bootstrap the routing evidence
+
+The tier agents cannot route below what the classifier asked for until the
+outcome log has history at that rung, and on a fresh install it has none. If the
+user has delegated before, the evidence is already in their transcripts:
+
+```bash
+adder outcomes import          # dry run — shows what it found
+adder outcomes import --write  # append it
+```
+
+Say what it can and cannot see: an error result or an `ESCALATE:` reply is an
+observed failure; a subagent that returned a confident wrong answer is invisible,
+so the rate is a lower bound. Do not run `--write` without asking.
+
 ## After installing
 
 Tell the user plainly:

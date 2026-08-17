@@ -5,29 +5,55 @@ cache-aware cost model, and then read by a set of independent report modules. A
 dispatcher maps a command name to one of those modules. Nothing else happens.
 
 ```
-~/.claude/projects/**/*.jsonl
-          |
-          v
+~/.claude/projects/**/*.jsonl        any usage log: OpenAI, Gemini,
+          |                          OTel, LiteLLM, generic .json/.jsonl
+          |                                    |
+          v                                    v
    trace.iter_file          parse + DEDUPLICATE by message.id
-          |
+          |                 falls back to core/ingest.py, which sniffs the
+          |                 format PER RECORD and normalizes it
           v
    Turn / Session           the only shared data model
           |
     +-----+---------------------------+
     |                                 |
     v                                 v
- prices.py / catalog.py            cost.py
- what a token costs, by date       what a turn costs, given the cache
+ pricing/registry.py               pricing/cost.py
+ one resolution point for any      what a turn costs, given the cache
+ model: prices.py (first-party,    economics of the provider that
+ dated) < catalog.py (~500         actually served it
+ models) < providers.py (per-
+ vendor cache mechanics)
     |                                 |
     +-----+---------------------------+
           |
           v
    report modules            live, debt, context, cache, quality, horizon,
-   (one per command)         savings, verify, validate, regret, simulate, ab,
-          |                  policy, outcomes, classify, select, models
+   (one per command)         tools, sessions, agents, anomaly, effort, budget,
+          |                  export, savings, verify, validate, regret,
+          |                  simulate, plan, bench, ab, doctor, policy,
+          |                  outcomes, classify, select, models
           v
        cli.py                name -> module, lazily imported
 ```
+
+Two tables sit underneath the pricing layer and are pure data, both overridable
+from a file so a new vendor never needs a fork. `pricing/providers.py` holds how
+each provider *bills* caching — explicit or automatic, what a write costs, what
+a read costs, whether a TTL is even selectable — because that shape, not the
+per-token price, is what the carry term turns on. `core/harness.py` holds what
+each agent runtime makes *possible*: Claude Code pins the main session to
+Anthropic, Codex to OpenAI, Gemini CLI to Google, and quoting an inline price
+for a model the harness cannot run as its session is quoting a placement that
+does not exist. See `docs/providers.md`.
+
+Three small modules sit beside that pipeline rather than inside it, and every
+report may use them: `stats.py` (quantiles and robust scale), `render.py`
+(money, tokens, tables, colour), and `filters.py` (the `--since`/`--project`
+window). They exist because each replaced several disagreeing copies — three
+definitions of a p90, fifteen dollar formats, two incompatible date boundaries.
+None of them import anything from the rest of the package, so nothing in the
+pipeline depends on the order they load.
 
 ## The layers
 
@@ -66,6 +92,23 @@ prefix.
 else. This is why adding a command is a one-row change: there is no shared
 report framework to extend.
 
+**Utilities (`stats.py`, `render.py`, `filters.py`, `config.py`).** Leaves of
+the dependency graph, deliberately. `stats.py` owns every quantile in the
+project — one estimator, linear-interpolated, so `median()` and `quantile(0.5)`
+agree by construction and the "p90" is never quietly the maximum. `render.py`
+owns formatting, including the rule that a cost below a cent must not print as
+`$0.00`. `filters.py` owns the half-open `--since`/`--until` window, so two
+adjacent windows partition the data exactly. `config.py` is the single registry
+of every setting and environment variable, and `adder config` prints not just
+the value but the layer that set it — which is the half that matters when two
+machines disagree about the same transcripts.
+
+**Aggregation (`doctor.py`).** The one module that calls other reports. It runs
+each check, prices the finding, and sorts by dollars at stake. It computes
+nothing itself: every measurement comes from the module that owns it, because a
+summary command that reimplements the cost model is a second answer waiting to
+disagree with the first.
+
 **Dispatch (`cli.py`).** A table of `Command` rows mapping a name to a module,
 imported lazily so `adder live` does not pay to import the A/B harness. The
 dispatcher never re-declares a command's flags, so `adder <cmd> --help` is always
@@ -73,14 +116,14 @@ the module's real parser.
 
 ## Load-bearing invariants
 
-Each of these is enforced by a test in `tests/test_cli.py` or by a module's own
+Each of these is enforced by a test in `tests/cli/test_dispatch.py` or by a module's own
 tests, not just by convention. They are listed in `CLAUDE.md` as rules; here is
 why they exist.
 
 - **Deduplicate by `message.id`.** Without it, every figure in the project is
   ~1.78x too high.
 - **No network outside `sources.py`.** A cost report that silently depends on a
-  third party breaks in CI at the worst moment. `tests/test_cli.py` walks the
+  third party breaks in CI at the worst moment. `tests/cli/test_dispatch.py` walks the
   AST of every module and fails on a networking import.
 - **No runtime dependencies.** The tool must run from a bare checkout on any
   machine with Python 3.10+, including one with no reachable package index.
@@ -106,18 +149,41 @@ rather than as a merge conflict inside a shared object.
 
 ## Where things live
 
+The package is a tree, not a directory. Seven layers, and an import may only
+point *down* the list -- `tests/repo/test_structure.py` fails the build if one
+points up. See `docs/structure.md` for the rules and how to add to it.
+
 ```
 adder/
-  cli.py         dispatcher; the command table
-  trace.py       parsing, dedup, Turn/Session, parse cache
-  cost.py        the cache- and context-aware cost model
-  prices.py      first-party Claude rates, date-aware
-  catalog.py     provider-agnostic model data, layered and provenanced
-  sources.py     catalog refresh — the only networked module
-  data/          bundled catalog snapshot, shipped in the wheel
-  <report>.py    one per command; each owns its own parser
-tests/           one module per adder module
+  __init__.py    version only
+  __main__.py    `python -m adder`
+  util/          no domain at all: render, stats, risk, text
+  pricing/       what a token costs: prices, catalog, providers, registry,
+                 cost, bt, sources (the only networked module), data/
+  core/          reading a session off disk: trace, filters, settings, shapes
+  measure/       read-only reports, grouped by subject
+    spend/       where the money went: trace, sessions, debt, export, …
+    window/      what fills the context: context, cache, carry, prefix, tools
+    session/     how one session behaves: live, horizon, quality, effort
+  decide/        measurement -> choice
+    route/       where a task runs: classify, policy, select, cascade, frontier
+    track/       the record of past choices: outcomes, ledger, dispatch
+    guard.py     what a tool call is allowed to admit into the context
+    handoff.py   what is worth carrying into a fresh session
+  evaluate/      did the advice hold up
+    replay/      re-run recorded work under a counterfactual: simulate, bench
+    claims/      re-derive a published number: validate, savings, verify
+    doctor.py    runs every check and ranks the findings by dollars
+  cli/           dispatcher, command table, help, completion, config
+tests/           mirrors the package tree, directory for directory
 docs/            the reasoning; the README summarises it
 scripts/adder    launcher for a checkout; delegates to adder.cli
 .claude/         agents, hooks, skills — part of the product, tracked
 ```
+
+The split that matters most is `core/trace.py` against
+`measure/spend/trace.py`. The first reads and deduplicates transcripts and is
+imported by nearly every other module; the second is the `adder trace` report.
+They were one file, which meant the PreToolUse hook -- which runs on every
+submit -- imported an argparse parser and a printing routine to ask what a
+session had cost.

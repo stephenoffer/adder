@@ -32,11 +32,17 @@ lint: ## Lint (no changes written)
 fmt: ## Auto-fix lint findings
 	$(PY) -m ruff check --fix .
 
+.PHONY: structure
+# The layout rules from docs/structure.md, on their own so the failure is
+# readable: breadth caps, layer direction, and the test-tree mirror.
+structure: ## Check the package layout rules
+	$(PY) -m pytest -q tests/repo/test_structure.py
+
 .PHONY: check
 check: lint test ## What CI runs: lint + tests
 
 .PHONY: smoke
-# The command list is read from adder/cli.py rather than restated here, so a
+# The command list is read from adder/cli/commands.py rather than restated here, so a
 # new command is covered by this target the moment it is registered.
 smoke: ## Every subcommand answers --help without importing the world
 	./scripts/adder help >/dev/null
@@ -48,6 +54,21 @@ smoke: ## Every subcommand answers --help without importing the world
 	    done
 	@echo "all subcommands respond to --help"
 
+.PHONY: doctor
+doctor: ## Run every check against your own transcripts, ranked by dollars
+	./scripts/adder doctor
+
+.PHONY: guard
+guard: ## Learn result sizes from your transcripts, then price what the guard would say
+	./scripts/adder guard --learn --replay
+
+.PHONY: gate
+# Exit non-zero when something material is wrong. Intended for a pre-push hook
+# or a scheduled job, not for CI on this repo -- it reads the machine's own
+# transcripts, which a CI runner does not have.
+gate: ## Fail if any check finds something material
+	./scripts/adder doctor --strict
+
 .PHONY: build
 build: clean ## Build sdist + wheel into dist/
 	$(PY) -m build
@@ -58,7 +79,7 @@ verify-dist: build ## Check the built artifacts are PyPI-valid and carry data fi
 	@$(PY) -c "import zipfile,glob,sys; \
 w=glob.glob('dist/*.whl')[0]; n=zipfile.ZipFile(w).namelist(); \
 print('wheel:', w); \
-missing=[p for p in ('adder/cli.py','adder/py.typed') if p not in n]; \
+missing=[p for p in ('adder/cli/__init__.py','adder/cli/commands.py','adder/py.typed','adder/pricing/data/catalog.json') if p not in n]; \
 sys.exit('missing from wheel: %s' % missing) if missing else print('wheel contents ok')"
 
 .PHONY: clean

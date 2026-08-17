@@ -23,7 +23,7 @@ Records are now grouped by `message.id`, keeping the record with the highest
 completes, so keeping the *first* instead undercounts output by 2.6%.
 
 This is the kind of error that makes a cost tool worse than no cost tool, so it
-is tested directly (`tests/test_trace_dedup.py`).
+is tested directly (`tests/core/test_trace_dedup.py`).
 
 ## What the corrected data says
 
@@ -60,6 +60,47 @@ read content, not written.)*
 other tool combined. **No writing-style instruction can reach it.** That is why
 the agents carry explicit output-bounding rules (`head`, `wc -l`, `grep -n -m`)
 alongside the terseness rules.
+
+## The same bug, twice more
+
+Deduplication by `message.id` fixed the version of this that was costing 1.78x.
+It is a *class* of bug, not one bug, and two more instances of it were found
+later in the same data.
+
+**Across files.** `iter_file` deduplicates within a transcript. Nothing
+deduplicated *between* transcripts, and there are two routine reasons the same
+turn appears in two files: a resumed session writes a new `.jsonl` that replays
+earlier turns, and a sidechain file restates the parent turn it branched from.
+Both carry the original `message.id`. `load_sessions` now keys on
+`(session id, message id)` — the session id is part of the key because message
+ids are only unique within a conversation, and dropping it would collapse two
+genuinely different turns that happened to share one.
+
+**Within a message, for tools.** The tool report attributes each `tool_result`
+to the `tool_use` block that asked for it. Deduplicating those records by
+message id discards every `tool_use` block after the first, because one record
+per content block means a turn that called three tools is three records sharing
+one message id. The results then reference ids the scan has never seen, and
+land in an `unknown` bucket: **56% of measured context growth was attributed to
+a tool called `?`** until the dedup key was changed to the block id.
+
+The lesson both times is the same one the original bug taught. The transcript
+format repeats itself in more than one dimension, so *every* aggregation over it
+has to name the key it is unique on, and a bucket labelled "unknown" that holds
+a majority of the total is a broken join rather than a finding.
+
+## A third counting error, in the other direction
+
+Not every assistant record is a turn. Claude Code writes one with the model id
+`<synthetic>` when the *client* produced the message — "API Error: Connection
+closed mid-response", an interrupted stream, a context that would not fit. Their
+usage block is all zeros and nothing was billed.
+
+Counted as turns they inflate the turn count and depress every per-turn average.
+Counted as an unknown model they raise a "this report is a lower bound" warning
+about spend that does not exist. They are neither, and are now reported as what
+they are: a count of client-side failures, which `adder quality` treats as a
+performance proxy rather than a cost one.
 
 ## Two traps in counting output
 

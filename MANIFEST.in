@@ -6,7 +6,7 @@ include CONTRIBUTING.md
 include SECURITY.md
 include pyproject.toml
 include adder/py.typed
-recursive-include adder/data *.json
+recursive-include adder/pricing/data *.json
 recursive-include tests *.py
 recursive-include docs *.md
 

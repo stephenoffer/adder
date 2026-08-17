@@ -10,37 +10,49 @@ disable-model-invocation: false
 Every report below was computed locally from transcript files before this prompt
 was assembled. **They cost zero model tokens.** Do not recompute them.
 
+## The ranked answer
+
+```
+!`/Users/stephen.offer/Desktop/llm-router/scripts/adder doctor`
+```
+
 ## This session, right now
 
 ```
 !`/Users/stephen.offer/Desktop/llm-router/scripts/adder live`
 ```
 
-## Where context growth comes from
+## Going deeper
 
-```
-!`/Users/stephen.offer/Desktop/llm-router/scripts/adder context`
-```
+`adder tools`, `adder savings`, `adder debt`, `adder context`, `adder anomaly`,
+`adder reread` and `adder agents` each go deeper on one finding. Run one **only**
+if the two reports above point at it.
 
-## What an output token really costs
+That instruction is priced, not stylistic. This prompt is context: written once,
+re-read every remaining turn. The two reports above are ~1,300 tokens — **$0.20
+to carry through 300 more turns on Opus 5**. Also inlining `tools` and
+`savings`, which restate findings `doctor` has already ranked, made it ~2,400
+tokens and **$0.38**: a third of this diagnosis spent saying the same thing
+twice.
 
-```
-!`/Users/stephen.offer/Desktop/llm-router/scripts/adder debt`
-```
-
-## What each lever is worth
-
-```
-!`/Users/stephen.offer/Desktop/llm-router/scripts/adder savings`
-```
+The exception is `adder guard`. It is the only component that prevents spend
+rather than reporting it, and an uninstalled guard is indistinguishable from a
+quiet one. `doctor` fails its `guard` check when it is not installed.
 
 ## How to read this to the user
 
-**Lead with the split, not with "write less".** Context growth is roughly half
-assistant output and half read content (tool results, mostly `Bash`). Terseness
-only reaches the first half; bounding tool output only reaches the second. Quote
-the measured split from `adder context` rather than assuming — it differs per
-workload, and the advice inverts when reads dominate.
+**Lead with `doctor`'s top finding.** It is already ranked by dollars at stake,
+and that ranking is the answer to "where do I start". Do not re-derive an order
+from the other reports; if you disagree with the ranking, say why in a sentence
+rather than silently reordering it.
+
+**Then the split, not "write less".** Context growth is roughly half assistant
+output and half read content (tool results, mostly `Bash`). Terseness only
+reaches the first half; bounding tool output only reaches the second. Quote the
+measured split from `adder tools` rather than assuming — it differs per
+workload, and the advice inverts when reads dominate. `adder tools` also names
+the specific lever for the worst tool, which is more actionable than "be
+concise": pipe through `head`, pass `offset`/`limit`, delegate the read.
 
 Then the number that changes behaviour: what 10K tokens added to the *current*
 context costs over the rest of this session, from `adder live`.
@@ -65,6 +77,10 @@ Rules for reporting honestly:
   conversation.
 - **Never quote a saving without the feasibility check.** Haiku holds 200K; the
   median peak context here is 544K.
+
+- **`at stake` is not a promise.** `doctor` prices what the measurement says is
+  addressable. Levers overlap, so fixing two does not save the sum of both;
+  `adder plan` is the only figure with the overlap removed.
 
 Recommend at most the top two levers. Then tell them how to check it landed:
 `adder verify --since YYYY-MM-DD`, which reports failure when cost did not fall,

@@ -11,7 +11,718 @@ without a stated reason is a regression, not a change.
 
 ## [Unreleased]
 
+
+- **The guard now sees the aggregate, which is where most of the money is.**
+  Its per-call view was structurally blind to the largest single admission
+  channel, and no amount of calibration could fix that: across 222 local
+  transcripts, **32 session-and-shape pairs exceed 20K cumulative tokens and
+  together account for 19.7% of every Bash result token in the corpus** (1.38M
+  of 7.0M). The biggest is `sed -n 'A,Bp'` -- a *bounded* read the guard is
+  right to wave through every single time -- at **246 calls, a 513-token
+  average, and 126,222 tokens into one session**. Every one of those calls
+  really was small. The guard now counts what each command shape has admitted,
+  bounded calls included, and says so once when the running total is worth
+  more than saying it. It claims half the carry rather than all of it: the
+  tokens already admitted cannot be un-admitted, and only the calls still to
+  come can be avoided. `adder validate` checks the premise rather than quoting
+  it: aggregated by shape, the ones that clear the threshold hold **47% of all
+  Bash result tokens against 4%** in calls big enough for a per-call gate to
+  see. A workload of a few big calls will fail that claim, and should — there
+  the aggregate rule is not earning its state.
+- **A subagent cannot be advised to use a subagent.** `Task` and `Agent` were
+  priced through `placement_cost`, so the guard would tell a subagent call
+  "~$0.20 delegated to a subagent" -- modelling delegating a delegation, and
+  quoting a saving from an option that had already been taken. They are now
+  priced against a **brief**: the subagent's reads are already outside the main
+  window, so the only lever left is the size of what comes back, and the
+  comparison is against a 1,000-token return.
+- **`adder guard` leads with whether the guard is installed at all**, and
+  `doctor` fails when it is not. An uninstalled hook, a broken hook and a
+  correctly quiet one are indistinguishable from the outside, which makes this
+  the most valuable line in the report -- and the first thing it said on the
+  author's own machine was that nothing had ever been preventing spend here.
+  `--install` prints the settings block rather than writing it, the precedent
+  `adder config --init` set and one that matters more for a hook.
+- **`--explain` takes a path as well as a command**, and a `Read` sized from
+  the filesystem is no longer described as a prior. A byte count is a stronger
+  measurement than any quantile over past calls, and labelling it "no local
+  history for this shape" reported a measurement as a guess.
+- **The size model's path and staleness resolve at call time**, like
+  `guard.Settings` and `render.color_enabled` before them. Captured at import
+  they named a file under the user's home that no test could redirect, so the
+  suite read and wrote the developer's own model.
+
+
+- **`adder guard --replay` -- what this guard, at these settings, would have
+  done to transcripts already paid for.** Replayed over 29,464 tool calls in 80
+  local sessions it would speak **236 times (0.80% of calls)**, cost a
+  transcript parse on **1.44%**, and be worth **$85 against $2.58 of advice**.
+  Quoted as an upper bound and labelled as one: the horizon is the projected
+  one rather than the turns that really remained, the saving assumes the advice
+  is acted on, and a call it talked someone out of would have changed
+  everything after it.
+- **Building the replay immediately found a bug that had inflated the guard's
+  own value 12x.** Its eight largest findings were duplicate reads of PNG
+  screenshots worth $25-$31 each, because `read_estimate` sized every file as
+  `bytes / 4`. An image is billed by its dimensions and capped near 1,600
+  tokens however many megabytes it is on disk, so a 1MB screenshot was being
+  priced at 250,000 tokens. Corrected, the guard's modelled value on this
+  workload falls from **$1,053 to $85** -- which is the number worth having,
+  because the first one was a confident wrong number and those are the only
+  kind this project treats as a defect. Archives, fonts, media and databases
+  now get no estimate at all rather than a guess.
+- **The routing tiers and the guard now state one return budget**, and a test
+  fails if they drift. The guard prices a `Task` against 1,000 tokens; the
+  tier files told a subagent "a few lines" and Explore told it "500 words". A
+  measurement sets it: returns here run 193 tokens at the median and 3,723 at
+  p90, and the budget goes where the tail is.
+- **The advice names a number.** "Bound it" cannot be acted on without doing
+  the arithmetic, and the arithmetic depends on where in the session you are:
+  the guard now solves for the largest read that stays under its own floor and
+  says so -- 583 lines with 50 turns left, 39 with 900. The same reason the
+  trigger is a cost and not a token count, applied to the advice.
+
 ### Added
+
+- **The guard's last assumption is now measurable.** `guard_advice_taken` is
+  the one term the solvency gate rests on and the only one nothing measured.
+  Fires are recorded (a shape, never a command; a basename, never a path) and
+  `uptake()` asks the transcript what happened next: were later calls of that
+  program bounded more often than earlier ones, was the duplicate file read
+  again. Both halves are formats this project writes itself -- nothing parses a
+  record shape it did not author. Below ten judged findings the report says the
+  assumption stands; above it, `validate` and `doctor` switch to the measured
+  rate on their own, so the solvency claim moves on evidence rather than
+  staying anchored to a default. The first version matched later calls on the
+  full command *shape*, which can never see the improvement it measures --
+  `cat f` is what gets advised about and `cat f | head -20` is what compliance
+  looks like.
+- **A PreCompact hook that re-learns result sizes while the session is already
+  paused.** The size model is refreshed when somebody remembers to run
+  `--learn`; compaction is the moment that fixes it, since it only happens in a
+  long session, a stale model costs most there, and the context is already
+  stopping. It **prints nothing** -- no `hookSpecificOutput` at all -- so it
+  cannot inject tokens mid-compaction and does not depend on what a PreCompact
+  hook is allowed to return. A no-op unless the model is actually stale.
+  `adder guard --install` now emits both hooks.
+
+### Added
+### Added
+
+- **`adder memory`: the always-loaded prefix, priced per file.** `adder prefix`
+  measured that a session opening is ~74% cache read and the conclusion —
+  restarts are cheap — was over-read into "the size of the floor does not
+  matter". A floor token is read once per *turn*, not once per session, and
+  unlike a tool result it is never compacted away: compaction rebuilds the
+  prefix from the same file, so its survival term is 1.0 forever. Measured
+  here, 1,000 resident tokens cost **$0.31 per session** — $5.59 across the 18
+  sessions this project has on record, $32.64 in a user-level file that all 105
+  load. Scope decides which count applies, and pricing a project file against
+  every session on the machine over-states it several fold. That is the unit an
+  edit to `CLAUDE.md` should be priced in (`--what-if`). The report separates resident text from
+  load-on-demand text — a skill's `description` is resident, its body is not,
+  so a 40,000-token skill library costs less than a 3,000-token instruction
+  file — and names what is duplicated, stale, unindexed, or over-long. What it
+  cannot see (system prompt, tool schemas: 93% of the opening context here) is
+  reported as `unaccounted` rather than attributed to a file someone is about
+  to edit.
+- **`adder reread`: content admitted to a context that already held it.** A
+  file read on turn 8 is still resident on turn 140; reading it again buys
+  nothing and pays its whole carry a second time. **$6.88 across 31 identities**
+  on this machine. The report refuses to conflate two cases that look identical
+  in a transcript: a *redundant* copy (byte-identical to one already resident,
+  recoverable in full) and a *refresh* (the result changed, the call was
+  justified) — reporting them together would tell someone their test runs are
+  waste. For things re-learned across many sessions it prints a **note budget**:
+  the largest resident note that still beats re-reading them, which comes out at
+  4–46 tokens here. That is the arithmetic behind advice this repo does not
+  otherwise give — *do not write it down* — and it exists because "just put it
+  in CLAUDE.md" is free only if nobody prices the note.
+- **`adder compact`: compaction as a trade with a threshold.** It pays a rebuild
+  and buys a smaller prefix on every remaining turn, so it is worth doing when
+  `remaining_turns > kept * write_mult / (freed * read_mult)` — a few dozen
+  turns at the measured multipliers. The common failure is therefore not
+  compacting too often but carrying a full context for hundreds of turns: 9
+  compactions on record (median survival **6%**, not the 35% the model
+  conservatively assumes) netted **+$1,857**, against 18 sessions that never
+  compacted at all, worth **$718**. That second figure is simulated turn by turn
+  against what actually happened, because a compacted context *refills* while an
+  un-compacted one is pinned against the ceiling; pricing freed tokens as a
+  constant saving over 348 turns over-stated it by 16%.
+- **`adder handoff`: what may cross a restart.** The objection to the restart
+  lever has always been "I would lose the context", and nothing here answered
+  it. The crossing point is exact — at a 500K context with 300 turns left it is
+  **467,000 tokens**, so the constraint on a brief is what you can usefully say,
+  not what you can afford to carry. The report says that in those words instead
+  of printing a budget someone might try to fill, and goes *negative* near the
+  end of a session, where the honest reading is "do not restart" rather than
+  "write less". It also lists what the brief has to name — files edited,
+  commands re-run, reads ranked by re-establishment cost — recovered from tool
+  inputs alone, never from message text.
+- **`adder live` ends with a verdict, not a warning.** It now prices compacting
+  and restarting against this session's own horizon, cache behaviour, and
+  measured opening, and prints the better of the two only when it beats carrying
+  on (`Context hygiene: restart — worth ~$55 over the ~350 turns expected to
+  remain`). Ties go to carrying on: both alternatives destroy information that
+  nothing in this repo prices. The same verdict replaced the generic "starting
+  fresh is the largest saving" line in the `UserPromptSubmit` hook, which was
+  true, unpriced, and therefore ignored.
+- **`adder doctor` gained `memory`, `reread`, and `compact` checks**, each
+  delegating to the module that owns the measurement. On this machine `compact`
+  is now the largest single finding.
+- **`adder validate` gained three claims**: memory is carried rather than
+  written (measured 537x), compaction keeps less than the 35% the model assumes
+  (measured 6%, so the assumption is conservative in the safe direction), and a
+  brief can cross a restart (281K tokens at the median context).
+- **`adder-context` skill**: the compact/restart/carry-on decision, the re-read
+  rule, and what memory costs, written for an agent to act on. Its description
+  costs 76 resident tokens per session by the measure `adder memory` applies to
+  everything else.
+- **[docs/context.md](docs/context.md)**: why these four reports belong together.
+
+
+- **The parse cache defaulted off on the one path built to use it.**
+  `load_sessions(use_cache=...)` defaulted to `False` while the `cache` setting
+  defaulted to `True`, so memoization only happened where a caller had
+  remembered to ask -- and the callers that most needed it had not.
+  `horizon.load` is the one that mattered: it is reached from `live.analyse`,
+  which **both hooks call**, so every prompt submission and every guarded read
+  re-parsed every transcript on the machine to fit a distribution that moves by
+  one session a day. Measured over 222 local transcripts: **2,339ms cold
+  against 81ms warm, 29x**. The parameter now defaults to the setting;
+  `use_cache=False` still forces a cold parse for the tests that assert on
+  parsing.
+- **The fitted horizon is cached on disk (2,089ms to fit, 4ms to read back).**
+  Bounded by time rather than by a content fingerprint, deliberately: the
+  transcript tree changes on every turn, so a content-keyed cache would
+  invalidate constantly and never hit, while the statistic it holds is a
+  distribution over ~100 sessions. An empty fit is never cached -- doing so
+  would hide the first real session for an hour.
+- **The PreToolUse guard went from 2,136ms to 139ms on a guarded read**, and
+  from 74.7ms to 43.7ms on a tool it has no opinion about -- against a 32.5ms
+  floor that is the Python interpreter starting. Three changes: the two caches
+  above, a literal tool-name check *before* importing `adder` (the import costs
+  27ms and the hook runs on every single call), and `os.path` instead of
+  `pathlib` for the one path it computes at module scope. Latency is not
+  dollars, but a two-second hook is one people uninstall, and an uninstalled
+  guard saves nothing.
+
+
+- **`adder validate` ran the benchmark replay twice, and it is the most
+  expensive computation in the file by two orders of magnitude.** Two claims
+  each called `bench.run`, which takes ~250s -- 206s of that is `corner_sweep`,
+  which evaluates the worst case by replaying the whole workload at each vertex
+  of the uncertainty box. The command whose entire job is to let someone
+  re-check the foundations took ten minutes. Memoized on the session map:
+  **249s then 0.0s** for the second claim.
+
+
+- **A bound that names a number is a size, not a free pass.** `is_bounded`
+  answers "capped by construction", and the guard was treating a `yes` as a
+  reason to stay silent -- so `sed -n '1,600p'`, bounded to six hundred lines
+  and about six thousand tokens, was waved through and returned 6,079. **45
+  supposedly-bounded calls in the corpus returned over 3,000 tokens.** Measured
+  over 16,727 calls carrying an explicit line bound, output runs **11.4 tokens
+  per line at the median and 35.6 at p90**, and `lines x 11.4` predicts the
+  real result to a median absolute error of 83 tokens. A bound now also *caps*
+  a learned estimate: `cat huge.log | head -50` inherits `cat`'s 40K-token
+  history through the program backoff, and fifty lines is fifty lines. Median
+  prediction error over the holdout falls from 85 to **68 tokens**.
+- **The shipped `PRIOR` was invented, and wrong in the expensive direction on
+  every line.** `WebFetch` was quoted at 12,000 tokens p90 against a measured
+  **595 -- a 20x over-statement** -- and the generic fallback at 3,000 against a
+  measured 322. That is the same failure the size model was written to remove;
+  it had simply moved from the hook into the default, where a machine that has
+  learned nothing yet would be interrupted constantly. Re-derived from the
+  population the guard actually predicts (unbounded calls only) across 222
+  transcripts, and `Grep`, `Glob` and `Task` -- which have no observations here
+  -- now inherit the pooled fallback rather than a number someone liked the
+  look of. The consequence is deliberate: on a fresh machine nothing without
+  local evidence clears the floor, so only `Read` is guarded, and `Read` is
+  sized off the filesystem rather than predicted.
+- **`SizeModel.learn` counted a different population than `PRIOR` describes**,
+  so `adder guard` compared a prior derived from unbounded calls against an
+  average over all of them, and the two disagreed for reasons that had nothing
+  to do with the machine being different.
+
+### Fixed
+### Fixed
+### Fixed
+### Fixed
+
+- **An unknown tool's input is no longer quoted anywhere.** `reread.identity`
+  fell back to embedding a tool's JSON input for tools it had no shape for, and
+  those inputs can be prose written for a human — which then appeared in report
+  rows and, through the advisor hook, in a context. Unknown tools are now
+  identified by a hash of their input, and the brief builder skips them
+  entirely: a hash is noise in a brief and a leak at worst.
+
+- **`adder blend`: order a queue so shared prefixes stay warm.** Resource-aware
+  batching groups work by resource profile before running it. This was rejected
+  once on the grounds that the engine belongs to somebody else -- which skipped
+  the point, because the submission order is yours and the prefix cache is
+  billed to you by the token. Building it surfaced a result that runs against
+  the intuition: the ordering saving is **not monotone in the cache TTL**. Too
+  short and even a grouped run goes cold between its own members; too long and
+  the prefix survives the interleaving without help. It peaks between the two,
+  so the report sweeps the TTL instead of quoting one number.
+- **`adder harvest`: could this work survive being interrupted?** Harvesting
+  preemptible capacity was rejected once as a hardware argument. The
+  transferable half is that preemptibility is a property of the *work*: cheap
+  capacity is only cheap if an interruption is survivable, and a transcript
+  records exactly how much context one would destroy. Prices the expected loss
+  with and without a handoff, against the discount, and reports the interruption
+  rate at which it stops paying. The conclusion matches the hardware version and
+  for the same reason -- checkpointing is the deciding term, and here the
+  checkpoint is a handoff summary rather than a file.
+- **`adder verbosity`: how much of a rating is length, and what that costs.**
+  Head-to-head preference data rewards long, heavily formatted answers somewhat
+  independently of whether they are better. The established fix is to put style
+  features into the Bradley-Terry regression as covariates. On a leaderboard
+  that is a fairness correction; here it is a **cost** correction and a sharper
+  one, because the property that inflated the rating is the property this tool
+  bills you for -- once as output, then again as prefix on every later turn. The
+  command fits the controlled model and prices the gap between the controlled
+  and uncontrolled strengths per answer. `adder/pricing/style.py` holds the
+  estimator, which recovers a planted length coefficient of 0.9 to within 0.03.
+- **`adder speed`: the fast path bills at 2x -- did the speed arrive?** The
+  multiplier has been in the price table since it was written and no report had
+  ever asked what it bought. Audited from the transcripts, paired within model
+  so a mix shift cannot fake a result. The wall-clock caveat is printed with
+  every number: transcripts carry one timestamp per turn, so the only available
+  clock includes tool execution and reading time, which means absolute
+  throughput is understated for both paths and only the ratio is meaningful. On
+  the machine this was written against, 0 of 29,612 timed turns had ever used
+  it, so the report is the prospective calculation instead: $4.22 per median
+  session, which is the output half of the bill rather than the whole of it.
+- **`adder place`: locality against price, for a warm session.** Its context is
+  cached against one model, so moving to a cheaper one discards the prefix and
+  pays a cold read plus a fresh write. The command sweeps the whole catalog for
+  the crossover -- `migration / (cost_per_turn_here - cost_per_turn_there)` --
+  and prices the affinity being discarded as a number in its own right. Two
+  gates come before price: a window that cannot hold the context is not a cheap
+  option, and a provider that publishes no cache rate is assumed to have no
+  cache, so its prefix is re-read at full input rate rather than a tenth of it.
+- **`adder deadline`: whether the cheap, slow path is worth it.** Batch is half
+  price and this tool had never recommended it, because nothing here knew what
+  a deadline was. Compares four policies -- always cheap, always guaranteed,
+  greedy, and progress-proportional -- with unfinished work charged at full
+  rate, since otherwise the cheapest strategy is always the one that gives up.
+- **`adder sched`: does how far a session has run predict what is left?** The
+  mean-residual-life curve, summarised in turns per turn against an
+  equal-length reference of -0.50. Reported as a two-way verdict on purpose;
+  see Fixed below.
+- **`adder design`: where to spend the next measurement dollar.** `adder ab` is
+  the only thing here that spends money to produce data, and it was being
+  allocated evenly across pairs -- which buys a ranking whose weakest link is
+  the pair nobody sampled. Allocation is now proportional to information per
+  unit of remaining uncertainty, and the report says when a pair would need
+  more comparisons than the routing decision is worth, which is the answer that
+  ends an experiment rather than extending it.
+- **`adder routereval`: the router is now scored, not asserted.** Every claim in
+  this repo was about cost, and none of them answered whether the routing was
+  any good — a saving is trivial to produce by sending work to a cheaper model,
+  and the question is what it cost in quality. The command computes PGR, APGR
+  and CPT against a random-ordering baseline, which is the standard the routing
+  literature settled on, so the numbers are comparable to published ones. Two
+  additions to that standard: an **oracle ceiling** printed next to the score
+  (APGR's maximum is set by the task mix, not by 1.0, and reading 0.75 as a C
+  grade when it is a perfect score is the obvious misreading), and a **dollar
+  axis** alongside the call-count axis. The second is not cosmetic for this
+  workload: a strong call on a 190K context costs ~40x a weak call on an 8K one,
+  so a router sending 30% of *calls* to the strong model can be spending 95% of
+  the budget. The report names the gap when the two axes disagree.
+- **`adder calib`: `p_fail` is scored out of sample.** Every escalation gate
+  multiplies by this estimate and it had only ever been inspected — `outcomes
+  calibration` printed the rate next to the data it was fitted on, which is a
+  tautology. Scoring is now **prequential**: walk the log in timestamp order,
+  predict each row from only the rows before it, reveal the outcome. The
+  headline is the Brier **skill score against predicting the base rate**, so an
+  estimator that adds nothing over a constant is reported as adding nothing
+  rather than as a respectable-looking 0.18.
+- **`adder frontier`: the cost-quality frontier, with domination decided by
+  confidence intervals.** A model only outranks a cheaper one when its rating
+  interval clears that model's. This makes the frontier *narrower* than one
+  drawn on point estimates — the models it drops are the ones whose lead sits
+  inside the noise, which are exactly the ones a price-and-rating table talks
+  you into buying.
+- **`adder cascade`: try-cheap-then-check, priced with the term the batch
+  analyses omit.** Published cascade economics assume a failed attempt is
+  discarded. In a session it is not: it stays in the context and is re-read on
+  every remaining turn. On a 300-turn session that carry term exceeds the failed
+  attempt's own generation cost, which is why the recommendation usually comes
+  out as "cascade, but in a subagent". Verifier false-negative and
+  false-positive rates are modelled separately because they cost different
+  things — one ships broken answers, the other just wastes money.
+- **`adder spec`: agent sessions read as search rather than as turns.** Probe
+  scale and fan-out, the explore/formulate/validate mix and how much it
+  interleaves, redundancy (probes repeating one already made, priced against the
+  measured re-read pool), and how much a human interjection collapses probe
+  volume. The redundancy figure is the actionable one: it is exact, it has no
+  upside, and it is invisible in every per-turn view.
+- **`adder cachesim`: replay the workload against a simulated prefix cache.**
+  `adder cache` reports what the cache did; this answers what a differently
+  configured one *would* do — hit rate against capacity, block size and TTL,
+  with cold and capacity misses counted apart. Matching is prefix-anchored, as
+  the hardware requires; relaxing that is the easiest way to write a simulator
+  that reports a number nobody can reproduce. Everything it prints is labelled
+  SIMULATED and nothing else consumes it as a saving.
+- **`adder repro`: a manifest of everything a number depended on.** Hashes the
+  four inputs — transcripts, price table, catalog, code — so "it was 6.1x and
+  now it is 4.2x" is a diff instead of an afternoon. The digest deliberately
+  excludes the wall clock and modification times, so two runs over identical
+  data agree byte for byte and copying the data does not read as drift.
+- **`adder/pricing/bt.py`: Bradley-Terry ratings that carry an interval.** The
+  public boards are a batch MLE, not the Elo update rule people assume; Elo
+  depends on the order games arrived in, so re-running it on a shuffled log
+  gives different ratings, which is disqualifying for a tool whose whole claim
+  is "re-run the measurement". Includes optimal k-tier partitioning by dynamic
+  programming (pairwise data is under 0.1% dense, so tiers are estimable where
+  per-pair comparisons are not) and an `indistinguishable()` query, which is the
+  answer most of the time and one a scalar comparison cannot give.
+- **Uncertainty machinery in `adder/util/stats.py`**: seeded percentile and
+  paired bootstraps, permutation tests, Wilson and Newcombe intervals, an
+  anytime-valid confidence sequence for the peek-until-it-looks-good failure
+  mode, Benjamini-Hochberg (twenty `doctor` checks at alpha=0.05 is a 64% chance
+  of one false finding), Hedges' g, a power calculation, and rank correlations.
+  Every resampler takes an explicit seed defaulted to a constant, so two runs
+  produce the same interval and a report can be diffed in CI.
+
+### Fixed
+
+- **`adder deadline`'s progress rule now guarantees the deadline it exists to
+  protect.** Comparing progress against the elapsed-time line is not sufficient
+  on its own: falling behind is recoverable, but running out of the steps in
+  which the guaranteed path could still finish is not, so the switch has to
+  happen before that point rather than at it. Without the override the policy
+  missed roughly a fifth of windows it was supposed to guarantee. A second bug
+  in the same simulation forced every policy -- including the always-guaranteed
+  one -- onto the cheap path for its first step, because the minimum-run guard
+  fired before there was a run to protect.
+- **`adder sched` reports a two-way verdict instead of a third one it cannot
+  support.** Three successive versions of the statistic each produced a
+  confident answer that was an artefact. Correlating attained against remaining
+  over pooled positions is mechanically anti-correlated -- inside one session
+  the two sum to a constant -- and returned -0.75 on a workload built to be
+  heavy-tailed, which would have advised the exact opposite of the truth. A rank
+  correlation over thresholds reads "bounded" for every workload, because the
+  truncated tail decides the ordering. Least squares over the full range hands
+  the same decision to the deepest threshold through sheer leverage. What
+  survives is a slope in turns per turn over the supported range, read against
+  an equal-length reference of -0.50 -- and no heavy-tailed category, because
+  every finite workload's curve turns down past the median length regardless of
+  its tail. Four synthetic long-tailed workloads all summarised negative.
+- **`blend.saving` snaps float noise.** Two orderings that are arithmetically
+  identical can differ by 1e-16 through summation order, which printed as
+  `-0.0` and read as "grouping made it worse".
+- **The style fit recovers a coefficient it was given.** The first version
+  alternated between the strength and coefficient blocks, which meant rounding a
+  continuous residual back into a discrete winner to reuse the plain fit -- it
+  discarded exactly the information the coefficients are estimated from and
+  returned a length coefficient of 0.000 on data generated with one of 0.9. It
+  is now a joint Newton fit with a ridge penalty, recovering 0.927.
+- **`length_matters` is decided on an interval, not a threshold.** A cutoff of
+  0.05 on the point estimate reported a length effect from a judge that had
+  none, because noise put the coefficient at 0.061. Coefficients now carry a
+  bootstrap interval and the claim requires it to clear zero. Collinear logs --
+  where style never varied within a matchup -- are reported as unidentified
+  rather than as "no effect", because those are different answers.
+- **`adder speed` prices the premium against output only.** It multiplied the
+  whole median session bill, which overstated the lever by 5.6x on local data
+  ($23.84 against the correct $4.22): cached input is billed at the same rate on
+  either path, so only the output half moves.
+- **`adder place` no longer silently drops models the registry does not know.**
+  It priced exclusively through the first-party registry, so any catalog-only
+  entry -- a project override, a provider added last week, a hand-pinned row --
+  was skipped without a word, and a user-supplied catalog produced an empty
+  field and no explanation. Entries now fall back to their own published rates,
+  pessimistically: no published cache rate is treated as no cache at all.
+- **The Bradley-Terry interval no longer reports zero width on a swept log.**
+  Resampling rows — what the public boards do, and correct on a large log —
+  fails silently on a small one: six battles a single model swept have no
+  outcome variation to resample, every resample refits to the same value, and
+  the interval comes out at ±0. A tool whose purpose is to stop confident wrong
+  numbers cannot answer "how sure are you" with "completely" after six
+  observations. `fit_with_ci` now holds the matchup schedule fixed and redraws
+  winners from the fitted probabilities; the row-resampling method is still
+  available and still documented as degenerate on small logs.
+- **`outcomes.evidence()` and `p_fail()` take an explicit `now`.** They decayed
+  their recency weights toward the wall clock, so replaying any log older than a
+  few half-lives collapsed the evidence mass and returned the 0.5 prior for
+  every row — which looks like a calibrated coin and is really an admission that
+  no data was used. It also made the function untestable to a fixed value, in a
+  repo whose testing rules forbid wall-clock dependence. Found by building
+  `adder calib`.
+- **The cache simulator stores only whole blocks.** A trailing partial block was
+  rounded up and treated as resident, which credited the next request with up to
+  a full block of tokens that were never cached. The error scales with the block
+  size, and it surfaced as a 1024-token block reporting a *higher* hit rate than
+  a 16-token one -- backwards, since bigger blocks match less often and waste
+  more at the boundary. Floor, not ceiling; the remainder is always a miss. On
+  three days of local transcripts the block-size sweep now increases in cost
+  monotonically ($3,691.92 at 16 tokens to $3,738.19 at 1024) instead of
+  inverting.
+- **`stats.wilson_interval` snaps its exact endpoints.** A clean run reported a
+  lower bound of 2.8e-17 rather than 0, which the formatter rendered as
+  "0.0000%" with no way to explain it.
+
+### Changed
+
+- **The guard's own message is capped at 90 tokens**, and its state is pruned by
+  age as well as by count. Every fire is already charged against its saving, but
+  a long path or command could turn one sentence into a paragraph the session
+  then pays to re-read; and a count-only prune keeps two hundred dead sessions
+  on a quiet machine while dropping live ones on a busy afternoon.
+- **`awk 'NR<=N'` and `head -c N` are recognised as bounds.** The byte form is
+  converted directly, skipping the tokens-per-line term, which is the weakest
+  assumption in the estimate.
+- **The latency defect is pinned by tests, not by memory**: that a tool the
+  guard has no opinion on imports no `adder` module at all, that the hook keeps
+  `pathlib` off its hot path, that `load_sessions` defaults its cache to the
+  setting, and that `horizon.load` does not re-fit per call.
+
+
+- **The prompt hook now charges for its own advice too.** It injects ~155
+  tokens that are then carried for the rest of the session, and it had never
+  been weighed against what it was arguing for. It clears easily and is
+  expected to -- it fires at most twice a session and advocates a lever worth
+  hundreds -- which is precisely why checking beats assuming: if it ever stops
+  clearing, the message has grown too long or the threshold is too low. Both
+  hooks now read one uptake assumption (`guard_advice_taken`), so the same
+  sentence cannot be priced two ways.
+- **Every routing tier states the same return budget as the guard prices
+  against** (1,000 tokens), with a test that fails on drift. The tiers said "a
+  few lines", Explore said "500 words", and the guard priced a `Task` against a
+  third number.
+- **`Read` honours `offset`.** A read from an offset with no limit runs to the
+  end of the file, and the whole-file size over-states it by everything already
+  skipped.
+
+
+
+- **The package is a tree of seven layers instead of fifty modules in one
+  directory, and the layout is enforced rather than described.** `adder/` had
+  reached 50 top-level modules with `trace.py` -- the transcript reader every
+  report depends on -- sitting between `tools.py` and `validate.py` with nothing
+  marking it as the foundation. Modules now live in `util` < `pricing` < `core`
+  < `measure` < `decide` < `evaluate` < `cli`, and an import may only point down
+  that list. `tests/repo/test_structure.py` fails the build on an upward import,
+  on a directory holding more than 12 Python files or 10 subdirectories, and on
+  a test file that does not mirror the module it covers. No number moved:
+  `adder trace --json` over the same 26,614 turns reports $6,307.96 before and
+  after, with every scalar and the whole per-model breakdown identical, and
+  `adder trace --verify` still passes all seven structural checks.
+- **`trace` and `config` are each two modules now, split along the line between
+  computation and command.** `core/trace.py` reads and deduplicates transcripts;
+  `measure/spend/trace.py` is the `adder trace` report. `core/settings.py`
+  resolves settings for the fifteen modules that read one; `cli/config.py` is
+  the `adder config` report. The PreToolUse hook runs on every submit and was
+  importing an argparse parser and a printing routine to ask what a session had
+  cost. The foundation now carries no commands, and a test asserts it.
+- **Imports inside the package are absolute.** In a tree this deep the dots in
+  `from ...pricing.cost import turn_cost` are load-bearing and invisible, and
+  they break when a file moves. Ruff's `TID252` enforces the absolute form.
+- **Ruff gained the rules the style section had only asked for**: `TID` (import
+  form), `N` (naming -- exceptions end in `Error`), `D100` (every module has a
+  docstring), `ISC`, `PIE`, and `I002`, which requires `from __future__ import
+  annotations`. `N806` is ignored on purpose: single-capital locals in the cost
+  model are the symbols from the derivation in the docstring above them.
+
+### Fixed
+
+- **A stale parse cache can no longer fail a report.** `trace._cache_load`
+  caught five specific exceptions, none of which was `ModuleNotFoundError` --
+  and a pickled `Turn` names the module it came from, so moving that module made
+  every existing cache unloadable and took the tool down with it. The cache is
+  an optimisation and never an input to a number, so no failure to read it may
+  fail the tool; the handler is now deliberately broad and the cache version is
+  bumped to 6.
+
+### Added
+
+- **The guard stopped guessing. `adder/core/shapes.py` and
+  `adder/decide/guard.py`.** The PreToolUse hook is the only thing here that can
+  prevent spend rather than report it, and it decided using a list of substrings
+  and one fabricated constant: any command containing `cat ` or `git log` was
+  assumed to admit 15,000 tokens. Measured across 222 local transcripts (27,698
+  answered tool calls), the calls it fired on return a **median of 143 tokens**
+  -- 105x less -- and **89% of them came in under the guard's own 2,000-token
+  floor**. It saw 9.7% of all Bash result tokens and matched **none of the 18
+  largest results in the corpus**, because `for f in ...; do cat $f; done` and
+  `wc -l a.ts b.ts` contain none of its patterns. Two entries in its
+  "already bounded" list were actively wrong: `-n ` was there for `grep -n` and
+  waved through every `sed -n '1,600p'`, and the list was matched against the
+  whole string, so `head -1 f && cat huge.log` counted as bounded.
+- **Sizes now come from what commands of that shape actually returned here.**
+  Held out even-vs-odd over 23,228 Bash calls, the learned model's median
+  absolute error is **85 tokens against the constant's 14,871**; it fires on
+  **155 calls instead of 489**, at a median real size of **1,309 tokens instead
+  of 143**, and flags **20 of the 26 results over 5,000 tokens** where the old
+  matcher flagged 15. One third the interruptions, and more of the large calls
+  caught. `adder validate` re-derives the comparison rather than quoting it.
+- **Bounding is decided by parsing, not by searching.** Within a pipeline the
+  last stage decides; across a `;` sequence every command must be bounded. A
+  filter is not a limit. The parser is quote-aware and hand-written because
+  `shlex` raises on the unterminated quotes real transcripts contain, and a
+  parser that raises inside a PreToolUse hook is a guard that has silently
+  stopped guarding. Quoting was worth real accuracy: a regex split cut
+  `grep -vE "^warning|^\s+-->"` in half at the alternation inside its own
+  pattern, producing **12,208 shapes from 27,643 calls** -- nearly all
+  singletons, all below the evidence floor, so the guard fell back to the prior
+  for almost everything. Quote- and heredoc-aware splitting brings that to
+  **7,027 shapes over 167 programs**.
+- **The guard charges for its own advice.** A fire injects `additionalContext`,
+  which is admitted to the context and re-read on every remaining turn exactly
+  like a tool result. It now refuses to speak unless `saving x P(taken)` exceeds
+  the cost of carrying the message, where `P(taken)` defaults to 0.5 and is
+  declared as the assumption it is (`guard_advice_taken`). Setting it to 0
+  silences the guard, which is the correct behaviour for anyone who believes
+  advice is never acted on. With it come one fire per command shape per session,
+  a ceiling of 15, and a running per-session ledger. A new `validate` claim
+  sweeps 240 combinations of size, horizon and model and fails if any emitted
+  fire has non-positive expected value.
+- **The certain saving nobody was taking: 19.2% of unbounded `Read` calls on
+  text files re-read something already in the context** (44 of 229). The guard
+  could not see it because it had no memory between calls. `GuardState`
+  remembers each path with its mtime, so a re-read after an edit -- the correct
+  thing to do -- is not flagged and an unchanged re-read is. No delegation to
+  model, no horizon to forecast, nothing to trade off.
+
+  Quoted at 27.4% across *all* unbounded reads until the image fix below: 138
+  of the 182 duplicates in this corpus are screenshots, and an image is capped
+  near 1,600 tokens whatever its byte size, so those are cents rather than
+  dollars. The first number was true and misleading, which for a measurement
+  tool is the same as being wrong.
+- **`adder guard`** reports what the model predicts, what the guard decided,
+  and what it has cost; `--learn` re-derives the size model, `--explain CMD`
+  answers for one command including why it would stay quiet. A `doctor` check
+  fails when the model was never learned or when the guard is not solvent, and
+  `ADDER_GUARD_DEBUG=1` prints the tracebacks that every fail-open path
+  otherwise swallows -- the failure mode where a working guard, an uninstalled
+  one and a broken one all look identical. See [docs/guard.md](docs/guard.md).
+- **The decision is testable at all now.** It lived in the hook file, which is
+  loaded by path and had no unit tests behind it; the component whose failure is
+  silent had the least testable shape in the project. It is a library function
+  taking every varying input as an argument, with 57 tests against it and 21
+  more through the hook.
+
+
+- **`bench.py` -- what installing the tool is worth, separated from what obeying
+  it is worth.** `adder plan` prices the cheapest regime an optimiser can find
+  and reaches 10.7x, which is the right number for setting a target and the
+  wrong one to quote to somebody deciding whether to install anything: it
+  assumes they will do everything the tool says. `adder bench` replays the same
+  turns across a ladder split at the line between what the software does
+  unprompted -- the PreToolUse guard and the tier files in `.claude/agents/` --
+  and what it can only recommend. Measured over 23,922 turns and 90 sessions:
+  **1.57x installed with no behaviour change, 6.7x following the solved
+  threshold and cadence**, against a $5,846 baseline the replay reproduces to
+  +0.0%. Both numbers are quoted because quoting only the second would describe
+  the orchestrator pattern rather than the tool.
+- **The guard's token threshold is derived rather than assumed, and the
+  derivation found that the dollar gate is not the binding constraint.** The
+  hook fires on a cost ($0.25), so turning it into a read size is one division
+  against the expected re-read count. On this workload that resolves to 1,500
+  tokens, below the hook's own 2,000-token I/O floor -- so tuning
+  `ADDER_GUARD_MIN_COST` here would be tuning a gate that never decides
+  anything. `bench.guard_threshold` applies the floor after the gate, the way
+  the hook does, and `tests/test_bench.py` parses the hook and fails if the two
+  constants drift.
+- **The 6.7x is quoted against a corner sweep of the three inputs no transcript
+  can settle** -- summary ratio, `p_fail`, handoff size. The pessimistic corner
+  is 3.4x, and the floor is set by the summary ratio: a delegated read that
+  hands back 30% instead of 10% puts most of the avoided carry back in the
+  context. `adder ab` remains the only test of that assumption.
+- **Two `validate` claims so the README figures are re-measured rather than
+  remembered**: *installing it pays before you obey it* (enforced rungs clear
+  1.3x) and *the advice reaches 5x* (solved regime clears 5x at nominal
+  assumptions). Both are workload-dependent and expected to fail where sessions
+  stay short enough that there is little carry to remove.
+- **[docs/benchmark.md](docs/benchmark.md)**, and a README section stating both
+  multiples side by side.
+
+- **`risk.py` -- the uncertainty layer, and the reason advice can now be
+  declined for being uncertain rather than for being unprofitable.** Every gate
+  in this repo compared two modelled costs at their midpoints. Three of the
+  inputs to that comparison are estimates with real spread: remaining turns is a
+  forecast off a heavy-tailed distribution, `p_fail` is a rate off a handful of
+  logged outcomes, and the summary a delegated read hands back is a modelled
+  ratio. The module supplies a regularized incomplete beta and Beta quantile
+  written out by hand (no dependency, pinned against closed forms and a binomial
+  identity in `tests/test_risk.py`), credible intervals over those inputs, an
+  exact worst-case evaluation, and `p_cheaper`, the probability a recommendation
+  is cheaper than not taking it.
+- **The worst case is exact, not sampled.** Every cost function here is
+  multilinear in its uncertain arguments, and a multilinear function on a box
+  attains its extrema at a vertex, so enumerating 2^k corners *is* the
+  minimisation. The claim is tested against a dense interior sweep rather than
+  asserted.
+- **`carry.py` -- what carrying a token in context actually costs, measured.**
+  `admitted_token_cost` priced a token as one write plus `remaining_turns` reads
+  at 0.10x. Two of those three terms were wrong. The realized multiplier is
+  recoverable from the transcripts (`(uncached + 0.10*read + 1.25*write) /
+  context`, token-weighted, first turns excluded) and measures **0.115x on this
+  machine -- 1.15x the assumption**, so carry, already ~76% of spend, was being
+  under-priced. Against that, a token does not survive to the end of the
+  session: compaction evicts it, and `expected_reads` sums the per-epoch
+  survival series instead of assuming it never happens.
+- **A compaction detector that is not fooled by wobble.** 122 turns out of
+  20,524 show a context drop; only 7 are auto-compactions. Counting all of them
+  fitted a 4-turn compaction period, which would have priced a token admitted
+  now at 16 re-reads instead of 348 and switched delegation off across the
+  board. A compaction now requires the context to have been at 60% of the
+  model's ceiling *and* to have lost half of itself; the 7 real events sit at
+  999.5K-999.9K dropping to 4-6%.
+- **`horizon.mean_remaining` -- the conditional mean, because cost is linear in
+  it.** `remaining()` returns the median, which answers "how much longer will
+  this run" and is the wrong number to multiply a cost by. `E[cost] = c * E[R]`,
+  and on this machine the conditional mean is **1.15x the median (351 vs 305
+  turns at turn 0)**. The median stays for display. Added with it:
+  `quantile_remaining`, `survivors`, and `bounds`.
+- **`ledger.py` and `adder ledger` -- the solvency invariant.**
+  `cost_with_adder = baseline - savings + overhead`, so the tool is cheaper than
+  not having it exactly when savings cover overhead. The ledger records the
+  guaranteed saving of every recommendation acted on against the routing
+  overhead it cost, and a **calibration haircut** measures the part bounds
+  cannot: if verified recommendations delivered 60% of what they promised, every
+  future prediction is scaled by 0.6 before it meets its gate. Capped at 1.0 --
+  a model that under-promises earns no credit for it.
+- **`policy.schedule` and `adder policy --batch` -- one routing turn for several
+  decisions.** Overhead is charged per turn, not per recommendation, so asking
+  once about five steps costs one turn. Two consequences: steps whose saving is
+  real but below a whole routing turn now clear it together, and the batch is a
+  *more certain* bet than its members, because the horizon risk is shared while
+  the idiosyncratic redo risk averages down.
+- **`carry.optimal_split` -- how long to run a session, in closed form.** Average
+  per-turn cost on a `k`-turn cycle is `m*r*F + m*r*g*(k+1)/2 + W/k`, so
+  `k* = sqrt(2W/(m*r*g))`. The square root is the result: being wrong about the
+  handoff cost by 4x moves the answer by 2x, which is why the number survives
+  being derived from the one input nothing measures. Reported as a sweep over
+  handoff size rather than as a single number.
+- **`carry.delegate_threshold` -- the read size above which delegating pays,
+  in closed form.** Both sides are affine in the read size, so the break-even is
+  one division. It matters because a threshold is the only advice here that is
+  free to apply: no routing turn to pay for, so it cannot cost more than not
+  asking.
+- **`adder carry` and `adder ledger`** join the command table.
+- Four claims in `adder validate`: the measured carry multiplier sits above the
+  0.10x assumption, the horizon mean exceeds its median, **every recommendation
+  the router emits clears its own overhead** (a 240-case sweep), and the ledger
+  is solvent.
+
+
+- **`adder prefix` -- what a session restart actually costs, measured.** Both
+  models of a restart in this repo were wrong, in opposite directions:
+  `adder plan` charged nothing for one, and `carry.optimal_split` charged a full
+  prefix rebuild. Every session records what its own opening turn was billed, so
+  neither had to be assumed. Measured over the 46 openings that followed a turn
+  inside the 5m TTL: an opening is 27,953 tokens of which **74% arrives as a
+  cache read**, because the expensive part of the floor -- system prompt, tool
+  schemas, `CLAUDE.md` -- is identical across sessions and still resident. A
+  restart carrying a 2,000-token handoff costs $0.103 against the $0.300 a
+  rebuild would cost: **2.9x cheaper**. Openings measure warm after gaps of days
+  too, which no TTL explains; that observation is reported and deliberately not
+  relied on.
 
 - **A cross-provider model catalog, refreshed from public data.** adder
   previously knew nine hardcoded Claude models. It now carries ~500 models from
@@ -36,6 +747,113 @@ without a stated reason is a regression, not a change.
   parsers are testable without a network.
 - `ADDER_CATALOG=<path>` pins the whole catalog to one file, so a
   recommendation can be reproduced on another machine.
+- **`adder pick` and `adder policy` now use measured escalation history.**
+  `docs/models.md` claimed the outcome log overrode the Elo estimate; nothing
+  called it. It does now, and it composes rather than replaces:
+  `select.blend_p_fail(measured, elo_gap) = measured + (1 - measured) * elo_gap`.
+  The log knows how often a *tier* escalates here; the arena knows how much
+  weaker a *substitute* is than the model that tier names. Each row reports
+  which basis it used.
+- **Cross-vendor substitution in `adder policy`.** When a plan delegates -- and
+  only then, because a subagent starts cold and has no model-scoped cache to
+  rebuild -- the catalog is asked whether another vendor's model could run it
+  for less. The candidate is priced as a cascade (`run + p_fail x redo on the
+  Claude tier`), held to a per-tier Elo tolerance (120 points at T0, 40 at T2),
+  and shown only if the saving clears the routing overhead. On this machine's
+  numbers it usually does not, and the plan says so in one line rather than
+  offering a four-cent recommendation. `--cross-vendor` shows the candidates
+  anyway; `--no-cross-vendor` skips the lookup.
+- **`adder plan`** -- prices a whole workload under a *regime*: a followable
+  operating configuration, replayed turn by turn against the recorded
+  transcripts, with both sides of every delegation on the books. It reproduces
+  the measured bill to within 0.1% before quoting any multiple, and
+  `--target N` searches a stated grid for the mildest configuration that
+  reaches an N-fold reduction, or reports the floor when nothing does. On this
+  machine: 10.5x at the default regime.
+- **Delegability is measured rather than assumed.** Every earlier estimate here
+  used "assume 25% of turns are delegable". `adder plan` triggers on how many
+  tokens a step would admit to context, which the transcript records exactly, so
+  the rule is one a hook can apply and the 23% that matches is a measurement.
+- **The session model is now a lever.** `adder plan --session-model` prices the
+  work as if the session had *started* on a cheaper model. This is not the
+  mid-session switch the tool has always refused: a session that starts on
+  Sonnet never built an Opus prefix, so no cache is invalidated. Measured on the
+  same transcripts, switching a warm conversation is worth 0.5% of spend and
+  starting cheap is worth 60% before any rework allowance. The capability cost
+  is charged as an explicit `--session-rework` fraction (default 20%) and
+  labelled MODELLED, because a transcript that only ran on one model cannot
+  settle it.
+- Two new claims in `adder validate`: `plan replay reproduces measured spend`
+  (the baseline every multiple is a ratio against) and `starting cheap beats
+  switching cheap` (so the two model-choice results can be checked against each
+  other rather than confused for each other).
+- `outcomes.evidence()` returns the escalation rate *with* its scope and sample
+  mass, so a caller can tell "0.5 measured over 200 runs" from "0.5 because
+  nothing was ever recorded". `p_fail()` is now a thin wrapper over it.
+- **The unmeasured prior is now fitted where it can be, and stress-tested where
+  it cannot.** `UNUSABLE_GIVEN_LOSS` converts a preference loss into a redo and
+  scales every cascade cost and substitute verdict linearly; it was chosen by
+  judgement. `select.calibrate_unusable_given_loss` fits it as
+  `measured escalation / modelled preference loss` wherever the outcome log has
+  enough history, refusing the fit for a tier with nothing to escalate to, an
+  unrated model, or a gap inside the arena's error bars. `adder pick --combos
+  --sensitivity` sweeps it across [0.15, 0.60] and reports whether the winning
+  plan depends on it at all — on current data it does not, which is the useful
+  answer.
+- `adder pick --measured` corrects published cache-read rates by the realised
+  miss multiplier that `adder carry` measures from your own transcripts (0.115x
+  against an assumed 0.10x here, so the carry term was under-priced by ~15%).
+  Applied as a ratio rather than a rate: how often a session misses is a
+  property of the workload and transfers across vendors, what a read costs is
+  the vendor's published number and does not.
+- **`adder outcomes record`** -- a command-line write path for the outcome log.
+  Recording a dispatch previously meant pasting a Python snippet out of a skill
+  file, which is the entire adaptive half of the tool sitting behind a step
+  nobody performs. The empty log on every machine was the evidence: `p_fail`
+  never left its prior, so the router never learned that a cheaper tier works on
+  a given project and never stopped sending the work up. One line per dispatch
+  now does it, and 15 recorded runs is enough to move an abstained task off Opus.
+- **`adder outcomes` says what it is waiting for.** Alongside the calibration
+  table it now reports, per tier, how much more recent history it needs before
+  the router may route below the classifier's tier, and what failure rate that
+  tier has to beat at the current context size. "p_fail 0.50" is not an
+  explanation of why everything goes to Opus; "needs 12 more runs, and has to
+  come in under 26%" is.
+- **`adder policy --record`** books a recommendation in the ledger as it is
+  emitted -- the one moment when both the prediction and the overhead are
+  actually known. `decide` already read the ledger to haircut its own
+  predictions, but nothing wrote one, so that correction was a branch that could
+  never be taken: the tool consulted its own record of whether it was worth
+  using and always found the page blank. Opt-in, because a command people run in
+  a loop should not start writing because it was run.
+- **The read guard decides on a cost, not a token count.** `pretooluse_read_guard`
+  is the only component in the tool that can *prevent* spend rather than report
+  it, and it was gating on a hardcoded 15,000 tokens before it looked at the
+  session at all -- three times looser than the threshold `adder plan` derives
+  from the same transcripts. A 6,000-token read with 400 turns left costs $1.24
+  to carry and $0.13 delegated, and the guard said nothing. The token floor is
+  now only an I/O guard (2,000, to avoid parsing a transcript on every trivial
+  read); the decision is the dollar comparison it was already computing, tunable
+  as `ADDER_GUARD_MIN_COST`.
+- 28 tests for `.claude/hooks/`, which had none. `.claude/` is tracked and
+  shipped, so it is testable and now tested -- including that the guard advises
+  rather than blocks by default, that blocking asks rather than denies, and that
+  a broken transcript lookup can never break the turn.
+- **Two claims in `adder validate` that pin the two things this work was for.**
+  Neither headline behaviour was checkable before: a constant could move and
+  every unit test would still pass.
+  - `a prior never buys a downgrade` sweeps the router and fails if it ever
+    routes below the classifier's tier without the outcome log having been
+    informative there. This is the silent failure the right-sizing change had
+    to avoid: under a no-evidence prior the cheapest rung genuinely does have
+    the lowest expected cost, so a router that minimises expected cost without
+    a permission gate sends real work to the cheapest model it can hold and
+    reports a saving for it. Nothing in the output would look wrong.
+  - `a regime exists that reaches 10x` replays the frontier -- every lever at
+    the end of its range -- and reports the multiple. Checked against the bound
+    rather than by searching, so it costs one replay instead of four hundred,
+    and it is expected to fail on a workload with no long sessions, because
+    there the honest answer is that a 10x is not available.
 - `adder models refresh --if-stale [--max-age DAYS]` checks the local catalog's age
   and returns before opening a socket if it is current, so the refresh can be
   put on a timer without hammering two public endpoints.
@@ -72,8 +890,387 @@ without a stated reason is a regression, not a change.
 - `adder/py.typed` (PEP 561) and `MANIFEST.in`.
 - `.gitattributes` for line-ending normalisation and export rules.
 
+### Added — the adaptive half, finally running
+
+- **`adder outcomes import` -- backfill the dispatch log from transcripts.**
+  The escalation gate needs a measured `p_fail`. The only way to write that log
+  was `adder outcomes record` after every delegation, by hand. Nobody does that,
+  so the log is empty on every machine, `p_fail` sits on its 0.5 prior forever,
+  and the router is permanently forbidden from preferring a cheaper tier. A
+  feature that requires a discipline nobody keeps is a feature that does not
+  exist. The evidence was on disk the whole time: a delegation is an `Agent`
+  tool_use block naming a `subagent_type`, and its outcome is the `tool_result`
+  that answers it. Dry-run by default, idempotent by `task_hash`, so re-running
+  adds only what is new. On the author's transcripts it recovers **15
+  dispatches, 7 usable, 1 escalation** where the log held nothing.
+- **Tiers match on price, not just on model id.** A run on `claude-opus-4-8` is
+  $5/$25, the same arithmetic and the same decision as `claude-opus-5`, so it
+  belongs on the same rung. Matching ids alone left every run on a previous
+  generation untiered and therefore uncounted. Base rates are compared, never
+  dated ones: an introductory price makes a model temporarily cheaper without
+  moving it to a different rung, and a tier map that reshuffles itself on an
+  expiry date is worse than no tier map.
+- **What the import cannot see is stated where it is used.** An escalation is an
+  error result or an `ESCALATE:` reply. A subagent that returned a confident
+  wrong answer and was believed is invisible -- and is equally invisible to a
+  human filing a report afterwards, so importing is not worse than
+  hand-recording. It does mean the rate is a **lower bound**, which matters
+  because under-estimating `p_fail` is the expensive direction. Rows carry a
+  `source` field for provenance; both sources are weighed the same, because both
+  are blind to the same thing.
+- **A quality check in `adder doctor`.** Every lever in this repo trades tokens
+  for something, and a degraded agent often looks *cheaper* per turn while
+  taking more turns to finish -- so a health check that only looked at money was
+  recommending exactly the changes it could not evaluate. Only the tool error
+  rate is gated, because it is the one proxy with a defensible absolute
+  threshold: a failed call still costs a full turn and leaves its error in the
+  context. The rest are reported without a verdict, because they only mean
+  something compared against themselves before and after a change.
+- **The read guard now honours the `Grep` matcher its own install snippet has
+  always advertised.** The hook returned early for anything that was not `Read`
+  or `Bash`, so anybody who followed the documented `"matcher": "Read|Bash|Grep"`
+  got a guard that looked installed and did nothing for a third of it. A
+  content-mode `Grep` with no `head_limit` returns every matching line in the
+  repository; `files_with_matches` and `count` are bounded by construction and
+  are still waved through. A test now asserts the install snippet and the
+  guarded set cannot drift apart again.
+
+### Added — reporting surface
+
+- **`adder tools` -- attribution by the thing a person can actually change.**
+  Every other view is organised by model, session, or turn; none of those name
+  a decision. A tool call is one: an unbounded `Bash`, a `Read` of a lockfile, a
+  `Grep` with no `head`. The report prices what each tool *leaves behind* rather
+  than the turn that called it, because a 40K-token result on turn 20 of a
+  400-turn session is 40K tokens re-read ~380 times. Attribution apportions the
+  **measured** accumulated cache-read pool by share of context growth, so the
+  column can never sum above what was billed. On the author's transcripts:
+  **`Bash` is 23% of all context growth and carries $1,073 of $6,212** — the
+  single largest addressable finding on that workload.
+
+  (An earlier draft of this entry quoted 73% and $3,168. That denominator left
+  out assistant output, which is two thirds of growth; the corrected figures are
+  above, and `tests/test_tools.py` now pins the decomposition against
+  `adder context` so the two cannot drift.)
+- **`adder sessions` -- one row per session, sortable.** `trace` reports that
+  the top quarter of sessions hold three quarters of the spend and then prints
+  three of them. `--sort per-turn` separates a session that was expensive
+  because it was long from one that was expensive per turn; they have different
+  fixes. Also reports compactions and cache rebuilds per session.
+- **`adder agents` -- delegation as measured, not as recommended.** Joins what
+  `policy` advises against what the transcripts did. Three findings per run:
+  the share of spend that is subagent work (0.5% here), subagent runs whose
+  peak context would have fitted a cheaper model (a subagent starts cold, so
+  the cache-invalidation argument that protects a live session does not apply),
+  and main-chain turns that admitted more than 20K tokens at once, each priced
+  against delegating it with the horizon estimator **at that turn's own index**.
+- **`adder anomaly` -- the expensive turns, each with the mechanism that
+  explains it.** Uses the median and MAD rather than mean and sigma: one $40
+  turn inflates sigma enough to score itself as ordinary, which is the detector
+  failing on the case it exists for. Each finding is labelled `prefix rebuild`,
+  `context jump`, `long output`, `fast mode`, or `big context`, in that
+  precedence order. On this workload: **89 unusual turns, $365 above the median
+  turn, 80 of them prefix rebuilds.**
+- **`adder effort` -- the re-fit `cost.py` has claimed for months.** The
+  docstring on `EFFORT_OUTPUT_MULT` said "`adder.effort` re-fits them from a
+  transcript"; no such module existed. It does now. Transcripts carry an
+  `effort` field per record, so output volume per level is measurable. It
+  **refuses** to fit a level with under 50 turns or when only one level appears
+  (which is the case on the author's machine), and says so rather than
+  producing a multiplier from nine turns.
+- **`adder budget` -- burn-down against a spend target.** Two projections are
+  reported, not one: the mean over elapsed days, and the median of *active*
+  days in the last 14, which is robust to one expensive day and to weekends.
+  The higher of the two is what the verdict uses, because under-projecting a
+  budget is the expensive error. `--strict` exits non-zero for a hook or CI.
+- **`adder doctor` -- one command that says what to do next, ranked by
+  dollars.** Runs every check, delegating each measurement to the module that
+  owns it, and orders findings by money at stake rather than by severity: a 12%
+  cache hit rate on a $30 workload deserves less attention than a delegation
+  gap on a $6,000 one. `--strict` fails only on findings above a materiality
+  floor, so the exit code means something stable.
+- **`adder export` -- the priced turns, at turn, session, or day grain, as CSV,
+  JSONL, or JSON.** Field names are identical across formats. **No message
+  content is ever exported** -- transcripts hold source code and prompts, and a
+  cost export needs none of it; `tests/test_export.py` asserts a known secret
+  string cannot appear in the output.
+- **`adder config` -- every setting, its value, and the layer that set it.**
+  Eight modules each read their own environment variable and documented it in a
+  comment. `ADDER_LOG`, `ADDER_LEDGER`, `ADDER_HOME`, `ADDER_CATALOG`,
+  `ADDER_TRACE_CACHE`, `ADDER_OFFLINE`, `ADDER_GUARD_BLOCK`, `ADDER_WARN_SPEND`
+  -- all load-bearing, none discoverable without grepping. Precedence is
+  `default < ~/.claude/adder.json < ./.adder.json < ADDER_*`, and the report
+  prints the source of each value, which is the half that matters when two
+  machines disagree. Nothing here writes a config file.
+- **Shared window flags on every report that reads transcripts**: `--since`,
+  `--until`, `--project`, `--model-filter`, `--session`, `--min-turns`,
+  `--only-subagents`/`--no-subagents`. Dates accept `2026-08-01`, `7d`, `2w`,
+  `today`, `yesterday`. The window is half-open (`--since` inclusive, `--until`
+  exclusive) so two adjacent windows partition the data exactly -- previously
+  the two commands that had date filters disagreed on the boundary, one
+  comparing dates and the other datetimes.
+- **`--json` on every report that lacked it**: `live`, `debt`, `context`,
+  `cache`, `quality`, `horizon`, `carry`, `prefix`, `savings`, `verify`,
+  `validate`, `regret`, `simulate`, `plan`. `tests/test_json_surface.py`
+  discovers them from the source and asserts each emits exactly one parseable
+  document with no bare `NaN`/`Infinity` -- Python's own loader accepts those,
+  so a round-trip test passes while every other parser rejects the file.
+- **`trace --by model|project|session|day|tool|speed|ttl`, `--top`, and
+  `--strict`.** The `tool` grouping attributes a turn to each tool it called
+  and says so, rather than inventing a split the transcript does not support.
+  `--by day` sorts chronologically and draws a bar per day: every other
+  grouping is a ranking, but a date axis sorted by cost is a bar chart with the
+  x-axis shuffled.
+- **`adder completion bash|zsh|fish`**, generated from the command table and
+  from each module's own argparse parser at print time. A hand-written
+  completion file is a second copy of the command list, and a second copy is
+  the one that goes stale; `tests/test_completion.py` asserts the generated
+  script covers every live command and every live flag.
+- **An API-error proxy in `adder quality`.** `<synthetic>` records are counted
+  as client-side failures rather than turns. Deliberately excluded from the
+  before/after regression check: most are network flakiness, and failing a cost
+  change because someone was on hotel wifi is a false positive that teaches
+  people to ignore the check.
+- **`effort` is captured per turn** and exported. It is a top-level field on the
+  record, not inside `message`, and it is the only thing in a transcript that
+  says how hard the model was told to think.
+- **`stats.py`, `render.py`, `filters.py`** -- one definition each of a
+  quantile, a formatted dollar, and a date window, replacing three, fifteen, and
+  two respectively.
+
+### Fixed — claims about the tool itself
+
+- **The README said adder "never writes anything under `~/.claude`". It does.**
+  The parse cache lives at `~/.claude/.adder-trace-cache`, the outcome log and
+  the ledger beside it, and the catalog snapshot under `~/.claude/adder/`. The
+  guarantee that is actually true and actually load-bearing is narrower:
+  **nothing under `~/.claude/projects` is ever written, renamed, or deleted.**
+  The README now says that instead, and lists every file adder does create with
+  the command that creates it. A measurement tool that misstates its own side
+  effects has no standing to correct anybody else's numbers.
+- **That guarantee is now a test, not a promise.** Every command is run over a
+  fixture transcript tree and the tree is compared byte-for-byte before and
+  after -- sizes, mtimes, and hashes. A static check cannot prove read-only;
+  this can.
+- **Every command is now executed under test, not merely asked for `--help`.**
+  CI smoke-tested `--help` for each command, which proves the parser builds and
+  nothing else. It would not have caught a report that raises on the first real
+  record, or a JSON branch referencing a field its dataclass does not have --
+  both of which happened while this change was being written.
+
+### Fixed — filters that were accepted and ignored
+
+- **`--session` and `--project` were silently dropped by every raw-record
+  scanner.** `tools`, `context`, `quality`, and the new dispatch scan read
+  message *content* rather than billed usage, so they never build a `Turn` and
+  could not use the turn-level predicate. Each was applying only the date part
+  of the window, which meant `adder tools --session abc` reported the whole
+  corpus. A filter that is accepted and ignored is worse than one that is
+  rejected, because the number looks like an answer. `Window.keeps_record`
+  now applies date, project, session, and sidechain to raw records.
+- **`adder context --since` printed filtered billing beside unfiltered
+  attribution** — two numbers drawn from different populations, laid out as
+  though one described the other. Introduced and fixed inside this release.
+- **`--model-filter` is reported as inapplicable rather than ignored.** A
+  `tool_result` block carries no model, so a tool report genuinely cannot honour
+  it; it now says so on screen instead of quietly widening.
+
+### Fixed — measurement
+
+- **Cross-file deduplication.** `iter_file` removed the one-record-per-content-
+  block repetition inside a transcript; nothing removed it *across* transcripts.
+  A resumed session writes a new `.jsonl` replaying earlier turns, and a
+  sidechain file restates the parent turn it branched from -- both carry the
+  original `message.id`, and both were counted twice, by the same mechanism and
+  in the same direction as the per-block bug that cost 1.78x. `load_sessions`
+  now dedups by `(session id, message id)`; ids are only unique per
+  conversation, so the session id is part of the key.
+- **Records with no message id sorted to the wrong place.** The merge compared
+  an index into the id list against a global record counter -- two different
+  counter spaces -- so an id-less record landed next to an unrelated turn. The
+  same expression was `order.index()` inside a loop, i.e. quadratic; on a
+  1,854-turn transcript that is the parse.
+- **`<synthetic>` records are no longer counted as either turns or unpriced
+  spend.** Claude Code writes an assistant record with that model id when the
+  *client* produced the message: "API Error: Connection closed mid-response", an
+  interrupted stream. Their usage block is all zeros. Counted as turns they
+  depress every per-turn average; counted as an unknown model they raise a
+  "this report is a lower bound" warning about spend that does not exist. They
+  are now reported as what they are -- a count of client-side failures.
+- **A model missing from `prices.py` is reported instead of dropped in
+  silence.** Any turn whose model has no price was skipped, so the total was a
+  lower bound that did not say so. `trace` now prints the tally and `--strict`
+  exits non-zero.
+- **The p90 was the maximum.** `trace` computed percentiles by indexing a
+  sorted list at `int(len * p)` -- the nearest-rank estimator with no
+  interpolation, which on ten sessions returns the tenth value as the "p90".
+  Every quantile now goes through `stats.quantile`, the linear-interpolation
+  estimator, so `median()` and `quantile(0.5)` agree by construction.
+- **`robust_z` scored everything zero when MAD was zero.** MAD is zero whenever
+  more than half a sample is identical, and the fallback of "no dispersion, so
+  no outliers" makes the detector miss the one obviously extreme value. The
+  median now serves as the scale in that case; constant data still scores zero
+  throughout, so nothing is invented.
+- **`adder anomaly` took 105 seconds.** `robust_z(x, xs)` re-sorts `xs` on every
+  call, so scoring a series with it is O(n² log n) -- 24,000 turns took a minute
+  and a half. `stats.robust_z_series` computes the median and scale once:
+  **105s → 0.2s**, and `adder doctor`, which runs it, **105s → 1.9s**.
+- **`budget.exhausted_on` raised `OverflowError`** on a small rate against a
+  large budget, because the projected day count overflowed `date`. The answer
+  there is "not in this period", not a traceback.
+- **A subagent's context was being compared against the main chain's.** Sidechain
+  turns run in their own window, so carrying one forward as the previous turn
+  makes the next main-chain turn look like a large admission when nothing was
+  admitted. `agents.missed` and `anomaly.scan` now track each chain separately.
+- **The growth denominator in `adder tools` left out assistant output.** It is
+  the largest of the three sources — around two thirds — so every tool's share
+  and every dollar apportioned by that share was inflated roughly threefold, and
+  `adder doctor` ranked a $1,073 finding as a $3,168 one. The denominator is now
+  tool results + user text + assistant output, using the **billed** output count
+  rather than the character estimate wherever the session map is available. Both
+  columns of the report use the same denominator, or they would describe
+  different populations with no way for a reader to tell.
+- **Tool attribution was orphaning results from the tool that asked for them.**
+  Deduplicating assistant records by *message* id discards every `tool_use`
+  block after the first, because Claude Code writes one record per content
+  block. The results then reference ids the scan never saw. Deduplication is by
+  block id; before the fix, 56% of context growth was attributed to a tool
+  called `?`.
+
+### Fixed
+
+- **Placement was priced as though delegation could not fail.** A delegated read
+  that comes back missing what the session needed costs the subagent run, the
+  turn that noticed, *and* the inline read anyway -- strictly worse than never
+  having delegated. `escalation_is_profitable` has carried the equivalent term
+  for tiers since the beginning; placement, the larger lever, had none.
+  `placement_cost` now takes `p_redo` and `redo_overhead`, and the router feeds
+  it the tier's own measured escalation rate. It changes real verdicts: an 8K
+  read at a 900K context with three turns left used to come back as a
+  `delegate` whose saving sat below its own overhead.
+- **The downgrade branch never checked its own overhead.** Found by the new
+  `emitted advice clears its own overhead` sweep on the day it was written:
+  three cases out of 240 emitted a $0.011 downgrade from a turn that cost
+  $0.015 to spend. It is now gated like everything else, against a band on the
+  output estimate the whole decision turns on.
+- **`routing_overhead` assumed a warm cache.** It is the bar every
+  recommendation clears, so understating it made adder emit advice too
+  eagerly. It now takes the measured carry multiplier, which raises the bar by
+  15% on this machine.
+- **A plan that declined to delegate still argued for delegating.** The reason
+  list on an `inline` plan carried the delegation case it had just rejected.
+
+
+- **An aggregator's alias routes were treated as a different vendor.**
+  `~anthropic/claude-haiku-latest` is an Anthropic model on a floating alias.
+  The tilde survived into the organisation field, so the Claude Code harness
+  gate refused it inline placement and told the user that "~anthropic cannot be
+  the main session". Organisations are normalised on the way in.
+- **A hand-edited catalog file could crash a cost report.** Pinning one price in
+  a project override is an advertised feature, so the types in that file are
+  whatever a human typed. A price written `"5"` instead of `5` loaded fine and
+  then raised a bare `TypeError` from inside the cost model. `Entry.from_json`
+  now coerces what is recoverable and treats the rest as unknown — never as
+  free.
+- **Arena ratings were compared without their published error bars.** The
+  source ships a 95% interval per rating and the catalog discarded it, so a
+  17-point gap between two overlapping intervals became a confident 52%
+  preference loss. Intervals are now stored, comparisons take the candidate at
+  the bottom of its interval against the reference at the top of its own, and a
+  ranking states when the arena cannot separate two models. Worth about three
+  points of `p_loss` on current data.
+- **The panel combination reported a fabricated quality number.** Its formula
+  assumed N runs of one model fail independently, with a bare `0.15` constant
+  tuning the result. Best-of-N quality is now reported as unknown; the cost,
+  which is exact, is still priced.
+- The cross-vendor substitute block never warned about a stale catalog, though
+  `adder pick` did. A year-old snapshot could drive a recommendation silently.
+- **The outcome log silently stopped influencing routing when a row carried an
+  ISO timestamp.** `Outcome.ts` is epoch seconds, but every other timestamp in
+  the repo is an ISO string, so writing one here is a matter of time. The row
+  loaded cleanly and then raised inside the recency weighting — where both
+  callers swallow the exception, so the symptom was not an error but a
+  calibration path quietly going dead. `outcomes.load()` now coerces a
+  recoverable timestamp and drops an unrecoverable row.
+- A cross-vendor substitute was compared against the Claude tier on the *full*
+  delegated cost, which includes admitting and carrying the returned summary at
+  the session model's rate. That term is identical for every candidate and
+  large enough on a long session to swamp the difference the choice is about,
+  and the escalation multiplier was being applied to it. The comparison is now
+  on the subagent leg alone (`Costed.subagent`).
+
 ### Changed
 
+- **One admitted-cost expression instead of two.** `select.py` had grown its own
+  copy of "a cache write now, then a cache read on every remaining turn",
+  because it prices ~500 catalog models whose cache rates are published
+  absolutely rather than as multiples of the input rate. The duplicate is how
+  the two came to disagree about whether the carry term could be corrected:
+  `cost.py` grew a fitted-carry hook and `select.py` could not accept one. Both
+  now call `cost.admitted_cost(n, Rates, reads=...)`, with the rates filled in
+  from the Claude table on one side and the catalog on the other, and a test
+  asserts the two entry points agree to within floating point on the same
+  inputs. `adder pick --measured` consequently uses both halves of the fitted
+  model — the realised miss multiplier *and* the expected re-read count after
+  compaction survival.
+
+- **`adder plan` charges for restarts, and solves for the cadence instead of
+  taking one.** A split used to reset the context and cost nothing, which is a
+  lever with no price term -- and the grid duly pushed it to the end of its
+  range for free. Each restart is now charged what that session's own opening
+  was billed, plus the handoff written in at the cache-write rate. With the
+  price measured rather than assumed, `k* = sqrt(2W/(m*r*g))` can be evaluated
+  against this workload: **19 turns**, not the round 300 that was there before,
+  and against the 536-turn sessions the spend actually sits in that is 6.1x
+  cheaper per turn on the input side. `--split-turns` still pins it; `--handoff`
+  sweeps the one input nobody can measure.
+- **The replay scales cache writes by admissions, not by context.** It used to
+  scale a turn's whole input bill by how much context the regime left it
+  carrying. Reads work that way; writes do not -- measured here, cache writes
+  run at 2.1x admitted tokens, and splitting a session changes what is re-read
+  without changing what is written. The old scaling made every split-heavy
+  regime look cheaper than it is: correcting it moved the default ladder from
+  11.7x to **9.1x**, which is the honest number.
+- **The delegation threshold is solved too, and it was 6x too conservative.**
+  `--delegate-above` defaulted to a round 5,000 tokens. `carry.delegate_threshold`
+  gets the break-even in one division, and evaluated at the solved cadence it
+  answers ~285. The direction is not the intuitive one: a 19-turn cycle leaves
+  only ~9 re-reads to avoid, which raises the threshold, but it stays small
+  because admitting a token to an Opus context costs 2.00x its input rate as a
+  cache write while reading it once on Haiku costs 1.00x of a rate five times
+  lower. Delegation is not only a carry play.
+- **A delegated step's own output is charged.** It was charged at zero, which
+  made delegation a free way to delete the session's generation cost -- and with
+  the threshold solved down to 300 tokens the optimiser found it: 99% of admitted
+  tokens delegated and main-session output at 1% of the bill. It is a rate
+  substitution, not a deletion, and is now priced on the subagent's model. This
+  cost 1.2x of the headline multiple, which is the point of finding it.
+- **`carry.optimal_split` takes a measured restart cost.** `restart_cost=` uses
+  it; without one the pessimistic cold rebuild is still assumed, because with no
+  data the safe direction is to recommend restarting less, not more.
+- Two claims added to `adder validate`: that a session opening is mostly a cache
+  read (>=40%, measures 74%), and that the solved cadence is shorter than the
+  sessions this workload actually runs (19 vs 536). The restart cadence is now
+  the largest single lever `adder plan` recommends, and it rests on both.
+
+- **Gate 3 of `policy.decide` is a ladder search, not a one-way escalation.**
+  It used to ask one question -- "is the classifier's tier better than Opus?" --
+  which could only ever escalate, so an abstention meant Opus permanently no
+  matter how much history said otherwise. The tier is now the rung with the
+  lowest expected cost, `run + p_fail x (finishing on T2 + the turn that catches
+  the failure)`, with asymmetric permissions: moving up needs no evidence, and
+  moving below the classifier's tier needs an abstention, an informative outcome
+  log, and a measured failure rate under that rung's break-even. Cheapness alone
+  never buys a downgrade. The whole ladder, losers included, is printed and in
+  `--json`.
+- Failure rates are clamped monotone up the ladder. Without it a rung nobody had
+  logged sat at the prior while the rung below it sat at a measured rate, and the
+  table reported T3 (Opus at xhigh) as seven times likelier to fail than T2 (the
+  same model at high) purely because of which label the log carried.
+- The escalation prior is read off the classifier's confidence rather than being
+  a flat 0.5. Beta(1,1) is right for "no information", but the classifier *is*
+  information; a flat prior on an empty log -- which is every user's first
+  session -- made a bounded lookup look like a coin flip and sent it to Opus.
 - **Renamed the project from `llm-router` to `adder`.** The old name advertised
   the least interesting output — routing is emitted last, and `policy.decide`
   declines to emit it when the modelled saving does not clear the cost of the
@@ -120,6 +1317,25 @@ without a stated reason is a regression, not a change.
 
 ### Fixed
 
+- **The read guard read the wrong environment variables.** The rename to `adder`
+  documented `ROUTER_GUARD_*` -> `ADDER_GUARD_*` in this file and then did not
+  finish the job: the hook went on reading `ROUTER_GUARD_WARN` and
+  `ROUTER_GUARD_HARD`, so anyone who followed the changelog configured a guard
+  that silently ignored them. That is the worst failure available to a guard --
+  it still looks installed. Both prefixes are now honoured, `ADDER_` winning.
+- **`escalation_is_profitable` charged the cheap run twice.** The failure branch
+  was priced `cheap + p_fail x (cheap + expensive)`, billing the cheap attempt
+  again in a branch where it is not re-run. There is no reading under which that
+  is true -- escalating is the opposite of running the cheap model a second time
+  -- and it made every cheap tier look worse than it is. Now
+  `cheap + p_fail x (expensive + retry_overhead)`. The gate's tolerance for
+  failure at 9,200 tokens of task context rises from 67% to 80% before the new
+  overhead term, and to 19% after it.
+- **The turn that catches a failure was free.** A subagent that returns something
+  wrong does not announce it: a main-session turn has to read the result, judge
+  it, and dispatch again, and that turn re-reads the whole context. At 400K
+  tokens on Opus that is $0.21 the gate was not charging. `retry_overhead` is
+  now passed by `policy.decide` and exposed on `max_tolerable_p_fail`.
 - 17 lint findings across `adder/`, `tests/`, and `.claude/hooks/`: ambiguous
   `l` identifiers, unused unpacked values, redundant `int(round(...))` and list
   comprehensions, collapsible nested conditionals, and `zip()` over successive

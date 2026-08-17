@@ -55,22 +55,34 @@ Issues = "https://github.com/stephenoffer/adder/issues"
 adder = "adder.cli:run"
 
 [tool.setuptools]
-packages = ["adder"]
 include-package-data = true
+
+# Discovered rather than listed: the package is a tree now, and a hand-written
+# list is a list that silently loses a subpackage the day someone adds one --
+# the checkout keeps working and only the wheel is broken.
+[tool.setuptools.packages.find]
+include = ["adder*"]
+namespaces = false
 
 # The bundled catalog snapshot and the typing marker are data the wheel must
 # carry; without this setuptools ships only .py files and
-# `adder/data/catalog.json` vanishes at install time while working fine from a
-# checkout.
+# `adder/pricing/data/catalog.json` vanishes at install time while working fine
+# from a checkout. The snapshot sits under `pricing` because `catalog.py` owns
+# it; keep the two together if either moves.
 [tool.setuptools.package-data]
-adder = ["data/*.json", "py.typed"]
+adder = ["py.typed"]
+"adder.pricing" = ["data/*.json"]
 
 [tool.setuptools.dynamic]
 version = { attr = "adder.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --strict-markers --strict-config"
+# `--import-mode=importlib` is what lets the test tree mirror the package tree:
+# without it two test modules may not share a basename, and
+# `tests/cli/test_dispatch.py` and `tests/decide/test_dispatch.py` are both the
+# obvious name for the module they cover.
+addopts = "-q --strict-markers --strict-config --import-mode=importlib"
 filterwarnings = ["error"]
 markers = [
     "transcripts: needs real Claude Code transcripts on this machine; skipped in CI",
@@ -104,15 +116,51 @@ select = [
     "C4",   # comprehensions
     "SIM",  # simplify
     "RUF",  # ruff-specific
+    "TID",  # tidy imports -- see ban-relative-imports below
+    "N",    # pep8 naming
+    "ISC",  # implicit string concatenation
+    "PIE",  # unnecessary code
+    "D100", # every module has a docstring; CLAUDE.md says what it must contain
 ]
 ignore = [
     "E501",   # line length is handled by the formatter, not the linter
-    "B008",   # function call in default arg — intentional in a few table defs
+    "B008",   # function call in default arg -- intentional in a few table defs
     "SIM108", # ternary-vs-if is a readability call, not a rule
+    # Single-capital locals are the formula's own symbols: `R` is a rate, `W` a
+    # window, `E` an expectation. The cost model is derived in the docstring
+    # above the function and the code is meant to read as that derivation.
+    "N806",
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B011"]
+"tests/*" = [
+    "B011",
+    "N803", "N806",  # tests restate the formula's symbols; see N806 above
+    # Test names are sentences, and a sentence about `ValueError` should say
+    # `ValueError`. The rule buys nothing in a file where no name is called.
+    "N802",
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["adder"]
+# Style rule from CLAUDE.md, enforced rather than remembered. Postponed
+# annotation evaluation is what lets modules type-annotate against each other
+# without paying an import at module load, which the lazy-dispatch design needs.
+required-imports = ["from __future__ import annotations"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Absolute imports everywhere inside the package. In a tree this deep a
+# relative import reads as `from ...pricing.cost import turn_cost`, where the
+# number of dots is load-bearing and invisible; `from adder.pricing.cost import
+# turn_cost` says where the code lives no matter which file you are reading it
+# in, and survives the file being moved.
+ban-relative-imports = "all"
+
+# The formatter is deliberately NOT a gate (see the Makefile): several tables in
+# `pricing` are hand-aligned into columns and the formatter destroys that. These
+# settings exist so that if someone does run it, it agrees with the code.
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+

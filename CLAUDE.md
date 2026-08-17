@@ -19,7 +19,7 @@ recommendation that someone acts on.
 1. **No runtime dependencies.** `[project.dependencies]` stays empty. The tool
    must run from a bare Python 3.10+ checkout with no install step. If you
    believe you need a dependency, say so in the PR and expect to justify it.
-2. **No network in library code.** `adder/sources.py` is the single exception
+2. **No network in library code.** `adder/pricing/sources.py` is the single exception
    and it is opt-in, explicit, and honours `ADDER_OFFLINE=1`. Everything
    else — every report, every gate, every test — is pure computation over local
    files. Never add an implicit fetch to make a report "more accurate".
@@ -42,7 +42,7 @@ These are load-bearing. Each one cost real money to discover.
   `output_tokens`.** Claude Code writes one JSONL record per content block, each
   repeating the whole message's `usage`. Summing raw lines multi-counts most
   turns — it inflated the original numbers by 1.78x. See `trace.iter_file` and
-  `tests/test_trace_dedup.py`.
+  `tests/core/test_trace_dedup.py`.
 - **Prices are date-aware.** `prices.py` resolves a rate for a *date*, not just
   a model, because introductory pricing expires. Never hardcode a rate inline.
 - **Model resolution is longest-prefix, and handles the `[1m]` context suffix.**
@@ -58,24 +58,41 @@ These are load-bearing. Each one cost real money to discover.
 
 ## Layout
 
+The package is a tree of seven layers and **imports point down the list, never
+up**. Full rules and reasoning: `docs/structure.md`.
+
 ```
-adder/            library + one module per report; each owns its own main(argv)
-  cli.py           the only dispatcher; maps command name -> module, lazily
-  cost.py          the cost model — the piece everything else calls
-  prices.py        hand-maintained first-party Claude rates, date-aware
-  catalog.py       provider-agnostic model data (bundled < cache < project)
-  sources.py       the only module that opens a socket
-  data/            bundled catalog snapshot shipped in the wheel
-tests/             one test module per adder module, same name
-docs/              the reasoning; the README is the summary of it
-scripts/adder      launcher for a checkout; delegates to adder.cli
-.claude/           agents, hooks, and skills — part of the product, tracked
+adder/
+  util/       no domain at all: render, stats, risk, text
+  pricing/    what a token costs: prices, catalog, providers, registry, cost,
+              sources (the only module that opens a socket), data/
+  core/       reading a session off disk: trace, filters, settings, shapes
+  measure/    read-only reports:  spend/  window/  session/
+  decide/     measurement -> choice:  route/  track/  guard.py  handoff.py
+  evaluate/   did it hold up:  replay/  claims/  doctor.py
+  cli/        dispatcher, command table, help, completion, config
+tests/        mirrors the package tree, directory for directory
+docs/         the reasoning; the README is the summary of it
+scripts/adder launcher for a checkout; delegates to adder.cli
+.claude/      agents, hooks, and skills — part of the product, tracked
 ```
 
-**Adding a command:** write `adder/<name>.py` with a `main(argv) -> int`, add
-one `Command(...)` row to `COMMANDS` in `adder/cli.py`, add `tests/test_<name>.py`,
-and add a row to `docs/commands.md`. The dispatcher does not duplicate flags —
-each module owns its own parser.
+Three limits, all enforced by `tests/repo/test_structure.py`:
+
+- **No more than 12 Python files or 10 subdirectories in one directory.**
+  Crossing either means adding a level, not another file. Split by subject.
+- **No upward imports.** If a lower layer needs something from a higher one,
+  move the shared piece *down*; do not add a function-level import to hide it.
+- **`util`, `pricing`, and `core` carry no commands.** Everything imports the
+  foundation, so it may not drag an argparse parser in. This is why `trace` is
+  two files: `core/trace.py` reads transcripts, `measure/spend/trace.py` is the
+  report.
+
+**Adding a command:** write `adder/<layer>/<subject>/<name>.py` with a
+`main(argv) -> int`, add one `Command(...)` row to `COMMANDS` in
+`adder/cli/commands.py`, add `tests/<same path>/test_<name>.py`, and add a row
+to `docs/commands.md`. The dispatcher does not duplicate flags — each module
+owns its own parser.
 
 ## Style
 
@@ -85,12 +102,23 @@ each module owns its own parser.
 - Comments explain the non-obvious decision, not the syntax.
 - Type-annotate public functions. `adder/py.typed` claims the package is typed;
   keep that honest.
-- `ruff check .` clean before commit. Line length 100.
+- Imports inside the package are **absolute** (`from adder.pricing.cost import
+  turn_cost`), never relative. Ruff `TID252` enforces it: in a tree this deep the
+  number of dots is load-bearing and invisible, and breaks when a file moves.
+- Exception classes end in `Error`. Single-capital locals are for symbols from
+  the formula in the docstring above them, and nowhere else.
+- `ruff check .` clean before commit. Line length 100. The formatter is
+  deliberately not a gate — several tables in `pricing` are hand-aligned.
 
 ## Testing
 
 - `python3 -m pytest` must pass before any commit. Warnings are errors
   (`filterwarnings = ["error"]`) — do not silence one to make a test go green.
+- The test tree mirrors the package tree: `adder/measure/window/cache.py` is
+  tested by `tests/measure/window/test_cache*.py`. `tests/repo/` is the one
+  exception — it checks the repository itself. Two test files may share a
+  basename because pytest runs with `--import-mode=importlib`; leave that flag
+  alone.
 - Tests must not read the real `~/.claude` directory. Build fixtures with
   `tmp_path`. A test that only passes on the author's machine is a broken test;
   if one genuinely needs local transcripts, mark it `@pytest.mark.transcripts`.

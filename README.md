@@ -7,9 +7,9 @@
 
 ### Your coding agent's bill is bigger than your dashboard says, and most of it is avoidable.
 
-adder reads the transcripts already on your disk, prices what your context is
-costing you, and then — once you turn it on — **refuses the calls that waste the
-money, and routes the work that is left to the cheapest model that can do it.**
+adder reads the transcripts already on your disk and prices what your context is
+costing you. Turned on, it also **refuses the calls that waste the money, and
+routes the work that is left to the cheapest model that can do it.**
 
 ```bash
 pip install adder-cli
@@ -25,11 +25,11 @@ Replaying 33,192 recorded turns across 118 real sessions, those two lines took a
 | **after `adder auto on --full`** | **$2,567** | **3.1x cheaper, hands off** |
 | if you also restart when it says to | $1,233 | 6.4x cheaper |
 
-Nothing in the middle row asks you to work differently; the third needs one thing
-from you, and the tool is explicit about which. These are re-priced replays of
-turns that really happened, not projections — the null configuration has to
-reproduce the measured bill before any ratio against it means anything, and it
-does, to within 0.0%. ([benchmark.md](docs/benchmark.md))
+Nothing in the middle row asks you to work differently; the third needs one
+thing from you, and the tool is explicit about which. These are re-priced
+replays of turns that really happened, not projections. The null configuration
+has to reproduce the measured bill before any ratio against it means anything,
+and it does, to within 0.0%. ([benchmark.md](docs/benchmark.md))
 
 No account, no API key, no model calls, no network, no runtime dependencies, and
 it never writes to your transcripts. Built against Claude Code, where its numbers
@@ -53,7 +53,7 @@ Past roughly 50 remaining turns, re-reading a token costs more than writing it
 did. Your usage dashboard shows you the 1.0x column. Two things follow, and they
 are the whole tool: the expensive decision is rarely *which model you used* but
 **what you let into the context and how early**, and a 600-turn session is not
-one long session — it is the same context, re-read 600 times.
+one long session. It is the same context, re-read 600 times.
 
 Priced against a live session, that looks like this:
 
@@ -85,14 +85,14 @@ on turn 12; on turn 80 the agent reads it again. Nothing changed on disk, so the
 second read admits every one of those tokens a second time and buys no
 information at all. That call now does not happen.
 
-**It refuses a large read that has a cheaper equal, and names the equal.** *"This
-admits ~15,000 tokens at ~$1.19 of carry, against ~$0.13 delegated — read 300
-lines of it, or hand it to a subagent."* The agent takes the cheaper path and
-keeps working.
+**It refuses a large read that has a cheaper equal, and names the equal.**
+*"This admits ~15,000 tokens at ~$1.19 of carry, against ~$0.13 delegated. Read
+300 lines of it, or hand it to a subagent."* The agent takes the cheaper path
+and keeps working.
 
 **It bounds what a subagent hands back.** A subagent's own reads are already
 outside your window; the only part that reaches your context is the return, so
-that is what gets priced — against a brief, not against reading it yourself.
+that is what gets priced: against a brief, not against reading it yourself.
 
 **It routes the work you delegate.** That is the next section.
 
@@ -116,9 +116,9 @@ Behind that clause, in order:
 
 1. **Classify the task, but only at the extremes.** "Fix the login bug" is four
    words and unbounded work; text cannot predict how deep a coding task goes. So
-   the classifier fires on high-precision signals and abstains otherwise — and
-   **abstaining routes up**, because a misrouted hard task costs a full retry
-   and a misrouted easy one costs pennies.
+   the classifier fires on high-precision signals and abstains otherwise.
+   **Abstaining routes up**, because a misrouted hard task costs a full retry and
+   a misrouted easy one costs pennies.
 2. **Feasibility before price.** A tier whose context window cannot hold the
    task is not an option at any price.
 3. **Price every rung including the cost of being wrong:**
@@ -130,7 +130,7 @@ Behind that clause, in order:
    the classifier to have abstained, enough recent history at that rung to be
    informative, and a measured failure rate under that rung's break-even.
    Cheapness alone never buys a downgrade.
-5. **Compare against what the call would otherwise have run on** — the session
+5. **Compare against what the call would otherwise have run on**: the session
    model, not the top rung. Re-pricing a decision somebody already made quotes a
    saving nobody was going to collect.
 6. **Say it only if it pays, and only once per session.** The sentence lands in
@@ -142,14 +142,14 @@ lever in the tool on the strength of a classifier that is deliberately
 abstention-happy.
 
 **Across vendors,** `adder models refresh` builds a catalog of ~500 models from
-LMArena Elo and OpenRouter's index — price, context, cache rates, rating, vote
-counts — and `adder pick "<task>"` returns the cheapest that clears the quality
-bar, excluding unrated models by default: rank by price with no rating gate and
-the answer is the cheapest unknown thing on the internet, stated with the same
-confidence as everything else. Those cross-vendor candidates appear in `adder
-policy` and never in the injected clause, because a Claude Code `Task` cannot be
-dispatched to Qwen — naming a model at the moment nobody can act on it is how a
-router stops being read. ([models.md](docs/models.md) ·
+LMArena Elo and OpenRouter's index, carrying price, context, cache rates, rating
+and vote counts for each. `adder pick "<task>"` returns the cheapest that clears
+the quality bar, excluding unrated models by default: rank by price with no
+rating gate and the answer is the cheapest unknown thing on the internet, stated
+with the same confidence as everything else. Those cross-vendor candidates
+appear in `adder policy` and never in the injected clause. A Claude Code `Task`
+cannot be dispatched to Qwen, and naming a model at the moment nobody can act on
+it is how a router stops being read. ([models.md](docs/models.md) ·
 [tiers.md](docs/tiers.md) · [routing.md](docs/routing.md))
 
 ## Turning it on, and off
@@ -158,8 +158,8 @@ Activation prints every change, asks, and only then writes: three hooks into
 `settings.json`, four agent definitions, and the thresholds. Foreign hooks are
 left alone, an agent file you already have is never overwritten, the original is
 backed up, and `adder auto off` removes exactly what `on` added. It takes effect
-in your next session, and `adder auto status` reports what it has been worth —
-keeping the calls it prevented apart from the advice it gave, because only the
+in your next session, and `adder auto status` reports what it has been worth. It
+keeps the calls it prevented apart from the advice it gave, because only the
 first of those needs no assumption about whether anyone listened.
 
 ## What running it costs
@@ -170,7 +170,7 @@ covers it. Replayed over **34,592 recorded tool calls**:
 
 | | |
 |---|---|
-| calls it acted on | 2,554 — **7.4%** |
+| calls it acted on | 2,554 (**7.4%**) |
 | saving from calls that did not happen | **$517** |
 | saving argued for in sentences | $23 |
 | what adder's own messages cost | **$27** |
@@ -183,8 +183,8 @@ bigger, but that it stopped being a hope. ([guard.md](docs/guard.md))
 
 ## Where the money actually is
 
-`adder savings` on the same history: **$5,840 of a $7,888 bill — 74% — was not
-new work.** It was context already paid for once, being re-read.
+`adder savings` on the same history: **$5,840 of a $7,888 bill (74%) was not new
+work.** It was context already paid for once, being re-read.
 
 | lever | worth | who pulls it |
 |---|---|---|
@@ -202,23 +202,23 @@ the pessimistic corner of its three softest assumptions, 6.4x becomes 3.3x.
 ([levers.md](docs/levers.md))
 
 Three measurements shaped the design by contradicting the obvious advice.
-**Switching to a cheaper model mid-session loses money** — the cache is
+**Switching to a cheaper model mid-session loses money:** the cache is
 model-scoped, so a warm conversation throws the discount away; it is worth 0.5%,
-while *starting* cheap is worth 60%. **Verbosity is not the main lever** —
-`Bash` results alone admit more context than every other tool combined. **The
-cache was already fine** at a 99.2% hit rate, so the tool reports $0 recoverable
-there rather than inventing a saving it cannot deliver.
+while *starting* cheap is worth 60%. **Verbosity is not the main lever:** `Bash`
+results alone admit more context than every other tool combined. **The cache was
+already fine** at a 99.2% hit rate, so the tool reports $0 recoverable there
+instead of inventing a saving it cannot deliver.
 
 ## Cheaper is not the same as better
 
 A tool that only counts dollars will happily talk you into worse work, and one
-that can refuse your agent's tool calls could do real damage doing it. So
-`adder quality` reads your transcripts for signs the agent is struggling — tool
-error rate, corrections, interruptions, turns per prompt, rework — and `adder
-verify` **refuses to certify a saving if any of those got worse.** A change that
-cut your bill and doubled your rework isn't a saving; it's a cost you moved
-somewhere the invoice can't see. Start with plain `adder auto on` if you'd rather
-it only refuse the reads that provably admit nothing new.
+that can refuse your agent's tool calls could do real damage doing it. So `adder
+quality` reads your transcripts for signs the agent is struggling: tool error
+rate, corrections, interruptions, turns per prompt, rework. `adder verify`
+**refuses to certify a saving if any of those got worse.** A change that cut
+your bill and doubled your rework isn't a saving; it's a cost you moved
+somewhere the invoice can't see. Start with plain `adder auto on` if you'd
+rather it only refuse the reads that provably admit nothing new.
 
 ## The commands you'll actually use
 
@@ -238,18 +238,19 @@ Forty-odd more, each with `--json` and the same window flags.
 
 ## How much to trust the numbers
 
-Every dollar figure here comes from one machine's transcripts — 118 sessions,
-33,192 turns, 34,592 tool calls — dominated by one workload. Your absolute
+Every dollar figure here comes from one machine's transcripts: 118 sessions,
+33,192 turns, 34,592 tool calls, dominated by one workload. Your absolute
 numbers will differ; the *shares* are what drive the advice, and even those are
 worth re-checking on your own history, which is the entire point of the tool.
 **Run `adder savings` before believing any number on this page**, and `adder
 bench` to price the ladder above against your own turns. Every figure is re-run
-by `adder validate` rather than remembered, and the thresholds were swept rather
-than chosen — `adder auto on --full --tune` re-derives them from your transcripts
-instead of inheriting one machine's answer.
+by `adder validate`, not remembered, and the thresholds were swept, not chosen:
+`adder auto on --full --tune` re-derives them from your transcripts rather than
+inheriting one machine's answer.
 
-3,260 tests, no API key, no runtime dependencies, and no network outside `adder
-models refresh`. Two of those tests exist only to enforce the last two clauses.
+3,260 tests stand behind that, and two of them exist only to enforce two of the
+promises above: no runtime dependencies, and no network outside `adder models
+refresh`.
 
 ## Read more
 
@@ -272,13 +273,13 @@ It's also a snake, the entry fee for a Python project.
 
 ## Contributing, security, license
 
-`pip install -e ".[dev]"` then `make check` — ruff and pytest, the same thing CI
+`pip install -e ".[dev]"` then `make check`: ruff and pytest, exactly what CI
 runs. Read [CONTRIBUTING.md](CONTRIBUTING.md) first; agents working in this repo
-should read [CLAUDE.md](CLAUDE.md), the binding version of the same rules. The
-bar is about numbers rather than style: anything that moves a reported figure
-needs the measurement behind it in the PR.
+should read [CLAUDE.md](CLAUDE.md), the binding version of those rules. The bar
+is about numbers rather than style: anything that moves a reported figure needs
+the measurement behind it in the PR.
 
 adder reads your transcripts, which contain your source code and prompts. It
 writes nothing under `~/.claude/projects`, sends nothing anywhere, and holds no
-credentials — [SECURITY.md](SECURITY.md) has the threat model.
+credentials; [SECURITY.md](SECURITY.md) has the threat model.
 [MIT](LICENSE) · [CHANGELOG.md](CHANGELOG.md)

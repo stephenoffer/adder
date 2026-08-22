@@ -46,8 +46,11 @@ guarding, and the failure is invisible because the tool call still succeeds.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
+import shlex
+import sys
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -92,6 +95,23 @@ AGGREGATE_TOKENS = 20000
 # taken to be that write. Wider than it needs to be for clock granularity, and
 # the failure direction is safe: too wide only means the guard stays quiet.
 WRITE_SETTLE_S = 5.0
+# How far the guard may go, in order. `off` is the historical behaviour and is
+# still the default for anyone who has not activated anything.
+#
+# The split is not a preference dial, it is the line between two different
+# claims. `certain` covers the calls where the saving needs no model and no
+# forecast: the content is already in this context, so the call buys nothing at
+# all and refusing it cannot cost information. `full` also refuses a large read
+# that has a strictly cheaper equal -- true on the measurement, but it rests on
+# a horizon estimate and on a subagent returning a brief, so it is a separate
+# opt-in.
+ENFORCE_LEVELS: tuple[str, ...] = ('off', 'certain', 'full')
+# A refusal is offered once per target and never twice. If the model asks for
+# the same thing again it has a reason the guard cannot see -- it may have been
+# compacted since, or the first refusal may simply have been wrong -- and a
+# guard that refuses in a loop is a guard that has broken the session it was
+# supposed to make cheaper. Second ask always wins.
+MAX_REMEMBERED_DENIALS = 200
 
 @dataclass(frozen=True)
 class Settings:
@@ -113,6 +133,24 @@ class Settings:
     advice_taken: float = 0.5
     max_fires: int = 15
     state_path: Path = Path.home() / '.claude' / '.adder-guard.json'
+    enforce: str = 'off'
+    # Whether a `Task` also gets told which tier to run on. Defaults on because
+    # it is advice rather than a refusal and it is gated by the same solvency
+    # test as everything else here; `guard_route=false` turns it off for anyone
+    # who would rather the guard only talked about size.
+    route: bool = True
+    # Whether a refusal may become a substitution: the same bounded call the
+    # message was already asking for, made for the model instead of demanded of
+    # it. Off by default because a rewrite travels with an approval and can
+    # therefore suppress a permission prompt -- see `decide/narrow.py`. It only
+    # ever applies where the guard was going to refuse anyway, so enabling it
+    # relaxes a denial rather than permitting anything new.
+    narrow: bool = False
+
+    @property
+    def enforcing(self) -> bool:
+        """Is the guard allowed to refuse anything at all?"""
+        return self.enforce in ENFORCE_LEVELS and self.enforce != 'off'
 
     @classmethod
     def resolve(cls, *, cwd=None, env: dict[str, str] | None=None) -> Settings:
@@ -147,9 +185,37 @@ class Settings:
             except (TypeError, ValueError):
                 return default
 
+        def taken() -> float:
+            """The uptake discount: measured if it has been, assumed if not.
+
+            This is the number every advisory saving in the tool is multiplied
+            by, and until now it was 0.5 on every machine -- including the ones
+            that had measured their own. `uptake()` has existed and been
+            reported by `adder auto status` the whole time; nothing consumed it.
+            A measurement nobody acts on is the same failure as a router nobody
+            invokes.
+
+            An explicitly configured `guard_advice_taken` still wins. Somebody
+            who wrote a number into `.adder.json` has said something the
+            estimator does not know, and silently overriding it would make the
+            setting decorative -- which is the exact bug `Settings` was written
+            to avoid.
+            """
+            picked = pick('guard_advice_taken', 0.5, float)
+            if sources.get('guard_advice_taken', 'default') != 'default':
+                return picked
+            rate, measured, _age = load_uptake()
+            return max(UPTAKE_FLOOR, min(1.0, rate)) if measured else picked
+
         def as_bool(v) -> bool:
             return v if isinstance(v, bool) else str(v).strip().lower() in ('1', 'true', 'yes', 'on')
-        return cls(min_tokens=pick('guard_min_tokens', 2000, int), min_cost=pick('guard_min_cost', 0.25, float), hard_tokens=pick('guard_hard', 60000, int), block=pick('guard_block', False, as_bool), advice_taken=pick('guard_advice_taken', 0.5, float), max_fires=pick('guard_max_fires', 15, int), state_path=Path(str(pick('guard_state', str(Path.home() / '.claude' / '.adder-guard.json'), str))))
+        def as_level(v) -> str:
+            # An unrecognised level reads as `off`. The failure direction has to
+            # be "advise" rather than "refuse": a typo in a config file must not
+            # be what starts denying tool calls.
+            got = str(v).strip().lower()
+            return got if got in ENFORCE_LEVELS else 'off'
+        return cls(min_tokens=pick('guard_min_tokens', 2000, int), min_cost=pick('guard_min_cost', 0.25, float), hard_tokens=pick('guard_hard', 60000, int), block=pick('guard_block', False, as_bool), advice_taken=taken(), max_fires=pick('guard_max_fires', 15, int), state_path=Path(str(pick('guard_state', str(Path.home() / '.claude' / '.adder-guard.json'), str))), enforce=as_level(pick('guard_enforce', 'off', str)), route=pick('guard_route', True, as_bool), narrow=pick('guard_narrow', False, as_bool))
 
 @dataclass(frozen=True)
 class Verdict:
@@ -171,27 +237,104 @@ class Verdict:
     overhead: float = 0.0
     advice_taken: float = 0.5
     estimate: Estimate | None = None
+    deny: bool = False
+    certain: bool = False
+    target: str = ''
+    # How many independent things this message asks for. Only the clipping
+    # budget uses it: a two-claim message is not a rambling one, and each claim
+    # was separately priced against the cost of carrying it.
+    claims: int = 1
+    # The tier clause's own key, kept apart from `target` because a `Task`
+    # verdict can carry both: `target` is what a refusal would be recorded
+    # against, and this is what stops the routing sentence being said twice.
+    tier_target: str = ''
+    # The bounded call to run in place of this one, when the guard was going to
+    # refuse and `guard_narrow` is on. `None` means "refuse or advise as
+    # before" -- the field is additive and its absence is the old behaviour.
+    narrowed: dict | None = None
+
+    @property
+    def action(self) -> str:
+        """What this verdict does, as one word.
+
+        `narrow` sits where `deny` would: it is the same judgement about the
+        same call, carried out by substitution instead of refusal. Kept as its
+        own word rather than folded into `deny` because the ledger has to be
+        able to tell them apart -- a refusal saves the whole read, a
+        substitution saves the difference, and reporting one as the other would
+        overstate the saving.
+        """
+        if self.narrowed is not None:
+            return 'narrow'
+        return 'deny' if self.deny else ('ask' if self.ask else 'advise')
+
+    @property
+    def uptake(self) -> float:
+        """The share of this verdict's saving that is actually realised.
+
+        The 0.5 default is an assumption about whether a sentence changes what
+        a model does next, and it is the right assumption for a sentence. A
+        refusal is not a sentence: the call does not happen, so the tokens are
+        not admitted, and discounting that by an advice-uptake prior would be
+        booking half a saving that is whole.
+        """
+        # A substitution is enforced too: the bounded call is what runs, so the
+        # difference is realised whether or not anything was persuaded.
+        return 1.0 if (self.deny or self.narrowed is not None) else self.advice_taken
 
     @property
     def net(self) -> float:
         """Expected value of firing: the saving, discounted, less the overhead."""
-        return self.saving * self.advice_taken - self.overhead
+        return self.saving * self.uptake - self.overhead
+
+    ESCAPE = 'Re-issue this exact call if you need'
 
     def clipped(self) -> Verdict:
-        """This verdict with its message held to `MAX_MESSAGE_TOKENS`."""
-        limit = MAX_MESSAGE_TOKENS * 4
+        """This verdict with its message held to `MAX_MESSAGE_TOKENS`.
+
+        A refusal gets a wider budget, and it is not generosity. The clause
+        that tells the model how to get through is at the end of the sentence,
+        and clipping it off would turn "refused once, ask again" into a wall
+        the model has no stated way past -- the exact failure the refuse-once
+        rule exists to prevent. It is still bounded; it is bounded higher.
+        """
+        # The same reasoning covers a message carrying two claims: the second
+        # one is at the end, clipping it off leaves advice nobody can act on,
+        # and it only got joined at all after paying for its own words.
+        limit = MAX_MESSAGE_TOKENS * (6 if self.deny or self.claims > 1 else 4)
         if len(self.message) <= limit:
             return self
         cut = self.message[:limit - 1].rsplit(' ', 1)[0]
-        return replace(self, message=cut + '…')
+        out = replace(self, message=cut + '…')
+        if self.deny and self.ESCAPE not in out.message:
+            out = replace(out, message=out.message + f' {self.ESCAPE} it anyway.')
+        return out
 
     def payload(self) -> dict:
-        """The hook's stdout, or `{}` when there is nothing to say."""
+        """The hook's stdout, or `{}` when there is nothing to say.
+
+        A `deny` is the only output here that changes what happens rather than
+        describing it, and it always carries its reason: the model is told what
+        it already has and what to do instead, so the refusal is a redirection
+        and not a wall. There is no path to a silent denial.
+        """
         if not self.fire:
             return {}
         out: dict = {'hookEventName': 'PreToolUse'}
         self = self.clipped()
-        if self.ask:
+        if self.narrowed is not None:
+            # `allow` is required for the substitution to be taken: the shipped
+            # client honours `updatedInput` on the approval path. The reason
+            # travels with it so the model is told the call it made is not the
+            # call that ran -- a silent truncation would have it treat a slice
+            # as the whole file.
+            out['permissionDecision'] = 'allow'
+            out['permissionDecisionReason'] = self.message
+            out['updatedInput'] = self.narrowed
+        elif self.deny:
+            out['permissionDecision'] = 'deny'
+            out['permissionDecisionReason'] = self.message
+        elif self.ask:
             out['permissionDecision'] = 'ask'
             out['permissionDecisionReason'] = self.message
         else:
@@ -216,13 +359,30 @@ class GuardState:
     admitted: dict[str, int] = field(default_factory=dict)
     shape_calls: dict[str, int] = field(default_factory=dict)
     advised: list[str] = field(default_factory=list)
+    denied: dict[str, float] = field(default_factory=dict)
     fires: int = 0
     saving: float = 0.0
     overhead: float = 0.0
+    prevented: float = 0.0
     touched: float = 0.0
 
     def to_json(self) -> dict:
-        return {'reads': self.reads, 'wrote': self.wrote, 'admitted': self.admitted, 'shape_calls': self.shape_calls, 'advised': self.advised[-64:], 'fires': self.fires, 'saving': round(self.saving, 6), 'overhead': round(self.overhead, 6), 'touched': self.touched}
+        return {'reads': self.reads, 'wrote': self.wrote, 'admitted': self.admitted, 'shape_calls': self.shape_calls, 'advised': self.advised[-64:], 'denied': self.denied, 'fires': self.fires, 'saving': round(self.saving, 6), 'overhead': round(self.overhead, 6), 'prevented': round(self.prevented, 6), 'touched': self.touched}
+
+    def forget_context(self) -> GuardState:
+        """Drop every claim that something is already in the context.
+
+        Called from the PreCompact hook. Compaction is precisely the event that
+        makes `reads` and `wrote` false: the tokens they refer to are about to
+        leave the window, so a refusal justified by "you already have this"
+        would be refusing a read of something the model no longer has. The
+        running totals survive, because they are a record of what was spent and
+        compaction does not refund it.
+        """
+        self.reads = {}
+        self.wrote = {}
+        self.denied = {}
+        return self
 
     @classmethod
     def from_json(cls, d: dict) -> GuardState:
@@ -233,7 +393,8 @@ class GuardState:
         admitted = d.get('admitted')
         shape_calls = d.get('shape_calls')
         advised = d.get('advised')
-        return cls(reads={str(k): float(v) for k, v in reads.items()} if isinstance(reads, dict) else {}, wrote={str(k): float(v) for k, v in wrote.items()} if isinstance(wrote, dict) else {}, admitted={str(k): int(v) for k, v in admitted.items()} if isinstance(admitted, dict) else {}, shape_calls={str(k): int(v) for k, v in shape_calls.items()} if isinstance(shape_calls, dict) else {}, advised=[str(x) for x in advised] if isinstance(advised, list) else [], fires=int(d.get('fires') or 0), saving=float(d.get('saving') or 0.0), overhead=float(d.get('overhead') or 0.0), touched=float(d.get('touched') or 0.0))
+        denied = d.get('denied')
+        return cls(reads={str(k): float(v) for k, v in reads.items()} if isinstance(reads, dict) else {}, wrote={str(k): float(v) for k, v in wrote.items()} if isinstance(wrote, dict) else {}, admitted={str(k): int(v) for k, v in admitted.items()} if isinstance(admitted, dict) else {}, shape_calls={str(k): int(v) for k, v in shape_calls.items()} if isinstance(shape_calls, dict) else {}, advised=[str(x) for x in advised] if isinstance(advised, list) else [], denied={str(k): _num(v) for k, v in denied.items()} if isinstance(denied, dict) else {}, fires=int(d.get('fires') or 0), saving=float(d.get('saving') or 0.0), overhead=float(d.get('overhead') or 0.0), prevented=float(d.get('prevented') or 0.0), touched=float(d.get('touched') or 0.0))
 
     def solvent(self, advice_taken: float=0.5) -> bool:
         """Has the advice been worth more than the advice has cost?"""
@@ -346,6 +507,32 @@ def _affordable_lines(model: str, remaining_turns: int, cfg: Settings, carry, co
             hi = mid - 1
     return lo
 
+# Tools whose call has a strictly-narrower valid form. Mirrors
+# `narrow.BOUNDS`, imported lazily there so the guard's own import stays cheap.
+NARROWABLE = ('Read', 'Grep')
+
+
+def _line_tokens(lines: int) -> int:
+    """Tokens a bounded result of `lines` lines admits, on the read model."""
+    from adder.core.shapes import READ_TOKENS_PER_LINE
+    return max(1, int(lines * READ_TOKENS_PER_LINE[1]))
+
+
+def _narrowed(tool: str, tool_input: dict, lines: int) -> dict | None:
+    """The bounded call to substitute, or None. Never raises.
+
+    Wrapped because the guard must degrade to its previous behaviour rather
+    than fail: a hook that throws on a tool input shape nobody anticipated
+    would take the whole tool call down, and the whole point of this path is
+    that it is optional.
+    """
+    try:
+        from adder.decide.narrow import narrow
+        return narrow(tool, tool_input, lines=lines)
+    except Exception:
+        return None
+
+
 def _bounded_hint(tool: str) -> str:
     """The cheaper shape of this exact call, when there is an obvious one."""
     return {'Read': 'read it with offset/limit, or delegate the read', 'Bash': 'pipe it through `head -50`, `wc -l`, or redirect to a file', 'Grep': 'use `-l` or `-c` first, then read only the hits that matter', 'Glob': 'narrow the pattern', 'WebFetch': 'ask for the section you need, not the page', 'WebSearch': 'narrow the query, or fetch the one result you need', 'Task': 'tell the subagent what to return, and how briefly', 'Agent': 'tell the subagent what to return, and how briefly'}.get(tool, 'bound the output')
@@ -369,6 +556,51 @@ def _already_known(path: str, state: GuardState, *, now: float | None=None) -> s
     if written is not None and mtime <= written + WRITE_SETTLE_S:
         return 'was written by this session, so its content is already in the context'
     return ''
+
+def _target(tool: str, tool_input: dict) -> str:
+    """A stable name for what a call is about, for the refuse-once ledger.
+
+    A path for a read, a command *shape* for a shell call -- the same reduction
+    the state file uses everywhere else, so nothing that reaches disk carries
+    an argument. Shape rather than the literal command on purpose: refusing
+    `cat a.log` and then refusing `cat b.log` is refusing the same habit twice,
+    and once is the limit.
+    """
+    tool_input = tool_input or {}
+    if tool == 'Read':
+        # A path, in the clear, because `state.reads` already holds paths and
+        # the guard cannot match a re-read without them.
+        fp = tool_input.get('file_path')
+        return f'Read:{fp}' if fp else ''
+    if tool == 'Bash':
+        return f'Bash:{shape(str(tool_input.get("command") or ""))}'
+    # Everything else is identified by a digest rather than by its text. A grep
+    # pattern or a URL is an argument, and arguments do not reach this file --
+    # `shape()` exists to strip them from commands, and a hash is the same
+    # promise kept for the tools that have no shape.
+    raw = str(tool_input.get('pattern') or tool_input.get('url') or tool_input.get('query') or tool_input.get('description') or '')
+    return f'{tool}:{hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:12]}' if raw else ''
+
+def _refusable(target: str, state: GuardState) -> bool:
+    """May the guard refuse this target, or has it already refused it once?
+
+    The one rule that makes refusing safe. A guard that says no to the same
+    call every time it is tried is not saving money, it is a session that
+    cannot finish -- and the model has no way to tell the guard it knows
+    something the guard does not. Refusing once and then standing aside means
+    the worst case of a wrong refusal is one wasted turn, and the model always
+    has a way through.
+    """
+    return bool(target) and target not in state.denied
+
+def _refused(target: str, state: GuardState, *, now: float | None=None) -> GuardState:
+    """Record a refusal, so the next attempt at the same target goes through."""
+    if target:
+        state.denied[target] = time.time() if now is None else now
+        if len(state.denied) > MAX_REMEMBERED_DENIALS:
+            keep = MAX_REMEMBERED_DENIALS // 2
+            state.denied = dict(sorted(state.denied.items(), key=lambda kv: -kv[1])[:keep])
+    return state
 
 def needs_pricing(tool: str, tool_input: dict, *, sizes: SizeModel | None=None, state: GuardState | None=None, min_tokens: int=2000) -> bool:
     """Is this call worth parsing a transcript for?
@@ -423,11 +655,23 @@ def decide(tool: str, tool_input: dict, *, model: str, remaining_turns: int, cfg
             why = _already_known(str(fp), state)
             if why:
                 est = sizes.predict_tool('Read', tool_input)
-                if est.p90 >= cfg.min_tokens:
+                # The size floor exists to stop the guard interrupting about
+                # reads that were never going to be expensive. A refusal is not
+                # an interruption of that kind -- nothing is being weighed, the
+                # call returns what the context already holds -- so the only
+                # test it has to pass is the ledger one below: is the refusal
+                # worth more than the sentence that carries it.
+                dup_target = _target('Read', tool_input)
+                refusing = cfg.enforcing and _refusable(dup_target, state)
+                if est.p90 >= cfg.min_tokens or refusing:
                     saving = admitted_token_cost(est.p90, model, remaining_turns, carry=carry, context_tokens=context_tokens)
-                    msg = f'[read guard] {Path(str(fp)).name} {why}. Reading it admits ~{est.p90:,} tokens again for ~${saving:,.2f} and no new information.'
+                    name = Path(str(fp)).name
+                    if refusing:
+                        msg = f'[adder] Not re-read: {name} {why}. Use the copy you have. Re-issue this exact call if you need it anyway.'
+                    else:
+                        msg = f'[read guard] {name} {why}. Reading it admits ~{est.p90:,} tokens again for ~${saving:,.2f} and no new information.'
                     over = _advice_cost(msg, model, remaining_turns, carry, context_tokens)
-                    return _ledger_gate(Verdict(True, 'duplicate read of an unchanged file', kind='duplicate', message=msg, tokens=est.p90, inline=saving, saving=saving, overhead=over, advice_taken=cfg.advice_taken, estimate=est), state, cfg)
+                    return _ledger_gate(Verdict(True, 'duplicate read of an unchanged file', kind='duplicate', message=msg, tokens=est.p90, inline=saving, saving=saving, overhead=over, advice_taken=cfg.advice_taken, estimate=est, deny=refusing, certain=True, target=dup_target), state, cfg)
     if tool == 'Bash':
         cmd = tool_input.get('command') or ''
         sh = shape(cmd)
@@ -446,7 +690,7 @@ def decide(tool: str, tool_input: dict, *, model: str, remaining_turns: int, cfg
     est = sizes.predict_tool(tool, tool_input)
     tokens = est.p90
     if tool in ('Task', 'Agent'):
-        return _brief_gate(tool, tokens, est, model, remaining_turns, cfg, state, carry, context_tokens)
+        return _brief_gate(tool, tool_input, tokens, est, model, remaining_turns, cfg, state, carry, context_tokens)
     if tokens < cfg.min_tokens:
         return Verdict(False, f'predicted {tokens:,} tok, below the {cfg.min_tokens:,} floor', tokens=tokens, estimate=est)
     inline = admitted_token_cost(tokens, model, remaining_turns, carry=carry, context_tokens=context_tokens)
@@ -458,33 +702,126 @@ def decide(tool: str, tool_input: dict, *, model: str, remaining_turns: int, cfg
     saving = inline - sub
     if saving <= 0:
         return Verdict(False, 'delegating this one costs more than carrying it', kind='size', tokens=tokens, inline=inline, delegated=sub, saving=saving, estimate=est)
-    if tool == 'Read':
+    lines = 0
+    if tool in NARROWABLE:
+        # The same budget for both: a grep match and a source line are the same
+        # unit of admitted text, so pricing them apart would be inventing a
+        # second number for one quantity.
         lines = _affordable_lines(model, remaining_turns, cfg, carry, context_tokens)
+    if tool == 'Read':
         how = f'read at most ~{lines:,} lines of it (`limit: {lines}`), or delegate the read'
     else:
         how = _bounded_hint(tool)
-    msg = f'[read guard] This {tool} admits {est.describe()} to a context re-read ~{remaining_turns:,} more times: ~${inline:,.2f} to carry, vs ~${sub:,.2f} delegated to a subagent. If you need one fact from it, {how}.'
+    target = _target(tool, tool_input)
+    # `full` refuses what `certain` only prices. The claim is weaker than the
+    # duplicate one -- it rests on a horizon estimate and on a subagent
+    # actually returning a brief -- which is why it is a separate level, and
+    # why the refusal still names the cheaper call rather than just saying no.
+    refusing = cfg.enforce == 'full' and saving > 0 and _refusable(target, state)
+    # A refusal the guard can carry out itself. Only reachable where it was
+    # going to refuse anyway, so this strictly relaxes the denial -- and it is
+    # priced against what the bounded call actually admits, not against the
+    # whole read, because the bounded call does run.
+    sub_input = _narrowed(tool, tool_input, lines) if (refusing and cfg.narrow) else None
+    if sub_input is not None:
+        from adder.decide.narrow import describe as _describe
+        kept = admitted_token_cost(_line_tokens(lines), model, remaining_turns, carry=carry, context_tokens=context_tokens)
+        msg = f'[adder] Run {_describe(tool, tool_input, sub_input)}. Unbounded this {tool} admits {est.describe()} at ~${inline:,.2f} of carry; this way ~${kept:,.2f}.'
+        over = _advice_cost(msg, model, remaining_turns, carry, context_tokens)
+        return _ledger_gate(Verdict(True, 'the bounded call was substituted for the one written', kind='size', message=msg, tokens=tokens, inline=inline, delegated=kept, saving=max(0.0, inline - kept), overhead=over, advice_taken=cfg.advice_taken, estimate=est, deny=False, target=target, narrowed=sub_input), state, cfg)
+    if refusing:
+        msg = f'[adder] Not run as written: this {tool} admits {est.describe()} at ~${inline:,.2f} of carry, against ~${sub:,.2f} delegated. Instead, {how}. Re-issue this exact call if you need all of it.'
+    else:
+        msg = f'[read guard] This {tool} admits {est.describe()} to a context re-read ~{remaining_turns:,.0f} more times: ~${inline:,.2f} to carry, vs ~${sub:,.2f} delegated to a subagent. If you need one fact from it, {how}.'
     over = _advice_cost(msg, model, remaining_turns, carry, context_tokens)
-    return _ledger_gate(Verdict(True, 'predicted carry exceeds the cost of saying so', kind='size', message=msg, ask=cfg.block and tokens >= cfg.hard_tokens, tokens=tokens, inline=inline, delegated=sub, saving=saving, overhead=over, advice_taken=cfg.advice_taken, estimate=est), state, cfg)
+    return _ledger_gate(Verdict(True, 'predicted carry exceeds the cost of saying so', kind='size', message=msg, ask=cfg.block and tokens >= cfg.hard_tokens, tokens=tokens, inline=inline, delegated=sub, saving=saving, overhead=over, advice_taken=cfg.advice_taken, estimate=est, deny=refusing, target=target), state, cfg)
 
-def _brief_gate(tool: str, tokens: int, est, model: str, remaining_turns: int, cfg: Settings, state: GuardState, carry, context_tokens: int) -> Verdict:
-    """Price a subagent's *return*, which is the only part that reaches context.
+def _brief_gate(tool: str, tool_input: dict, tokens: int, est, model: str, remaining_turns: int, cfg: Settings, state: GuardState, carry, context_tokens: int) -> Verdict:
+    """Price a subagent's *return*, and the tier it is about to run on.
 
     The subagent's own reads are already outside the main window -- that is
     what delegating bought. What is left to decide is how much it hands back,
     and a return is compared against a brief rather than against an alternative
     placement.
+
+    The second question is what it runs on, and it is answered here rather than
+    in a second hook for one reason: two sentences injected about one call are
+    carried for the rest of the session twice. `_tier_clause` is folded into
+    whichever message this gate was going to send anyway, and when the return
+    size has nothing to say it becomes the message.
     """
+    tier = _tier_advice(tool_input, model, remaining_turns, cfg, state, carry, context_tokens)
     if tokens <= BRIEF_TARGET_TOKENS:
-        return Verdict(False, f'predicted {tokens:,} tok back, already within a brief', kind='brief', tokens=tokens, estimate=est)
+        return _tier_only(tier, state, cfg) or Verdict(False, f'predicted {tokens:,} tok back, already within a brief', kind='brief', tokens=tokens, estimate=est)
     inline = admitted_token_cost(tokens, model, remaining_turns, carry=carry, context_tokens=context_tokens)
     if inline < cfg.min_cost:
-        return Verdict(False, f'${inline:,.2f} to carry, below the ${cfg.min_cost:.2f} floor', kind='brief', tokens=tokens, inline=inline, estimate=est)
+        return _tier_only(tier, state, cfg) or Verdict(False, f'${inline:,.2f} to carry, below the ${cfg.min_cost:.2f} floor', kind='brief', tokens=tokens, inline=inline, estimate=est)
     bounded = admitted_token_cost(BRIEF_TARGET_TOKENS, model, remaining_turns, carry=carry, context_tokens=context_tokens)
     saving = inline - bounded
-    msg = f'[read guard] Subagent returns here have run {est.describe()}, admitted to a context re-read ~{remaining_turns:,} more times: ~${inline:,.2f} to carry. Ask it for under {BRIEF_TARGET_TOKENS:,} tokens — the findings, not the transcript — and that becomes ~${bounded:,.2f}.'
+    # Keyed on the tool and not on the task, so this is once per session rather
+    # than once per description. A `Task` description is different every time,
+    # so a per-target ledger would never stop a second refusal -- and refusing
+    # delegation twice is refusing the lever the whole tool is arguing for.
+    target = f'{tool}:brief'
+    refusing = cfg.enforce == 'full' and _refusable(target, state)
+    if refusing:
+        msg = f'[adder] Not delegated as written: returns from here have run {est.describe()}, which costs ~${inline:,.2f} to carry. Re-issue it asking for under {BRIEF_TARGET_TOKENS:,} tokens — the findings, not the transcript — for ~${bounded:,.2f}.'
+    else:
+        msg = f'[read guard] Subagent returns here have run {est.describe()}, admitted to a context re-read ~{remaining_turns:,.0f} more times: ~${inline:,.2f} to carry. Ask it for under {BRIEF_TARGET_TOKENS:,} tokens — the findings, not the transcript — and that becomes ~${bounded:,.2f}.'
+    reason, said, claims = 'a subagent return larger than a brief', '', 1
+    if tier.fire:
+        # Priced on the joined text, not on the two halves: what the session
+        # carries is one message. The saving adds because the two claims are
+        # independent -- how much comes back, and what produced it.
+        msg = f'{msg} {tier.clause or tier.message}'
+        saving += tier.saving * cfg.advice_taken
+        reason += ', and a cheaper tier to run it on'
+        said, claims = tier.target, 2
     over = _advice_cost(msg, model, remaining_turns, carry, context_tokens)
-    return _ledger_gate(Verdict(True, 'a subagent return larger than a brief', kind='brief', message=msg, tokens=tokens, inline=inline, delegated=bounded, saving=saving, overhead=over, advice_taken=cfg.advice_taken, estimate=est), state, cfg)
+    return _ledger_gate(Verdict(True, reason, kind='brief', message=msg, tokens=tokens, inline=inline, delegated=bounded, saving=saving, overhead=over, advice_taken=cfg.advice_taken, estimate=est, deny=refusing, target=target, tier_target=said, claims=claims), state, cfg)
+
+def _tier_advice(tool_input: dict, model: str, remaining_turns: int, cfg: Settings, state: GuardState, carry, context_tokens: int):
+    """Ask `delegate.advise` where this delegated step should run.
+
+    Wrapped so the guard never grows a second failure mode: routing needs the
+    classifier, the outcome log and the ladder, and none of those are worth a
+    tool call failing over. A guard that dies on a `Task` is worse than a guard
+    with nothing to say about it.
+    """
+    from adder.decide.delegate import Advice, advise
+    if not cfg.route:
+        return Advice(False, 'tier advice is off')
+    try:
+        # No dollar floor here, only the solvency test. `min_cost` is the
+        # threshold for *interrupting*, and a clause appended to a message the
+        # guard was already sending interrupts nothing -- it costs the words and
+        # nothing else. The floor is applied in `_tier_only`, which is the path
+        # where this becomes an interruption of its own.
+        got = advise(tool_input or {}, session_model=model, remaining_turns=remaining_turns,
+                     context_tokens=context_tokens, carry=carry,
+                     advice_taken=cfg.advice_taken, min_cost=0.0)
+    except Exception:
+        return Advice(False, 'could not price the ladder')
+    # Once per tier per session. The ladder does not change between two `Task`
+    # calls, so a second sentence saying the same thing is pure overhead --
+    # and this one is charged to the context whether or not anybody acts on it.
+    if got.fire and got.target in state.advised:
+        return Advice(False, f'already said {got.target} this session')
+    return got
+
+def _tier_only(tier, state: GuardState, cfg: Settings) -> Verdict | None:
+    """The tier clause as a verdict of its own, when the return size is quiet.
+
+    Two differences from the ride-along path. It carries the dollar floor,
+    because a message sent for this reason alone is an interruption and the
+    floor is what stops the guard interrupting over small change. And it is
+    never a denial: the guard may refuse a read, but refusing a delegation would
+    refuse the largest lever this tool has, on the strength of a classifier that
+    abstains by design.
+    """
+    if not tier.fire or tier.saving < cfg.min_cost:
+        return None
+    return _ledger_gate(Verdict(True, 'a cheaper tier for this delegated step', kind='tier', message=tier.message, saving=tier.saving, overhead=tier.overhead, advice_taken=cfg.advice_taken, tier_target=tier.target), state, cfg)
 
 def _aggregate_gate(sh: str, running: int, calls: int, model: str, remaining_turns: int, cfg: Settings, state: GuardState, carry, context_tokens: int) -> Verdict:
     """Price what one command shape has admitted across the whole session.
@@ -501,10 +838,20 @@ def _aggregate_gate(sh: str, running: int, calls: int, model: str, remaining_tur
     if inline < cfg.min_cost:
         return Verdict(False, f'`{sh}` has admitted {running:,} tok, worth ${inline:,.2f}', kind='aggregate', tokens=running, inline=inline)
     per_call = running // max(1, calls)
-    msg = f'[read guard] `{sh}` has run {calls:,} times this session and admitted ~{running:,} tokens ({per_call:,} a call) into a context re-read ~{remaining_turns:,} more times — ~${inline:,.2f} of carry. Each call was small; the total is not. Read it once, delegate it, or keep the results out of the main context.'
+    # The one class where refusing is *more* proportionate than advising. Every
+    # individual call here was small and correctly waved through; what is being
+    # refused is the two-hundred-and-forty-seventh of them, and a sentence
+    # about a habit is the easiest kind of sentence to read past. Once per
+    # shape per session either way, so the next call goes through.
+    target = f'Bash:{sh}'
+    refusing = cfg.enforce == 'full' and _refusable(target, state)
+    if refusing:
+        msg = f'[adder] Not run: `{sh}` has already admitted ~{running:,} tokens over {calls:,} calls this session, ~${inline:,.2f} of carry. Each was small; the total is not. Read it once, delegate it, or keep the results out of context — or re-issue to run it anyway.'
+    else:
+        msg = f'[read guard] `{sh}` has run {calls:,} times this session and admitted ~{running:,} tokens ({per_call:,} a call) into a context re-read ~{remaining_turns:,.0f} more times — ~${inline:,.2f} of carry. Each call was small; the total is not. Read it once, delegate it, or keep the results out of the main context.'
     over = _advice_cost(msg, model, remaining_turns, carry, context_tokens)
     saving = inline * 0.5
-    return _ledger_gate(Verdict(True, 'one command shape has admitted more than the floor', kind='aggregate', message=msg, tokens=running, inline=inline, saving=saving, overhead=over, advice_taken=cfg.advice_taken), state, cfg)
+    return _ledger_gate(Verdict(True, 'one command shape has admitted more than the floor', kind='aggregate', message=msg, tokens=running, inline=inline, saving=saving, overhead=over, advice_taken=cfg.advice_taken, deny=refusing, target=target), state, cfg)
 
 def _advice_cost(message: str, model: str, remaining_turns: int, carry, context_tokens: int) -> float:
     """What injecting this sentence costs over the rest of the session.
@@ -553,7 +900,12 @@ def observe(tool: str, tool_input: dict, state: GuardState, verdict: Verdict, *,
             if len(state.wrote) > MAX_REMEMBERED_READS:
                 keep = MAX_REMEMBERED_READS // 2
                 state.wrote = dict(list(state.wrote.items())[-keep:])
-    if tool == 'Read':
+    if tool == 'Read' and verdict.deny:
+        # A denied read never happens, so nothing was admitted and there is
+        # nothing to remember. Recording it would also make the guard's own
+        # refusal the evidence for the next one.
+        pass
+    elif tool == 'Read':
         fp = tool_input.get('file_path')
         # Only a *whole* read puts the whole file in the context. A read with
         # `limit` or `offset` admitted a slice, and remembering it as a full
@@ -571,6 +923,16 @@ def observe(tool: str, tool_input: dict, state: GuardState, verdict: Verdict, *,
         state.fires += 1
         state.saving += verdict.saving
         state.overhead += verdict.overhead
+        if verdict.deny:
+            # Kept apart from `saving` on purpose. `saving` is what the guard
+            # argued for and half-believes; `prevented` is a call that did not
+            # happen. Only the second one can be reported without an uptake
+            # assumption attached, and mixing them would put the assumption
+            # back into the one number that does not need it.
+            state.prevented += verdict.saving
+            _refused(verdict.target, state, now=now)
+        if verdict.tier_target and verdict.tier_target not in state.advised:
+            state.advised.append(verdict.tier_target)
         if tool == 'Bash':
             sh = shape(tool_input.get('command') or '')
             if sh not in state.advised:
@@ -608,7 +970,7 @@ def record_fire(session: str, tool: str, tool_input: dict, v: Verdict, *, path: 
     # measurement quietly becomes an assumption again.
     try:
         p = Path(path) if path is not None else fires_log()
-        row = {'ts': time.time() if now is None else now, 'session': session, 'tool': tool, 'kind': v.kind, 'shape': shape((tool_input or {}).get('command') or '') if tool == 'Bash' else '', 'prog': _leading(tool_input) if tool == 'Bash' else '', 'name': Path(str((tool_input or {}).get('file_path') or '')).name, 'tokens': v.tokens}
+        row = {'ts': time.time() if now is None else now, 'session': session, 'tool': tool, 'kind': v.kind, 'shape': shape((tool_input or {}).get('command') or '') if tool == 'Bash' else '', 'prog': _leading(tool_input) if tool == 'Bash' else '', 'name': Path(str((tool_input or {}).get('file_path') or '')).name, 'tokens': v.tokens, 'action': v.action, 'saving': round(v.saving, 6)}
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row) + '\n')
@@ -662,6 +1024,76 @@ class Uptake:
         if not self.fires:
             return 'no fires recorded yet — the assumption stands'
         return f'{self.changed:,} of {self.fires:,} findings were followed by the behaviour asked for ({self.rate:.0%}); bounded share of those shapes {self.before:.0%} → {self.after:.0%}'
+
+# Where the measured uptake is cached, and how stale it may get before a
+# `--learn` re-derives it. Mirrors `size_model` / `size_max_age` deliberately:
+# the same problem (a scan too expensive for the hook's hot path, a number the
+# hook needs on every call) already has an answer in this repo, and a second
+# shape for it would be a second thing to reason about.
+UPTAKE_PATH = Path.home() / '.claude' / '.adder-uptake.json'
+
+# The measured rate is never allowed below this, and the reason is not caution.
+# `advice_taken` gates whether advice is worth saying at all, so a measured 0
+# stops the guard speaking -- and a guard that does not speak records no fires,
+# so nothing can ever measure it again. The estimator would seal itself shut on
+# one bad week and there would be no path back that did not involve editing a
+# config file nobody knows exists. The floor is what keeps the loop open.
+UPTAKE_FLOOR = 0.1
+
+
+def uptake_path() -> Path:
+    """The cache location in effect: the `uptake_cache` setting, or the default."""
+    try:
+        from adder.core.settings import configured_path
+        return configured_path('uptake_cache', UPTAKE_PATH)
+    except Exception:
+        return UPTAKE_PATH
+
+
+def save_uptake(u: Uptake, path: Path | None=None) -> Path:
+    """Write the measurement. Never raises: this is a cache, not a record."""
+    p = Path(path) if path is not None else uptake_path()
+    with contextlib.suppress(OSError, TypeError, ValueError):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({'rate': round(u.rate, 4), 'fires': u.fires, 'changed': u.changed, 'measured': u.measured, 'ts': time.time()}), encoding='utf-8')
+    return p
+
+
+def load_uptake(path: Path | None=None) -> tuple[float, bool, float]:
+    """`(rate, measured, age_seconds)` from the cache; `(0.5, False, inf)` if none.
+
+    The fallback is the assumption the whole thing exists to replace, which is
+    the correct thing to fall back to: an unreadable cache must leave the guard
+    exactly as it behaved before this cache existed.
+    """
+    # Resolving the path is inside the try, not before it. `uptake_path` reads
+    # the settings layer and touches `Path.home()`, either of which can raise on
+    # a machine with no home directory or an unreadable config -- and this runs
+    # inside `Settings.resolve`, which runs before every tool call. An exception
+    # escaping here does not degrade the guard, it takes the tool call with it.
+    try:
+        p = Path(path) if path is not None else uptake_path()
+        d = json.loads(p.read_text(encoding='utf-8'))
+        rate = float(d['rate'])
+        if not 0.0 <= rate <= 1.0:
+            return (0.5, False, float('inf'))
+        return (rate, bool(d.get('measured')), max(0.0, time.time() - float(d.get('ts') or 0.0)))
+    except Exception:
+        return (0.5, False, float('inf'))
+
+
+def refresh_uptake(root=None, *, path: Path | None=None, log: Path | None=None) -> Uptake:
+    """Re-measure and cache. Called by `adder guard --learn`, never by the hook.
+
+    Measuring reads every transcript under `root`, which is a second or two --
+    fine once, and out of the question on a path that runs before every tool
+    call. So the hook reads the cached number and the scan happens when somebody
+    asks for it, exactly as the size model does.
+    """
+    u = uptake(root, log=log)
+    save_uptake(u, path)
+    return u
+
 
 def uptake(root=None, *, log: Path | None=None) -> Uptake:
     """Measure how often a fire was followed by the change it asked for.
@@ -733,10 +1165,24 @@ class Replay:
     overhead: float = 0.0
     sessions: int = 0
     biggest: list[tuple[float, str]] = field(default_factory=list)
+    refusals: int = 0
+    prevented: float = 0.0
 
     @property
     def net(self) -> float:
-        return self.saving - self.overhead
+        return self.saving + self.prevented - self.overhead
+
+    @property
+    def assumed_share(self) -> float:
+        """How much of the headline rests on the uptake assumption.
+
+        The number worth looking at when deciding whether to believe a replay.
+        A result that is mostly `prevented` is a result about calls that would
+        not have happened; a result that is mostly `saving` is a result about
+        sentences somebody may or may not have acted on.
+        """
+        total = self.saving + self.prevented
+        return self.saving / total if total > 0 else 0.0
 
     @property
     def fire_rate(self) -> float:
@@ -764,6 +1210,13 @@ def replay(root=None, *, cfg: Settings | None=None, sizes: SizeModel | None=None
     from adder.core.shapes import DEFAULT_ROOT, iter_calls, load_model
     from adder.measure.session.horizon import load as load_horizon
     cfg = cfg or Settings.resolve()
+    # The tier clause is switched off for the replay, and this is not a detail.
+    # `bench` already models what routing delegated work to a cheaper tier is
+    # worth, as its own rung ("+ the tier agents"); counting the sentence that
+    # argues for it here as well would book one dollar twice and inflate every
+    # ratio taken against the null configuration. What this function measures is
+    # the read guard.
+    cfg = replace(cfg, route=False)
     sizes = sizes or load_model()
     taken = cfg.advice_taken if advice_taken is None else advice_taken
     # Fitted to the corpus being replayed, not to the default one. The replay
@@ -793,19 +1246,49 @@ def replay(root=None, *, cfg: Settings | None=None, sizes: SizeModel | None=None
             continue
         rep.fires += 1
         rep.by_kind[v.kind] = rep.by_kind.get(v.kind, 0) + 1
-        rep.saving += v.saving * taken
+        # A refusal is booked whole and a sentence is booked discounted, which
+        # is the same rule `Verdict.uptake` applies live. Keeping the two in
+        # separate fields rather than summing them here is the point: it is
+        # what lets the report say how much of its own headline is an
+        # assumption.
+        if v.deny:
+            rep.refusals += 1
+            rep.prevented += v.saving
+            credited = v.saving
+        else:
+            rep.saving += v.saving * taken
+            credited = v.saving * taken
         rep.overhead += v.overhead
-        rep.biggest.append((v.saving * taken, f'{v.kind}: {v.message[13:110]}'))
+        rep.biggest.append((credited, f'{v.kind}: {v.message[13:110]}'))
     rep.biggest.sort(reverse=True)
     rep.biggest = rep.biggest[:top]
     return rep
-HOOK_RELPATH = '.claude/hooks/pretooluse_read_guard.py'
+# Inside the package, not under `.claude/`. The wheel prunes `.claude/`, so for
+# four releases the hook this path names existed only in a git checkout and every
+# `pip install` user was handed an install snippet pointing at nothing.
+HOOK_RELPATH = 'adder/decide/hooks/pretooluse_read_guard.py'
 
 def hook_path(repo: Path | None=None) -> Path:
-    """Absolute path to the shipped hook, for the install snippet."""
+    """Absolute path to the shipped hook, for the install snippet.
+
+    `repo` is the directory that *holds* the `adder` package -- a checkout root
+    or a `site-packages`. Both resolve the same way, which is the point of
+    keeping the hooks inside the package.
+    """
     here = Path(__file__).resolve()
     root = repo or here.parents[2]
     return root / HOOK_RELPATH
+
+def interpreter() -> str:
+    """The python the hook should be run with, quoted for a shell if it needs it.
+
+    `sys.executable`, not the string `python3`. A hook command runs through the
+    user's shell, where `python3` is whatever is first on PATH -- on macOS that
+    is routinely 3.9, which cannot import this package at all, and the failure
+    surfaces as a hook error on every tool call rather than as anything about
+    versions. The interpreter that installed adder is the one that can import it.
+    """
+    return shlex.quote(sys.executable) if sys.executable else 'python3'
 
 def settings_files(cwd=None) -> list[Path]:
     """Every settings file a hook could be declared in, nearest last."""
@@ -853,7 +1336,7 @@ def install_snippet(cwd=None) -> str:
     less accurate until somebody runs `adder guard --learn`.
     """
     learner = hook_path().parent / 'precompact_learn.py'
-    return json.dumps({'hooks': {'PreToolUse': [{'matcher': '|'.join(OBSERVED), 'hooks': [{'type': 'command', 'command': f'python3 {hook_path()}'}]}], 'PreCompact': [{'hooks': [{'type': 'command', 'command': f'python3 {learner}'}]}]}}, indent=2)
+    return json.dumps({'hooks': {'PreToolUse': [{'matcher': '|'.join(OBSERVED), 'hooks': [{'type': 'command', 'command': f'{interpreter()} {hook_path()}'}]}], 'PreCompact': [{'hooks': [{'type': 'command', 'command': f'{interpreter()} {learner}'}]}]}}, indent=2)
 
 def ledger(path: Path | None=None) -> dict:
     """What the guard has promised and what saying it has cost, across sessions.
@@ -870,12 +1353,13 @@ def ledger(path: Path | None=None) -> dict:
             blob = {}
     except (OSError, ValueError):
         blob = {}
-    fires = saving = overhead = 0.0
+    fires = saving = overhead = prevented = 0.0
     sessions = 0
     for row in blob.values():
         if not isinstance(row, dict):
             continue
         sessions += 1
+        prevented += _num(row.get('prevented'))
         # `_num`, not bare `float()`. This file is written by a hook that can be
         # killed mid-write and is small enough that people edit it; a
         # non-numeric `fires` raised `ValueError` straight out of `adder guard`,
@@ -884,7 +1368,7 @@ def ledger(path: Path | None=None) -> dict:
         fires += _num(row.get('fires'))
         saving += _num(row.get('saving'))
         overhead += _num(row.get('overhead'))
-    return {'sessions': sessions, 'fires': int(fires), 'saving': saving, 'overhead': overhead, 'path': str(p)}
+    return {'sessions': sessions, 'fires': int(fires), 'saving': saving, 'overhead': overhead, 'prevented': prevented, 'path': str(p)}
 
 def _as_call(target: str) -> tuple[str, dict]:
     """Read `--explain` input as a tool call.
@@ -919,6 +1403,21 @@ def _explain(target: str, sizes: SizeModel, cfg: Settings, *, model: str, remain
         out += ['', *(bullet(line) for line in [v.message])]
     return out
 
+def _uptake_line(cfg: Settings) -> str:
+    """The uptake discount, and where the number came from.
+
+    Printing `50% of advice acted on` without saying whether anything measured
+    that is how the assumption survived so long: it reads like a finding.
+    """
+    rate, measured, age = load_uptake()
+    if not measured:
+        return f'{cfg.advice_taken:.0%} of advice acted on — ASSUMED; run `adder guard --learn` to measure it'
+    hours = age / 3600.0
+    when = 'just now' if hours < 0.5 else f'{hours:.0f}h ago'
+    floored = ' (at the floor)' if rate < UPTAKE_FLOOR else ''
+    return f'{cfg.advice_taken:.0%} of advice acted on — measured {when}{floored}'
+
+
 def _clip(text: str, width: int=74) -> str:
     text = ' '.join(str(text).split())
     return text if len(text) <= width else text[:width - 1] + '…'
@@ -930,6 +1429,10 @@ def report(root=None, *, learn: bool=False, explain: str | None=None, replay_it:
     cfg = Settings.resolve(cwd=cwd)
     root = root or DEFAULT_ROOT
     if learn:
+        # Both learned things, in the one command anybody actually runs. The
+        # uptake measurement was previously derivable and never derived, which
+        # is why it sat unused: nothing wrote the cache the gate would read.
+        refresh_uptake(root)
         sizes = SizeModel.learn(root)
         with contextlib.suppress(OSError):
             sizes.save(model_path())
@@ -976,7 +1479,9 @@ def report(root=None, *, learn: bool=False, explain: str | None=None, replay_it:
         if not r.calls:
             out += [kv('calls', 'none found')]
         else:
-            out += [kv('tool calls replayed', f'{r.calls:,} across {r.sessions:,} sessions'), kv('cost a transcript parse', f'{r.lookup_rate:.2%} of calls'), kv('times it would speak', f'{r.fires:,} ({r.fire_rate:.2%} of calls)'), kv('by kind', ', '.join((f'{k} {n:,}' for k, n in sorted(r.by_kind.items()))) or '—'), kv(f'saving at {cfg.advice_taken:.0%} uptake', money(r.saving)), kv('cost of saying it', money(r.overhead)), kv('net', money(r.net))]
+            out += [kv('tool calls replayed', f'{r.calls:,} across {r.sessions:,} sessions'), kv('cost a parse', f'{r.lookup_rate:.2%} of calls'), kv('times it would speak', f'{r.fires:,} ({r.fire_rate:.2%} of calls)'), kv('by kind', ', '.join((f'{k} {n:,}' for k, n in sorted(r.by_kind.items()))) or '—'), kv(f'saving at {cfg.advice_taken:.0%} uptake', money(r.saving)), kv('cost of saying it', money(r.overhead)), kv('net', money(r.net))]
+            if r.refusals:
+                out += [kv('of which refused', f'{r.refusals:,} calls that would not have happened'), kv('prevented outright', money(r.prevented) + '   no uptake assumption'), kv('assumed share', f'{r.assumed_share:.0%} of the total rests on the uptake prior')]
             if r.biggest:
                 out += ['', *heading('Largest findings')]
                 out += table([(money(v), _clip(t)) for v, t in r.biggest], headers=('worth', 'finding'), align='><')
@@ -986,11 +1491,22 @@ def report(root=None, *, learn: bool=False, explain: str | None=None, replay_it:
     u = uptake(root)
     out += [kv('measured', u.describe())]
     if u.measured:
-        out += [kv('assumed', f'{cfg.advice_taken:.0%}'), kv('verdict', 'the assumption is conservative' if u.rate >= cfg.advice_taken else 'the assumption is optimistic — lower guard_advice_taken')]
+        # Telling the reader to go and lower a setting was the right advice
+        # while nothing consumed the measurement. It is now wrong: the gate
+        # picks the measured rate up on its own, and the only reason it would
+        # not is that somebody set the value explicitly. So the line reports
+        # which of the two is in force rather than issuing an instruction that
+        # has already been carried out.
+        applied = abs(cfg.advice_taken - max(UPTAKE_FLOOR, min(1.0, u.rate))) < 1e-09
+        out += [kv('in force', f'{cfg.advice_taken:.0%}'),
+                kv('source', 'the measurement above' if applied
+                   else 'guard_advice_taken, set explicitly — the measurement is reported, not applied')]
+        if applied and u.rate < UPTAKE_FLOOR:
+            out += [kv('note', f'the measured {u.rate:.0%} is below the {UPTAKE_FLOOR:.0%} floor. The floor is not caution: at an uptake near zero no advice clears its own cost, the guard falls silent, and a silent guard records no fires for anything to re-measure')]
     else:
-        out += [kv('assumed', f'{cfg.advice_taken:.0%} (guard_advice_taken)'), kv('note', 'an assumption until there are 10 findings to judge')]
+        out += [kv('in force', f'{cfg.advice_taken:.0%} (guard_advice_taken)'), kv('note', 'an assumption until there are 10 findings to judge')]
     out += ['', *heading('Settings in effect', rule='=')]
-    out += [kv('floor', f'{cfg.min_tokens:,} tok predicted'), kv('worth interrupting', money(cfg.min_cost) + ' of carry'), kv('mode', 'ask for confirmation' if cfg.block else 'advise only'), kv('assumed uptake', f'{cfg.advice_taken:.0%} of advice acted on'), kv('ceiling', f'{cfg.max_fires} fires per session'), kv('state', str(cfg.state_path))]
+    out += [kv('floor', f'{cfg.min_tokens:,} tok predicted'), kv('worth interrupting', money(cfg.min_cost) + ' of carry'), kv('mode', 'ask for confirmation' if cfg.block else 'advise only'), kv('uptake', _uptake_line(cfg)), kv('ceiling', f'{cfg.max_fires} fires per session'), kv('state', str(cfg.state_path))]
     if explain:
         out += ['', *heading('Explain', rule='=')]
         from adder.core import settings as _settings
@@ -1030,7 +1546,7 @@ def main(argv: list[str] | None=None) -> int:
         out = {'installed': [str(w) for w in installed_in()], 'model': {'calls': sizes.calls, 'shapes': len(sizes.shapes), 'age_s': None if sizes.age_s == float('inf') else sizes.age_s}, 'ledger': ledger(cfg.state_path), 'uptake': {'fires': uptake(a.root).fires, 'rate': round(uptake(a.root).rate, 4), 'measured': uptake(a.root).measured}, 'settings': {'min_tokens': cfg.min_tokens, 'min_cost': cfg.min_cost, 'block': cfg.block, 'advice_taken': cfg.advice_taken, 'max_fires': cfg.max_fires}}
         if a.replay:
             r = replay(a.root, cfg=cfg, sizes=sizes)
-            out['replay'] = {'calls': r.calls, 'sessions': r.sessions, 'priced': r.priced, 'fires': r.fires, 'by_kind': r.by_kind, 'fire_rate': round(r.fire_rate, 5), 'lookup_rate': round(r.lookup_rate, 5), 'saving': round(r.saving, 4), 'overhead': round(r.overhead, 4), 'net': round(r.net, 4)}
+            out['replay'] = {'calls': r.calls, 'sessions': r.sessions, 'priced': r.priced, 'fires': r.fires, 'by_kind': r.by_kind, 'fire_rate': round(r.fire_rate, 5), 'lookup_rate': round(r.lookup_rate, 5), 'saving': round(r.saving, 4), 'overhead': round(r.overhead, 4), 'net': round(r.net, 4), 'refusals': r.refusals, 'prevented': round(r.prevented, 4), 'assumed_share': round(r.assumed_share, 4)}
         print(json.dumps(out, indent=2))
         return 0
     print(report(a.root, learn=a.learn, explain=a.explain, replay_it=a.replay))

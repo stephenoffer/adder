@@ -27,6 +27,22 @@ omission: it is not what installing the tool gets you, it is what restructuring
 your work around the tool gets you, and the second requires the first as a
 prerequisite rather than the other way round.
 
+Where the line moved
+--------------------
+That gap was a standing indictment of the tool and it is the reason
+`adder auto` exists. An enforcing guard does not advise the delegation
+threshold, it *refuses* the calls above it, so the delegation half of the
+bottom rung crossed the line and became something installing gets you. What did
+not cross it is the restart cadence: no hook can restart a session, and pricing
+it as if one could would put back exactly the lie this module was written to
+avoid. So the two are now separate rungs, and only the cadence still carries
+the asterisk.
+
+The threshold the guard enforces is not the one the reports solve for -- 800
+tokens against ~300 -- because below 800 the hook starts parsing a transcript
+on half of all tool calls to find money that the dollar gate has already found.
+That difference is visible in the ladder rather than averaged away.
+
 The guard's threshold is derived, not chosen
 --------------------------------------------
 The guard fires on a **cost** -- $0.25 by default -- and not on a token count,
@@ -132,7 +148,8 @@ class Config:
 
 
 def ladder(sessions, *, min_cost: float, handoff_tokens: int = DEFAULT_HANDOFF,
-           min_tokens: int | None = None, on: date | None = None) -> list[Config]:
+           min_tokens: int | None = None, on: date | None = None,
+           enforcing: bool | None = None) -> list[Config]:
     """The four rungs, each adding exactly one thing to the one above it.
 
     Rungs are cumulative because the levers are substitutes: they all attack the
@@ -154,17 +171,26 @@ def ladder(sessions, *, min_cost: float, handoff_tokens: int = DEFAULT_HANDOFF,
                                  / 1_000_000))
     binding = "the token floor" if thr <= floor else f"the ${min_cost:.2f} gate"
 
+    # Whether the guard on this machine refuses the calls it prices or merely
+    # describes them. It decides which side of the enforced/advised line the
+    # delegation rungs fall on, and it is a *setting*, so the report has to
+    # read it rather than assume it -- the same mistake this module already
+    # made once by pinning the guard's floor to its shipped default.
+    enforcing = _enforcing() if enforcing is None else enforcing
+    verb = "refuse over" if enforcing else "delegate over"
+
     rungs = [Config("no adder -- as run", Regime(), enforced=True)]
     # Placement first with the model held fixed: this rung measures what moving
     # a read out of the context is worth on its own, before tier choice gets to
     # claim any of it.
     rungs.append(Config(
-        f"+ the read guard (delegate over {thr:,} tok)",
+        f"+ the read guard ({verb} {thr:,} tok)",
         replace(rungs[-1].regime, label="guard", delegate_above=thr,
                 right_size=False, sub_model=model),
         enforced=True,
         note=(f"${min_cost:.2f} at {reads:,} expected re-reads is {gate:,} tok; "
-              f"the floor is {floor:,}, so {binding} binds")))
+              f"the floor is {floor:,}, so {binding} binds"
+              + ("" if enforcing else "; advisory, so this assumes it is heeded"))))
     rungs.append(Config(
         "+ the tier agents (.claude/agents)",
         replace(rungs[-1].regime, label="tiers", right_size=True),
@@ -175,13 +201,38 @@ def ladder(sessions, *, min_cost: float, handoff_tokens: int = DEFAULT_HANDOFF,
         sessions, handoff_tokens=handoff_tokens, on=on)
     solved, solved_note = recommended_threshold(sessions, split_turns=cadence, on=on)
     if solved is not None:
+        # Split from the cadence, because the two are enforceable by different
+        # things. A hook can refuse a read; nothing here can restart a session.
+        # Bundling them made the whole of the largest rung unenforced and hid
+        # the fact that most of it no longer is.
         rungs.append(Config(
-            f"+ what the reports say (over {solved:,} tok, restart every {cadence})",
-            replace(rungs[-1].regime, label="solved", delegate_above=solved,
-                    split_turns=cadence, handoff_tokens=handoff_tokens),
+            f"+ the threshold it solves for (over {solved:,} tok)",
+            replace(rungs[-1].regime, label="solved", delegate_above=solved),
+            enforced=enforcing and solved >= thr,
+            note=(solved_note + ("" if enforcing else
+                                 "; the guard advises this, it does not enforce it — "
+                                 "`adder auto on --full`"))))
+        rungs.append(Config(
+            f"+ restarting every {cadence} turns",
+            replace(rungs[-1].regime, label="cadence", split_turns=cadence,
+                    handoff_tokens=handoff_tokens),
             enforced=False,
-            note=f"{solved_note}; {cadence_note}"))
+            note=f"{cadence_note}. No hook can restart a session; this one is yours"))
     return rungs
+
+
+def _enforcing() -> bool:
+    """Is the guard configured to refuse, rather than to advise?
+
+    Read at call time and never cached, for the reason `guard.Settings` gives:
+    a constant resolved at import is one no test can change and no `.adder.json`
+    can override.
+    """
+    try:
+        from adder.decide.guard import Settings
+        return Settings.resolve().enforce == "full"
+    except Exception:
+        return False
 
 
 @dataclass
@@ -237,19 +288,27 @@ def corner_sweep(prepared, regime: Regime, baseline: float, *,
 
 
 def run(sessions, *, min_cost: float = 0.25, handoff_tokens: int = DEFAULT_HANDOFF,
-        min_tokens: int | None = None, on: date | None = None) -> Bench:
+        min_tokens: int | None = None, on: date | None = None,
+        enforcing: bool | None = None, corners: bool = True) -> Bench:
+    """Price every rung of the ladder against the recorded turns.
+
+    `corners=False` skips the eight-point sweep of the modelled inputs. The
+    sweep is most of the work here -- eight more full replays on top of the
+    ladder's five -- and a caller that only wants the enforced multiple, like
+    the claim in `validate`, should not pay for a range it does not print.
+    """
     from adder.measure.spend.debt import output_share_of_growth
 
     share = output_share_of_growth(sessions)
     prepared = prepare(sessions, on)
     configs = ladder(sessions, min_cost=min_cost, handoff_tokens=handoff_tokens,
-                     min_tokens=min_tokens, on=on)
+                     min_tokens=min_tokens, on=on, enforcing=enforcing)
     results = [replay(prepared, c.regime, output_share=share, on=on) for c in configs]
     measured = sum(s.cost_on(on) for s in sessions.values())
     base = results[0].total
-    corners = corner_sweep(prepared, configs[-1].regime, base,
-                           output_share=share, on=on) if len(configs) > 1 else []
-    return Bench(configs, results, measured, len(sessions), corners)
+    swept = corner_sweep(prepared, configs[-1].regime, base,
+                         output_share=share, on=on) if corners and len(configs) > 1 else []
+    return Bench(configs, results, measured, len(sessions), swept)
 
 
 def report(root: Path | str = DEFAULT_ROOT, *, min_cost: float = 0.25,
@@ -287,10 +346,14 @@ def report(root: Path | str = DEFAULT_ROOT, *, min_cost: float = 0.25,
     print("    Everything above the * line happens without you doing anything: the")
     print("    PreToolUse guard prices a read before it lands, and the tier files")
     print("    decide what the delegated step runs on.")
+    if not _enforcing():
+        print("    The guard is advisory here, so this rests on the advice being")
+        print("    taken. `adder auto on --full` makes it refuse instead, which")
+        print("    moves the threshold row above the line.")
     if any(not c.enforced for c in b.configs):
         print(f"  Following what the reports say:      {b.followed:>5.1f}x")
-        print("    The * row is advice. Nothing in this repo enforces it, and the gap")
-        print("    between the two numbers is the part that is on you, not the tool.")
+        print("    The * row is the restart cadence. No hook can restart a session,")
+        print("    so the gap between the two numbers is the part that is on you.")
 
     if b.corners:
         print()

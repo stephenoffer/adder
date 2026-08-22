@@ -7,6 +7,8 @@ include SECURITY.md
 include pyproject.toml
 include adder/py.typed
 recursive-include adder/pricing/data *.json
+# The agent definitions activation installs; see pyproject's package-data.
+recursive-include adder/decide/agents *.md
 recursive-include tests *.py
 recursive-include docs *.md
 

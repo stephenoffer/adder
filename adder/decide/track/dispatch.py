@@ -316,6 +316,7 @@ def to_outcomes(scan_result: Scan, *, known_hashes: set[str] | None = None) -> l
     no-op rather than a way to double the evidence behind a gate.
     """
     from adder.decide.track.outcomes import Outcome
+    from adder.decide.track.similar import sketch
 
     known = known_hashes or set()
     rows = []
@@ -333,6 +334,12 @@ def to_outcomes(scan_result: Scan, *, known_hashes: set[str] | None = None) -> l
             duration_s=d.duration_s,
             ts=d.epoch or 0.0,
             source="transcript",
+            # The description is all the task text a transcript keeps for a
+            # dispatch, and it is the field the harness asks to be a summary,
+            # so it is the most on-topic few words available. Empty for a
+            # dispatch that had none, which leaves the row invisible to the
+            # neighbour estimator rather than giving it a sketch of nothing.
+            sketch=list(sketch(d.description)),
         ))
     return rows
 

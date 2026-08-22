@@ -361,9 +361,23 @@ def check_guard(root=None) -> Check:
         return Check(
             "guard", False,
             "not installed — nothing is preventing spend, only measuring it",
-            action="`adder guard --install` — prints the settings.json block; "
-                   "the hook is the only component that runs while a read is "
-                   "still cancellable",
+            action="`adder auto on` — installs the hooks and says what it will "
+                   "change first; the hook is the only component that runs "
+                   "while a read is still cancellable",
+        )
+    if not cfg.enforcing:
+        # A separate finding from "not installed", because the two have
+        # different fixes and very different values. Installed-but-advisory is
+        # the configuration whose entire saving is multiplied by a guess about
+        # whether advice gets taken; measured over 34,144 recorded calls,
+        # enforcing moves the net from $93 to $513 and the share resting on
+        # that guess from 100% to 4%.
+        return Check(
+            "guard", False,
+            "installed but advisory — every dollar it claims is multiplied by "
+            f"an assumed {cfg.advice_taken:.0%} chance the advice is taken",
+            action="`adder auto on --full` — lets it refuse the calls that "
+                   "admit nothing new, so the saving stops being an assumption",
         )
     if not sizes.calls:
         return Check(
@@ -399,11 +413,18 @@ def check_guard(root=None) -> Check:
     u = guard_uptake(root)
     basis = (f"a measured {u.rate:.0%} uptake" if u.measured
              else f"{cfg.advice_taken:.0%} assumed uptake")
+    prevented = float(led.get("prevented") or 0.0)
+    detail = [f"solvent at {basis}; net {money(net + prevented)}", u.describe()]
+    if prevented:
+        # Reported first and separately: it is the only figure in this check
+        # that no assumption is applied to.
+        detail.insert(0, f"{money(prevented)} of it is calls that did not "
+                         f"happen, which no uptake term applies to")
     return Check(
         "guard", True,
         f"{led['fires']:,} findings worth {money(led['saving'])} promised for "
         f"{money(led['overhead'])} of advice",
-        detail=[f"solvent at {basis}; net {money(net)}", u.describe()],
+        detail=detail,
     )
 
 
@@ -555,7 +576,28 @@ def main(argv: list[str] | None = None) -> int:
     if window.active:
         sessions = window.apply(sessions)
     if not sessions:
-        print(f"No sessions under {root}.")
+        # The first thing a new install prints, if it prints anything at all.
+        # It used to be this sentence and nothing else, which reads as a broken
+        # tool rather than an empty one: every check here measures a transcript
+        # you have already paid for, and a machine with no history has none. The
+        # part that needs no history is the part that prevents spend instead of
+        # reporting it, so say so here rather than in the README only.
+        print(f"No sessions under {root} yet.\n")
+        if window.active:
+            print(f"  Nothing matched {window.describe()}. Try it without the "
+                  "window flags.\n")
+        else:
+            print("  Every check here reads a transcript you have already paid "
+                  "for, so on a\n  fresh machine there is nothing to measure. "
+                  "What does not need history is the\n  half that prevents "
+                  "spend rather than reporting it:\n")
+            print("      adder auto on --full\n")
+            print("  That installs the hooks that price a call before its "
+                  "result lands in your\n  context. Run this again after a "
+                  "session or two and it will have numbers.\n")
+            print(f"  Transcripts somewhere else? `adder doctor <dir>`, or set "
+                  f"`root` in\n  {settings.PROJECT_FILE} (`adder config --init` "
+                  "prints a template).\n")
         return 1
 
     checks = run(root, sessions)

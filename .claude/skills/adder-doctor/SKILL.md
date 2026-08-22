@@ -1,7 +1,7 @@
 ---
 name: adder-doctor
 description: Show where Claude Code token spend actually goes, what an output token really costs, and what each lever is worth. Read-only diagnostic - never changes configuration. Use when asked about token cost, spend, why a session is expensive, or how to reduce Claude Code cost.
-allowed-tools: Bash(/Users/stephen.offer/Desktop/llm-router/scripts/adder:*), Read
+allowed-tools: Bash(adder:*), Bash(./scripts/adder:*), Read
 disable-model-invocation: false
 ---
 
@@ -13,13 +13,13 @@ was assembled. **They cost zero model tokens.** Do not recompute them.
 ## The ranked answer
 
 ```
-!`/Users/stephen.offer/Desktop/llm-router/scripts/adder doctor`
+!`adder doctor`
 ```
 
 ## This session, right now
 
 ```
-!`/Users/stephen.offer/Desktop/llm-router/scripts/adder live`
+!`adder live`
 ```
 
 ## Going deeper

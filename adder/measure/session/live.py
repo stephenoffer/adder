@@ -320,7 +320,17 @@ def render(sess: Session | None, *, sizes: list[int] | None = None,
            on: date | None = None, transcript: Path | None = None) -> str:
     """The session, priced. `on` pins "today" so the expiry notice is testable."""
     if sess is None:
-        return "  No transcript found for this directory yet."
+        # A transcript appears once Claude Code has written a turn in this
+        # directory, so the honest reading of this state is "not yet", not
+        # "broken". Saying which of the two it is costs three lines and is the
+        # difference between a new user running the next command and stopping.
+        return ("  No transcript found for this directory yet.\n\n"
+                "  Claude Code writes one per project the first time you use it "
+                "here, so this\n  fills in on your next turn. Nothing needs "
+                "configuring.\n\n"
+                "  Meanwhile `adder auto on --full` installs the part that does "
+                "not need\n  history: it prices a tool call before its result "
+                "lands in your context.")
     today = on or date.today()
     r = analyse(sess)
     out = [

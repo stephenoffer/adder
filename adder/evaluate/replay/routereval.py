@@ -194,6 +194,55 @@ class Report:
         """How much of the achievable APGR the router leaves on the table."""
         return max(0.0, self.oracle_apgr - self.apgr_calls)
 
+    @property
+    def best_single(self) -> float:
+        """Quality from picking one model and never routing at all.
+
+        Usually the strong arm, and deliberately not assumed to be: on a task
+        mix where the weak model wins, quoting the strong arm as the baseline
+        would flatter every router scored against it.
+        """
+        return max(self.q_strong, self.q_weak)
+
+    @property
+    def gain_at_best(self) -> float:
+        """Quality the router adds over the better of the two fixed choices.
+
+        The published benchmarks report this because it is the comparison that
+        embarrasses routers: several well-known ones fail to beat simply picking
+        one model, and a metric family anchored at the weak arm cannot show it.
+        PGR cannot either -- it is 1.0 at the all-strong endpoint by
+        construction, and that endpoint *is* a single model.
+
+        **Zero is the common answer and it is not a bug.** It means no threshold
+        on this curve beat the better fixed choice, which is a finding rather
+        than a failure of measurement. It is positive only where some mix of the
+        two arms is genuinely better than either alone.
+        """
+        if not self.curve:
+            return 0.0
+        return max(0.0, max(p.quality for p in self.curve) - self.best_single)
+
+    @property
+    def cost_save(self) -> float:
+        """Largest share of the all-strong budget saved at no loss of quality.
+
+        The benchmark's headline cost figure, and the one a reader actually
+        wants: not "how much of the gap did it recover" but "how much cheaper
+        can this get before it starts costing me answers". Read off the curve as
+        the cheapest threshold whose quality still matches the better fixed
+        choice.
+
+        0.0 means no threshold held quality, which includes the honest case
+        where the router has nothing to offer. Requires a cost axis with a
+        denominator, for the reason `cost_separable` gives.
+        """
+        if not self.curve or not self.cost_separable:
+            return 0.0
+        holding = [p.cost_fraction for p in self.curve
+                   if p.quality >= self.best_single - 1e-12]
+        return max(0.0, 1.0 - min(holding)) if holding else 0.0
+
     def to_json(self) -> dict:
         return {
             "n": self.n,
@@ -207,6 +256,14 @@ class Report:
                 "oracle": self.oracle_apgr,
                 "regret": self.regret,
                 "beats_random": self.beats_random,
+            },
+            # Named as the published benchmarks name them, so a number here can
+            # be quoted next to one from a paper without a translation step.
+            "vs_best_single": {
+                "best_single_quality": self.best_single,
+                "gain_at_best": self.gain_at_best,
+                "beats_best_single": self.gain_at_best > 0.0,
+                "cost_save": self.cost_save if self.cost_separable else None,
             },
             "cpt": {f"{k}%": v for k, v in sorted(self.cpt.items())},
             "cpt_cost": ({f"{k}%": v for k, v in sorted(self.cpt_cost.items())}
@@ -634,6 +691,9 @@ def format_report(rep: Report, *, label: str = "router") -> str:
     out.append(render.kv("random router", f"0.500  [{rlo:.3f}, {rhi:.3f}]"))
     out.append(render.kv("oracle ceiling", f"{rep.oracle_apgr:.3f}"))
     out.append(render.kv("regret vs oracle", f"{rep.regret:.3f}"))
+    out.append(render.kv("gain vs best single", f"{rep.gain_at_best:+.3f}"))
+    if rep.cost_separable:
+        out.append(render.kv("cost saved at equal quality", render.pct(rep.cost_save)))
     for target in sorted(rep.cpt):
         calls = rep.cpt[target]
         budget = (f", {render.pct(rep.cpt_cost[target])} of budget"
@@ -650,6 +710,17 @@ def format_report(rep: Report, *, label: str = "router") -> str:
             f"  Not distinguishable from random ordering on {rep.n} episodes "
             f"(router [{lo:.3f}, {hi:.3f}] vs random [{rlo:.3f}, {rhi:.3f}]). "
             "Collect more episodes before trusting the ranking."))
+
+    if rep.gain_at_best <= 0.0:
+        out.append("")
+        out += render.wrap(
+            "No threshold on this curve beats simply using "
+            f"{'the strong' if rep.q_strong >= rep.q_weak else 'the weak'} model "
+            "for everything. That is the comparison the published benchmarks "
+            "found several well-known routers fail, and it is reported here for "
+            "the same reason: a router that cannot beat one fixed choice is a "
+            "cost lever, not a quality one. Read the cost-saved figure, not the "
+            "APGR.")
 
     if not rep.cost_separable:
         out.append("")

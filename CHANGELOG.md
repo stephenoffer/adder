@@ -11,6 +11,294 @@ without a stated reason is a regression, not a change.
 
 ## [Unreleased]
 
+- **The measured advice-uptake now reaches the gate that assumed it.**
+  `guard.uptake()` has estimated this for a long time and `adder auto status`
+  has printed it, but nothing consumed it: every advisory saving in the tool was
+  discounted by a flat 0.5, including on machines that had measured their own
+  rate and were displaying it on screen. A measurement nobody acts on is the
+  same failure as a router nobody invokes.
+
+  `adder guard --learn` now caches the measurement to
+  `~/.claude/.adder-uptake.json` and `Settings.resolve` reads it, so the
+  solvency gate strengthens or weakens on evidence instead of staying anchored
+  to a default nobody checked. The hook reads the cache rather than re-scanning
+  transcripts before every tool call — the same split the size model already
+  uses. An explicitly set `guard_advice_taken` still wins.
+
+  **A floor of 10% keeps the loop open, and it is not caution.**
+  `advice_taken` decides whether advice is worth saying at all, so a measured
+  rate near zero silences the guard — and a silent guard records no fires, so
+  nothing can re-measure it. Unfloored, the estimator seals itself shut on one
+  bad week with no way back short of editing a config file nobody knows exists.
+
+  Two smaller fixes came with it. `load_uptake` resolves its path *inside* the
+  try: it runs inside `Settings.resolve`, which runs before every tool call, and
+  an exception escaping there does not degrade the guard, it takes the tool call
+  with it. And `adder guard` no longer tells the reader to lower
+  `guard_advice_taken` by hand — correct advice while nothing consumed the
+  measurement, and an instruction to redo something already done now that the
+  gate picks it up itself. ([guard.md](docs/guard.md))
+
+- **`adder routereval` now reports the comparison PGR cannot make.** PGR is 1.0
+  at the all-strong endpoint by construction, and that endpoint is a single
+  model, so no PGR-derived number can say whether the router beat simply picking
+  one model and never routing. The published benchmarks report exactly that, and
+  it is where several well-known routers fail. Added `gain vs best single` and
+  `cost saved at equal quality`, named as those benchmarks name them so a figure
+  here is quotable next to one from a paper. The baseline is the *better* of the
+  two arms, not assumed to be the strong one, because a mix where the weak model
+  wins would otherwise flatter every router scored against it. ParetoDist was
+  deliberately not added: the frontier here is two fixed points plus an oracle,
+  so the distance to it is the oracle regret already printed, under a second
+  name. ([routing.md](docs/routing.md))
+
+- **`adder limits` also reports the week.** The five-hour window was the only
+  span covered, and the weekly cap is the other half of the constraint. The
+  comparison is the heaviest *sliding* seven days rather than a calendar week:
+  the reset day is not published, so an anchored total would depend on where the
+  anchor was put, while a sliding peak is a property of the workload. Labelled a
+  proxy where it is printed — the cap itself is metered in compute hours, which a
+  transcript does not record.
+
+- **The guard can now carry out its own advice instead of asking for it**
+  (`guard_narrow`, off by default). At `full`, a refusal costs a turn: the guard
+  says "read at most 116 lines of it (`limit: 116`)", the model reads that,
+  agrees, and issues the bounded call. The outcome is the bounded read plus one
+  round trip spent arriving at advice that was already priced.
+
+  A `PreToolUse` hook may return `updatedInput`, so the guard now substitutes the
+  bounded call rather than demanding it. `Read` gains a `limit`, `Grep` a
+  `head_limit`; both are read-only and both substitutions are a strict subset of
+  what was asked for. `Bash` is still refused rather than rewritten — appending
+  `| head` to a command this tool did not write can change its exit status or cut
+  a `&&` chain, and rewriting somebody's shell is not a bounded operation.
+
+  The field was verified against the shipped client rather than the docs, which
+  do not state whether it exists on this event, what happens when it is absent,
+  or what it travels with. Claude Code 2.1.238 answers all three, and the third
+  answer is why this is opt-in: `Hook satisfied user interaction for <tool> via
+  updatedInput, bypassing permission prompt`. A substitution can suppress a
+  prompt, and a smaller result than the one requested is not the same as an
+  authorised one. It is reachable only where the guard was going to refuse
+  outright, so enabling it relaxes a denial and can never permit something the
+  guard would have been silent about — asserted in
+  `tests/decide/test_narrow.py`, which fails if a substitution appears at `off`
+  or `certain`.
+
+  No reported figure moves. The saving is booked against what actually ran, the
+  bounded read, not against the whole read a refusal would have prevented, and
+  `Verdict.action` reports `narrow` rather than `deny` so the ledger cannot
+  confuse the two. ([guard.md](docs/guard.md))
+
+- **The router now conditions on the task, not just the tier.** `p_fail` was
+  scoped per (project, tier), which averages over task kinds that share nothing:
+  one T0 number covering both "where is the retry logic" and "make the scheduler
+  preemptible" is too timid for the first and too bold for the second, and which
+  error you get depends on that week's mix. It is now also conditioned on the
+  task, via the recorded runs whose vocabulary resembles it.
+
+  Similarity is a MinHash sketch of terms and adjacent bigrams with Jaccard
+  between sketches — no model, no dependency, no network, and the task text is
+  not stored (each slot is a minimum over the whole term set, so the terms are
+  not recoverable). `adder similar "<task>"` shows the working: per-tier
+  escalation rate over the nearest runs, against the tier-wide rate the gate
+  used before.
+
+  The asymmetry the ladder already runs on is applied again, one level deeper,
+  because a rate over four neighbours is far easier to push around than one over
+  four hundred runs. A neighbour estimate with mass behind it replaces the
+  tier-wide rate in either direction; a thin one may only *raise* `p_fail`, which
+  can at worst decline a downgrade; a thin optimistic one is discarded. Where
+  there are too few neighbours, or the log predates sketches, the gate uses
+  exactly the estimate it used before — the neighbour half is additive and its
+  absence costs nothing. No reported figure moves as a result: this changes which
+  rung gets chosen on future dispatches, and `adder calib` is what scores whether
+  the sharper estimate is better calibrated out of sample.
+
+  `adder outcomes import` writes a sketch for every delegation it recovers, and
+  `adder outcomes record` takes `--task` to sketch a hand-filed row.
+
+- **`adder limits`: the carry, in the unit a subscription actually charges.**
+  Every figure in the package was in dollars, which is the wrong unit for a Pro
+  or Max user by a change of kind rather than a scale factor — they do not get a
+  bill, they get a lockout. This reconstructs the five-hour metering window from
+  turn timestamps and reports, per window, tokens read against tokens that were
+  new, the carry share, the burn rate, and the within-window slope: what a turn
+  late in a window costs against one early in it.
+
+  Three things a transcript cannot know are labelled rather than guessed. The
+  boundary rule is not published, so the reconstruction is called one everywhere
+  it is printed. The cap is not published in tokens, differs by model, and drains
+  faster in peak hours, so no capacity is asserted — the comparison is against
+  the heaviest window on this machine's own record, which is a floor under
+  capacity because it was served, not a limit. And a straight-line projection of
+  the burn rate is an under-estimate while the slope exceeds 1, which is said
+  rather than corrected. The slope itself is the one number quoted without
+  qualification: it comes from the same dedup-corrected counts as everything
+  else and does not depend on the boundary rule at all.
+
+- **`adder auto`: the tool now acts, and the headline moved 1.6x → 3.1x.**
+  `adder bench` has said for months that installing this saves 1.6x while
+  following its reports saves 6.4x, and that "nothing in this repo enforces
+  it". That gap was the product. It is now three things.
+
+  *Activation is one command.* `adder auto on [--full]` writes the three hooks
+  into `settings.json` and the thresholds into `.adder.json`, prints every
+  change before making it, keeps a `.adder.bak`, and is reversed exactly by
+  `adder auto off`. The previous route was a JSON block you were expected to
+  merge by hand plus a `--learn` you were expected to remember; a saving gated
+  on a copy-and-paste is a saving most people never get. It starts no
+  background process — the hooks run on events the harness already fires.
+
+  *The guard can refuse.* `guard_enforce` is `off`, `certain` or `full`.
+  `certain` refuses only what admits nothing new — a read of a file already in
+  this context, or one this session wrote — which cannot lose information at
+  any price. `full` also refuses a large read that has a strictly cheaper
+  equal, and names it. Replayed over 34,144 recorded tool calls, net saving
+  goes **$93 advisory → $182 at `full` → $513 at the shipped thresholds**, and
+  the share resting on the uptake assumption goes **100% → 4%**. That second
+  number is the point: a refusal is not discounted by a guess about whether
+  advice is taken, because the call does not happen.
+
+  *Refusing is survivable by construction.* Never twice for the same target, so
+  the worst case of a wrong refusal is one wasted turn; always with the reason
+  and the cheaper call; and the PreCompact hook now clears the read and write
+  memory, because "already in this context" stops being true the moment the
+  context is rebuilt. Without that last one an enforcing guard refuses reads of
+  content the model no longer has, which is the one way it could cost more than
+  it saves.
+
+  The enforcing thresholds are swept, not picked: **floor 800 tok, gate $0.10,
+  ceiling 200 fires**. The $0.25 gate exists to stop the guard *interrupting*
+  over small change and a refusal is not an interruption, so dropping it finds
+  $200 more; the 15-fire ceiling was sized for a guard that talks, and 200
+  costs no latency and is worth $26. The floor is the one real trade — 300
+  tokens finds $138 more and takes the share of tool calls that stop to parse a
+  transcript from 8% to 39% — so 800 ships and
+  `adder auto on --full --tune` re-derives it against your transcripts,
+  preferring the quieter setting whenever the noisier one is within 5%.
+
+  Two new claims in `validate.py`, because two README numbers moved:
+  `activating_it_pays_more_than_installing_it` (3.1x, and it fails if
+  enforcement ever stops beating advice) and
+  `enforcement_removes_the_assumption` (fails if the prevented share falls
+  below half). The first one earned its place immediately by failing on its
+  own first draft: told to enforce but left at the advisory thresholds, the
+  ladder answers 1.6x, because activation is the level *and* the thresholds
+  and neither half does anything alone.
+
+  *Activation installs the agent files too.* `adder bench` prices the hooks and
+  the tier definitions together — the hooks alone are 2.5x and the pair is
+  3.1x — so an `adder auto on` that wrote hooks and not `.claude/agents/` was
+  quoting a multiple it did not deliver. It now copies `Explore.md` and the
+  three tier agents, and never overwrites one you already have: a file that
+  differs is listed and left alone, because silently replacing somebody's
+  `Explore` during a command about cost changes what a built-in does in a file
+  they did not know we knew about.
+
+  The aggregate and subagent-brief findings refuse under `full` as well, for
+  consistency rather than for money: measured, they add about a dollar, because
+  at an 800-token floor the size gate has usually already spoken about the same
+  shape. The inconsistency was the reason to fix it — a guard that refuses a
+  single large read but only *mentions* a command shape on its two-hundredth
+  call is hard to predict.
+
+  `bench` splits its bottom rung in two, because the delegation threshold and
+  the restart cadence are enforceable by different things — a hook can refuse a
+  read and nothing here can restart a session. Only the cadence keeps the
+  asterisk now.
+
+
+- **Fixed: `pip install adder-cli && adder auto on` installed nothing that
+  worked.** The hooks and the tier agents lived under `.claude/`, which
+  `MANIFEST.in` prunes, so the wheel carried none of them. Activation from a
+  PyPI install therefore wrote three hook entries pointing at files that did not
+  exist inside `site-packages`, copied zero agent definitions, and reported a
+  plan that looked complete — `agent_plan` skips a source it cannot find, so the
+  missing half was silent as well as absent. Everything measured in the entry
+  above was reachable only from a git checkout, which is not who the README's
+  install line is written for.
+
+  The payload moved into the package: `adder/decide/hooks/` (modules, so
+  `packages.find` ships them without anybody remembering a data glob) and
+  `adder/decide/agents/` (named by `package-data`). Each hook resolves the
+  directory holding `adder` four levels up from itself, which is the same
+  arithmetic in a checkout and in `site-packages`. `.claude/hooks/*.py` remain as
+  forwarding shims so a `settings.json` written before this keeps working, and a
+  test caps them at 30 lines so no decision moves back into a file the wheel does
+  not carry.
+
+  Activation also writes `sys.executable` rather than the string `python3`. A
+  hook command runs through the user's shell, where `python3` is whatever is
+  first on PATH — on macOS routinely 3.9, which cannot import this package at
+  all, and which fails as a hook error on every tool call rather than as anything
+  about versions.
+
+  Four assertions in `tests/repo/test_invariants.py` now stand where this failed
+  silently: the payload lives inside the package, every file activation names
+  exists where activation looks for it, the hooks are a package rather than a
+  directory, and anything in the payload that is not a module is covered by a
+  `package-data` glob.
+
+- **The router now runs at the moment of delegation, not only when asked.**
+  `adder policy` has always combined the classifier, the measured failure rate
+  per tier and the session cost model into "what should this run on", and it has
+  always been reachable only by typing it. A router nobody invokes routes
+  nothing: the tier agents `auto on` installs are a *fixed* assignment, so
+  whatever the caller names is what runs, and if it names nothing the work runs
+  on the session model.
+
+  The PreToolUse guard already sees every `Task`, so it now asks. One hook, one
+  message, one ledger entry — the tier clause joins whatever the guard was going
+  to say about the size of the subagent's return, because two sentences about
+  one call are carried for the rest of the session twice. `adder/decide/delegate.py`
+  owns the decision; `guard_route=false` turns it off.
+
+  It is advice and never a refusal. The guard may refuse a read; refusing a
+  `Task` would refuse the largest lever in the tool on the strength of a
+  classifier that abstains by design. It also stays quiet when the call already
+  names a routed agent, when the two rungs are one model spelled two ways
+  (`claude-opus-5` against `claude-opus-5[1m]` — a "switch" that throws away a
+  model-scoped cache to buy nothing), when nothing measured justifies going down
+  a rung, when the sentence costs more than the switch saves, and after it has
+  said it once.
+
+  Cross-vendor substitutes are deliberately absent from that sentence. `pick`
+  ranks ~500 models against LMArena Elo and `policy` reports the cheaper ones,
+  but a Claude Code `Task` cannot be dispatched to Qwen, and naming a model at
+  the moment nobody can act on it is how a router stops being read. The arena
+  signal reaches this decision through the ladder, which `models ladder` diffs
+  against the live catalog.
+
+  `guard.replay` switches the clause off, and that is not a detail: `bench`
+  already prices what routing delegated work to a cheaper tier is worth, as its
+  own rung, so counting the sentence arguing for it as well would book one dollar
+  twice and inflate every ratio taken against the null. Re-measured after the
+  change, the null still reproduces the measured bill to -0.0% and
+  `adder validate` holds every claim, activation included at 3.0x on a corpus
+  that has grown to 124 sessions since the 3.1x in the README was taken.
+
+- **The README leads with the mechanism instead of the measurement.** It opened
+  with what the numbers were and worked backwards to what the tool does, which
+  answers "is this real" before "why would I run it" — the wrong order for a
+  page most people read once. It now goes why the bill is bigger than the
+  dashboard says, what the hooks refuse while you work, how the router picks a
+  tier, and only then what each of those was worth, in 284 lines rather than 328
+  with a section on the router that did not exist before.
+
+- **The first thing a new install prints is no longer a dead end.** On a machine
+  with no transcripts `adder doctor` printed `No sessions under <root>.` and
+  stopped, which reads as a broken tool rather than an empty one, and `adder
+  live` said only "No transcript found for this directory yet." Both now say
+  which of the two it is: every report here reads history you have already paid
+  for, the guard needs none, and `adder auto on --full` is useful before the
+  first session. `auto on` on a fresh machine also stopped claiming it "learned
+  result sizes from 0 local tool calls", which is a success message describing a
+  fallback.
+
+  The four skills and the `adder-init` install instructions no longer hardcode
+  the author's home directory, which was in `allowed-tools` and in every command
+  they printed.
 
 - **The guard now sees the aggregate, which is where most of the money is.**
   Its per-call view was structurally blind to the largest single admission

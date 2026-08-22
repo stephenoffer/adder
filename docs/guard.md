@@ -208,14 +208,78 @@ cannot see the read-after-write case, because a write's result is
 `"file written"` rather than the content — which is why the guard, which sees
 the tool *input*, is where that one belongs.
 
+## The step before a delegation
+
+The guard sees every `Task`, which makes it the one thing in the tool that is
+present at the moment a routing decision is actually taken. `adder policy` has
+been able to answer "what should this run on" since the beginning; what it
+lacked was a caller at that moment, because a router nobody invokes routes
+nothing. So the same gate that prices what a subagent hands *back* also names
+what it should run *on*:
+
+```
+[adder] Run this on route-t0 (claude-haiku-4-5) rather than claude-opus-5:
+~$0.05 cheaper in expectation, including a 15% chance of having to redo it
+(short read-only question).
+```
+
+The number is `policy.right_size`'s: every rung priced as `run(tier) + p_fail *
+(redo on T2 + the turn that catches it)`, with `p_fail` measured from the
+outcome log where there is history and a prior where there is not. The baseline
+is the model this delegation would otherwise have run on — the session model
+under Claude Code — not the top rung, because comparing against a rung nobody
+was going to use quotes a saving nobody was going to make.
+
+Five ways it stays quiet, and they matter more than the one way it speaks:
+
+- **The call already names a routed agent.** `route-t1`, `Explore` and the rest
+  carry a decision somebody made deliberately.
+- **The classifier abstained and nothing measured says otherwise.** Moving *up*
+  the ladder needs no evidence; moving down needs the outcome log to hold enough
+  recent history at that rung. Cheapness alone never buys a downgrade.
+- **The two rungs are the same model spelled differently.** `claude-opus-5` and
+  `claude-opus-5[1m]` are one rung, and "switch" between them would throw away a
+  model-scoped cache to buy nothing.
+- **The sentence costs more than the switch saves.** Priced like every other
+  thing the guard says, and discounted by `guard_advice_taken`, because this one
+  is advice rather than a refusal.
+- **It has already said it this session.** The ladder does not change between
+  two `Task` calls.
+
+It never refuses a delegation. The guard may refuse a read; refusing a `Task`
+would be refusing the largest lever this tool argues for, on the strength of a
+classifier that is deliberately wrong-shy rather than right. `guard_route=false`
+turns the clause off entirely for anyone who would rather the guard only talked
+about size.
+
+**What is deliberately not in that sentence: a cross-vendor model.**
+`adder pick` ranks ~500 catalogued models by price against LMArena Elo and
+`adder policy` reports the cheaper ones as substitutes, but under Claude Code a
+`Task` cannot be dispatched to Qwen — the harness pins subagents to the vendor.
+Naming one at the moment somebody cannot act on it is how a router loses trust.
+The arena signal reaches this decision through the ladder instead, which
+`adder models ladder` diffs against the live catalog.
+
 ## Running it
 
 ```bash
+adder auto on --full             # install it, and let it refuse
 adder guard                      # installed? what it predicts, what it decided, what it cost
-adder guard --install            # the settings.json block to merge
+adder guard --install            # the settings.json block, printed for hand-merging
 adder guard --learn              # re-derive the size model from your transcripts
 adder guard --explain "cat big.py | head -20"
 ```
+
+`adder auto on` is the supported way in. `--install` predates it and still
+prints the block for anyone who would rather merge it themselves, or who is
+writing the file from a dotfiles repository.
+
+The hook it points at lives inside the package, at
+`adder/decide/hooks/pretooluse_read_guard.py`. It used to live in `.claude/`,
+which the wheel prunes — so for four releases the install snippet named a path
+that existed only in a git checkout, and activation from a `pip install` wrote
+three hooks pointing at nothing. `.claude/hooks/` still holds forwarding shims
+so a `settings.json` written before the move keeps working.
 
 The report leads with whether the hook is declared in any `settings.json` it
 can see, because an uninstalled guard, a broken guard and a correctly quiet
@@ -233,7 +297,173 @@ ever reads it.
 
 It is advisory by default; set
 `ADDER_GUARD_BLOCK=1` to escalate to a confirmation prompt above the hard
-threshold. It never blocks silently, and it never denies.
+threshold, or `adder auto on` to let it refuse. It never blocks silently.
+
+## Refusing
+
+Advice has an uptake term, and the uptake term is the weakest number in this
+project: nothing in a transcript says whether a model changed course because of
+an injected sentence, so the guard discounts everything it says by an assumed
+0.5. A refusal has no such term. The call does not happen, the tokens are not
+admitted, and the saving is whole.
+
+`guard_enforce` decides how far that goes. It is `off` unless you turn it on.
+
+| level | what it refuses |
+|---|---|
+| `off` | nothing — the historical behaviour |
+| `certain` | a read whose content is already in this context |
+| `full` | also a large read that has a strictly cheaper equal |
+
+`certain` is the level that needs no argument. The file was read earlier in this
+session and has not changed on disk, or this session wrote it — either way the
+content is in the context already, so the read buys no information at any price.
+`full` is a weaker claim: it rests on the horizon estimate and on a subagent
+actually returning a brief, which is why it is a separate opt-in and why its
+message always names the cheaper call rather than only saying no.
+
+Three properties make refusing safe to ship, and each is a test in
+`tests/decide/test_guard_enforce.py`:
+
+* **It never refuses the same target twice.** A guard cannot be argued with, and
+  the model has no way to tell it something it does not know. If the same call
+  is issued again it goes through. The worst case of a wrong refusal is one
+  wasted turn.
+* **It always names the way through.** Every refusal carries its reason and
+  either the content the model already has or the bounded call to make instead.
+* **It forgets what compaction drops.** "Already in this context" stops being
+  true the moment the context is rebuilt, so the PreCompact hook clears the
+  read and write memory before the compaction it is invalidated by. Without
+  that, the guard would refuse a read of something the model no longer has,
+  which is the one way an enforcing guard costs more than it saves.
+
+## Substituting, instead of refusing
+
+A refusal at `full` costs a turn. The guard says "read at most 116 lines of it
+(`limit: 116`)", the model reads that, agrees, and issues the bounded call — so
+the outcome is the bounded read plus one round trip spent arriving at advice the
+guard had already priced. At the context sizes where the guard fires, that turn
+is not rounding error.
+
+The harness has a seam that removes it. A `PreToolUse` hook may return
+`updatedInput`, and the call runs with the arguments the hook substituted. So
+`guard_narrow=true` stops asking for the bounded call and makes the call bounded:
+
+```
+[adder] Run bounded to 116 lines (limit=116, was unbounded); re-issue with a
+larger limit if you need the rest. Unbounded this Read admits ~60,000 tok at
+~$8.83 of carry; this way ~$0.21.
+```
+
+The call executes, the model is told what changed and how to undo it, and no
+turn is spent negotiating.
+
+### Why it is off by default
+
+The field was verified against the shipped client rather than the documentation,
+because the docs do not state the three things that decide whether this is safe.
+In the strings of Claude Code 2.1.238:
+
+- `PreToolUse hook for <tool> returned updatedInput that failed schema
+  validation:` — the field exists on this event and is checked against the tool's
+  own input schema, so a rewrite has to be a complete, valid input.
+- `updatedInput is missing or empty, falling back to original tool input` — an
+  absent rewrite is a no-op, which is what makes declining the safe default.
+- `Hook satisfied user interaction for <tool> via updatedInput, bypassing
+  permission prompt` — **a rewrite travels with an approval.**
+
+That last one is the whole reason this is opt-in. A substitution can suppress a
+prompt the user would otherwise have seen, and the result being *smaller* than
+what was asked for does not make it authorised. The harness overrides an
+approval where a `deny` or `ask` rule covers the call, so the exposure is limited
+to calls that would have prompted by default — still a decision belonging to the
+person whose files they are.
+
+It is also reachable **only where the guard was going to refuse outright**.
+Turning it on therefore relaxes a denial; it can never permit something the
+guard would have been silent about. That is asserted, not asserted-and-hoped:
+`tests/decide/test_narrow.py` fails if a substitution appears at `off` or
+`certain`.
+
+### What may be rewritten, and why so little
+
+`Read` gains a `limit`; `Grep` gains a `head_limit`. Both are read-only, and in
+both cases the substitution is a strict subset of what was asked for — fewer
+lines of the same file, fewer hits of the same pattern. The near-misses are more
+instructive than the hits:
+
+- **`Bash` is refused, not rewritten.** Piping through `head -50` is right as
+  advice and wrong as an edit: appending to a command this module did not write
+  can change its exit status, cut a `&&` chain, or truncate the input to a
+  command whose output was never the point. Rewriting somebody's shell is not a
+  bounded operation.
+- **`Grep` is not switched to `files_with_matches`.** That is the cheapest
+  bounded form and it changes the *kind* of answer, not the amount. A truncation
+  the model can see the edge of is recoverable; a different question answered
+  silently is not.
+- **`Glob` and `WebFetch` have no bounding parameter**, so there is nothing to
+  substitute that would still validate.
+
+Four more rules, each an assertion. It never widens a call the caller already
+bounded more tightly than the price floor. It never narrows below a floor of
+usefulness — hand the model four lines of a file it wanted whole and it simply
+asks again, spending the turn this existed to save plus one. It adds only keys
+the tool already accepts, because an invented key fails schema validation and
+the hook then silently does nothing. And anything unexpected makes it decline
+rather than raise: an optional path must not take a tool call down with it.
+
+The saving is booked against **what actually ran** — the bounded read — not
+against the whole read a refusal would have prevented. `Verdict.action` reports
+`narrow` rather than `deny` for the same reason: reporting one as the other would
+overstate what enforcement is worth.
+
+### What the levels are worth
+
+`adder guard --replay` over 34,144 recorded tool calls on the author's machine,
+at the thresholds each level ships with:
+
+| level | fires | of which refusals | prevented | argued for | cost | net | rests on the assumption |
+|---|---|---|---|---|---|---|---|
+| `off` | 265 | 0 | — | $96.28 | $2.81 | $93.47 | 100% |
+| `certain` | 315 | 52 | $13.13 | $95.56 | $3.19 | $105.50 | 88% |
+| `full`, advisory thresholds | 315 | 278 | $166.00 | $19.13 | $3.17 | $181.96 | 10% |
+| **`full`, as shipped** | **2,554** | **2,356** | **$516.65** | **$23.36** | **$26.97** | **$513.04** | **4%** |
+
+The last column is the one to read. `full` roughly doubles the net, but the
+more important change is that nine tenths of it stops depending on whether
+anybody takes the advice.
+
+### The thresholds enforcement runs at
+
+`adder auto on --full` moves three settings, and the values are swept rather
+than picked:
+
+| floor | fires | gate | refusals | prevented | overhead | net | calls that parse a transcript |
+|---|---|---|---|---|---|---|---|
+| 2,000 | 15 | $0.25 | 278 | $166 | $3.17 | $182 | 1.4% |
+| 800 | 60 | $0.25 | 757 | $283 | $9.80 | $303 | 15.7% |
+| 800 | 60 | $0.10 | 2,242 | $490 | $25.40 | $487 | 8% |
+| **800** | **200** | **$0.10** | **2,421** | **$517** | **$27.45** | **$513** | **8%** |
+| 800 | 1,000 | $0.10 | 2,448 | $523 | $27.79 | $519 | 8% |
+| 300 | 200 | $0.10 | 4,590 | $677 | $51.54 | $651 | 39% |
+
+The $0.25 gate is not a threshold on this lever at all. It exists to stop the
+guard *interrupting* over small change, and a refusal is not an interruption,
+so under enforcement it comes down to $0.10 and finds $200 more. The 15-fire
+ceiling was sized for a guard that talks; one that redirects can afford 200,
+which is worth $26 and costs no latency. Past 200 the curve is flat.
+
+The floor is the only real trade in the table, and it trades latency for money
+rather than being a free choice: 300 finds $138 more and takes the share of
+tool calls that stop to parse a transcript from 8% to 39%. 800 ships because a
+hook people uninstall saves nothing — the same argument the guard applies to
+its own sentences — and because that ratio is a property of one workload.
+
+Which is the whole reason `adder auto on --full --tune` exists: it re-runs the
+sweep against your transcripts and writes the best point, preferring the
+quieter setting whenever the noisier one is within 5% of it. Shipping a
+measurement of one machine as everybody's default is the mistake this guard was
+rewritten to stop making, and the only defence is making it re-derivable.
 
 ## What it would have done here
 
@@ -302,10 +532,39 @@ command *shape*, which can never see the improvement it is measuring: `cat f`
 is what was advised about and `cat f | head -20` is what compliance looks like,
 and those are different shapes. It matches on the leading program instead.
 
-Below ten judged findings the report says so and the assumption stands. Above
-it, `validate` and `doctor` switch to the measured rate on their own, so the
-solvency claim gets stronger or weaker on evidence rather than staying anchored
-to a default nobody checked.
+Below ten judged findings the report says so and the assumption stands.
+
+### And then acted on
+
+For a long time that was where it stopped. `validate` and `doctor` switched to
+the measured rate when reporting, and **the gate did not**: every advisory
+saving in the tool was still multiplied by a flat 0.5 on machines that had
+measured their own rate and printed it. A measurement nobody acts on is the same
+failure as a router nobody invokes, and it is the failure this project keeps
+finding in itself.
+
+The gate now reads it. `adder guard --learn` measures and caches the rate to
+`~/.claude/.adder-uptake.json`; the hook reads that cached number rather than
+re-scanning transcripts before every tool call, which is the same split the size
+model already uses for the same reason. An explicitly configured
+`guard_advice_taken` still wins — somebody who wrote a number into
+`.adder.json` has said something the estimator does not know, and overriding it
+silently is how a setting becomes decorative.
+
+**There is a floor at 10%, and it is not caution.** `advice_taken` gates whether
+advice is worth saying at all, so a measured rate near zero stops the guard
+speaking — and a guard that does not speak records no fires, so nothing can ever
+re-measure it. Without a floor the estimator seals itself shut on one bad week,
+with no way back that does not involve editing a config file nobody knows
+exists. The floor is what keeps that loop open, and the report says when it is
+holding one up.
+
+`adder guard` prints the number with its provenance attached, because an
+unmeasured 50% shown as a bare percentage reads as a finding:
+
+```
+uptake   50% of advice acted on — ASSUMED; run `adder guard --learn` to measure it
+```
 
 ## What it keeps
 

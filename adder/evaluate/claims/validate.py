@@ -863,6 +863,96 @@ def the_guard_is_worth_more_than_it_costs(sessions, root=None) -> Claim:
     )
 
 
+def activating_it_pays_more_than_installing_it(sessions, min_mult: float = 2.5) -> Claim:
+    """Claim: `adder auto on --full` beats the advisory install, hands off.
+
+    The README quotes 1.6x for installing and 3.1x for activating, and the
+    second is the number this whole mechanism exists to produce, so it is
+    re-measured here rather than remembered.
+
+    It is priced with the ladder told to enforce **and at the thresholds
+    activation writes**, not with whatever this machine happens to be
+    configured for. Reading the local setting would make the claim pass or fail
+    depending on whether the author had run `adder auto on`, which is the
+    definition of a result that does not transfer.
+
+    Both halves are load-bearing and the first draft had only one. Told to
+    enforce but left at the advisory floor of 2,000 tokens and a $0.25 gate,
+    the ladder answers 1.6x -- identical to advisory, because the flag changes
+    which rung counts as enforced and the thresholds change how much the rung
+    is worth. Activation is both or it is nothing.
+
+    If this ever falls below the advisory number, enforcement is costing more
+    than it saves on this workload and the README's second row has to come
+    down.
+    """
+    from adder.decide.auto import ENFORCING_THRESHOLDS
+    from adder.evaluate.replay.bench import run as bench_run
+
+    advisory = _bench(sessions)
+    if not advisory.baseline:
+        return Claim("activating it beats installing it", False, "no data",
+                     f">={min_mult:.1f}x")
+    # No corner sweep: this claim quotes one multiple, and the sweep is eight
+    # more full replays than that multiple needs.
+    active = bench_run(sessions, enforcing=True, corners=False,
+                       min_cost=float(ENFORCING_THRESHOLDS['guard_min_cost']),
+                       min_tokens=int(ENFORCING_THRESHOLDS['guard_min_tokens']))
+    return Claim("activating it beats installing it",
+                 active.installed >= min_mult and active.installed > advisory.installed,
+                 f"{active.installed:.1f}x", f">={min_mult:.1f}x",
+                 f"{advisory.installed:.1f}x advisory; the difference is the guard "
+                 "refusing rather than describing, with no change in how you work")
+
+
+def enforcement_removes_the_assumption(sessions, root=None,
+                                       min_prevented_share: float = 0.5) -> Claim:
+    """Claim: refusing is worth more than advising, and worth it for a better reason.
+
+    The guard's saving has always carried an uptake term -- an assumed 0.5,
+    because nothing in a transcript says whether a model changed course because
+    of an injected sentence. Every dollar in `the_guard_is_worth_more_than_it_costs`
+    is multiplied by that guess.
+
+    A refusal does not have the term. The call does not happen. So the claim
+    worth checking is not only that enforcement saves more, but that most of
+    what it saves stops depending on the softest number in the project. If the
+    prevented share ever falls below half, `adder auto on --full` is back to
+    being an advisory guard with a louder voice, and the README paragraph about
+    it has to come down.
+
+    Replayed at the thresholds `adder auto` writes, not at the advisory ones:
+    those are what activation actually configures, and validating a
+    configuration nobody runs is how a claim quietly becomes decorative.
+    """
+    from adder.decide.auto import ENFORCING_THRESHOLDS
+    from adder.decide.guard import Settings
+    from adder.decide.guard import replay as guard_replay
+
+    base = Settings.resolve()
+    cfg = type(base)(min_tokens=int(ENFORCING_THRESHOLDS['guard_min_tokens']),
+                     min_cost=float(ENFORCING_THRESHOLDS['guard_min_cost']),
+                     hard_tokens=base.hard_tokens, block=base.block,
+                     advice_taken=base.advice_taken,
+                     max_fires=int(ENFORCING_THRESHOLDS['guard_max_fires']),
+                     state_path=base.state_path, enforce='full')
+    r = guard_replay(root, cfg=cfg)
+    if not r.calls or not r.fires:
+        return Claim("enforcing removes the uptake assumption", ok=True,
+                     measured="n/a", expected=f">={min_prevented_share:.0%} prevented",
+                     note="no local tool calls to replay")
+    share = 1.0 - r.assumed_share
+    return Claim(
+        "enforcing removes the uptake assumption",
+        ok=share >= min_prevented_share and r.net > 0,
+        measured=f"{share:.0%} prevented",
+        expected=f">={min_prevented_share:.0%} prevented",
+        note=f"{r.refusals:,} refusals in {r.calls:,} calls; "
+             f"${r.prevented:,.0f} prevented outright against ${r.saving:,.0f} "
+             f"argued for and ${r.overhead:,.2f} of injected text",
+    )
+
+
 CHECKS = (
     output_drives_context,
     input_side_dominates,
@@ -892,6 +982,8 @@ CHECKS = (
     a_brief_can_cross_a_restart,
     the_aggregate_beats_the_tail,
     the_guard_is_worth_more_than_it_costs,
+    activating_it_pays_more_than_installing_it,
+    enforcement_removes_the_assumption,
 )
 
 

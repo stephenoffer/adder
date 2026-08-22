@@ -384,3 +384,86 @@ class TestAFlatCostAxisIsNotAPerfectScore:
 
         rep = evaluate(self._flat(), resamples=20)
         assert 0.0 < rep.apgr_calls < 1.0
+
+class TestAgainstBestSingle:
+    """The comparison the published benchmarks report and PGR structurally cannot.
+
+    PGR is 1.0 at the all-strong endpoint by construction, and that endpoint is
+    a single model -- so no PGR-derived number can say "this router failed to
+    beat just using one model", which is the finding those benchmarks landed on
+    several well-known routers.
+    """
+
+    def test_zero_gain_when_the_strong_model_is_never_wrong(self):
+        # The default fixture has q_strong=1.0 everywhere, so nothing can beat
+        # all-strong and the honest answer is zero rather than a small positive
+        # number from floating-point drift.
+        rep = re_.evaluate(_episodes())
+        assert rep.best_single == 1.0
+        assert rep.gain_at_best == 0.0
+        assert rep.to_json()["vs_best_single"]["beats_best_single"] is False
+
+    def test_positive_gain_when_the_two_models_are_complementary(self):
+        # A quarter of tasks only the weak model gets right. Now neither fixed
+        # choice is best and a mix genuinely beats both -- the case the metric
+        # exists to detect.
+        eps = []
+        for i in range(40):
+            weak_only = i % 4 == 0
+            eps.append(Episode(
+                key=f"t{i}",
+                q_strong=0.0 if weak_only else 1.0,
+                q_weak=1.0 if weak_only else 0.0,
+                cost_strong=1.0, cost_weak=0.1,
+                # Score ranks the strong-needing tasks above the weak-only ones.
+                score=0.0 if weak_only else 1.0,
+            ))
+        rep = re_.evaluate(eps)
+        assert rep.gain_at_best > 0.0
+        assert rep.to_json()["vs_best_single"]["beats_best_single"] is True
+
+    def test_best_single_is_the_weak_arm_when_the_weak_arm_wins(self):
+        eps = [Episode(f"t{i}", q_strong=0.2, q_weak=0.9,
+                       cost_strong=1.0, cost_weak=0.1, score=0.5)
+               for i in range(20)]
+        rep = re_.evaluate(eps)
+        assert rep.best_single == pytest.approx(0.9), (
+            "the strong arm was quoted as the baseline on a mix it loses")
+
+    def test_cost_save_is_the_cheapest_threshold_that_holds_quality(self):
+        # Perfect router, half the tasks needing the strong model: quality is
+        # fully recovered once those are routed strong, at about half the
+        # all-strong budget. So roughly half the budget is saved for nothing.
+        rep = re_.evaluate(_episodes(n=40))
+        assert rep.cost_separable
+        assert 0.3 < rep.cost_save < 0.7
+
+    def test_a_useless_router_saves_nothing_at_equal_quality(self):
+        # Anti-ranked: the tasks that need the strong model are sent last, so
+        # quality only reaches the ceiling at the all-strong end, where there is
+        # no budget left to have saved.
+        rep = re_.evaluate(_episodes(n=40, perfect=False))
+        assert rep.cost_save == pytest.approx(0.0, abs=0.05)
+
+    def test_cost_save_is_withheld_when_the_cost_axis_is_flat(self):
+        eps = [Episode(f"t{i}", q_strong=1.0, q_weak=0.0,
+                       cost_strong=0.1, cost_weak=0.1, score=float(i))
+               for i in range(20)]
+        rep = re_.evaluate(eps)
+        assert not rep.cost_separable
+        assert rep.cost_save == 0.0
+        assert rep.to_json()["vs_best_single"]["cost_save"] is None
+
+    def test_an_empty_report_reports_zero_rather_than_raising(self):
+        rep = re_.evaluate([])
+        assert rep.gain_at_best == 0.0 and rep.cost_save == 0.0
+
+    def test_the_text_report_names_the_comparison(self):
+        out = re_.format_report(re_.evaluate(_episodes()))
+        assert "gain vs best single" in out
+        assert "cost saved at equal quality" in out
+
+    def test_the_text_report_says_so_when_one_model_would_have_done(self):
+        out = re_.format_report(re_.evaluate(_episodes()))
+        assert "beats simply using" in out, (
+            "a router that cannot beat one fixed choice must be told to say so")

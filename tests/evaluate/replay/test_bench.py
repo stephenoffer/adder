@@ -112,11 +112,35 @@ class TestLadder:
         assert base.enforced and base.regime.delegate_above is None
         assert replay(sess, base.regime).total == pytest.approx(measured, rel=1e-9)
 
-    def test_the_advice_rung_is_not_marked_enforced(self):
-        """The whole point of the split. If this flips, the headline overstates."""
+    def test_the_cadence_rung_is_never_marked_enforced(self):
+        """The whole point of the split. If this flips, the headline overstates.
+
+        The bottom rung used to bundle the delegation threshold with the
+        restart cadence, and both were advice. An enforcing guard refuses the
+        reads, so the threshold can cross the line -- the cadence cannot, ever,
+        because nothing in this repository can restart a session."""
         rungs = ladder(_sessions(), min_cost=0.25)
         assert not rungs[-1].enforced
-        assert all(c.enforced for c in rungs[:-1])
+        assert rungs[-1].regime.split_turns is not None
+
+    def test_the_advisory_guard_does_not_enforce_the_solved_threshold(self,
+                                                                      monkeypatch):
+        """The default is still advisory, and the report must say so."""
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "off")
+        rungs = ladder(_sessions(), min_cost=0.25)
+        solved = [c for c in rungs if c.regime.label == "solved"]
+        assert solved and not solved[0].enforced
+
+    def test_enforcement_cannot_claim_a_threshold_the_guard_would_not_refuse_at(
+            self, monkeypatch):
+        """The guard refuses at its own floor, which is above the one the
+        reports solve for. Marking that rung enforced would credit activation
+        with money it does not collect."""
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "full")
+        monkeypatch.setenv("ADDER_GUARD_MIN_TOKENS", "100000")
+        rungs = ladder(_sessions(), min_cost=0.25, min_tokens=100_000)
+        solved = [c for c in rungs if c.regime.label == "solved"]
+        assert solved and not solved[0].enforced
 
     def test_the_enforced_rungs_use_the_guard_threshold(self):
         sess = _sessions()

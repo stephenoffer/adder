@@ -116,13 +116,34 @@ SETTINGS: tuple[Setting, ...] = (
             "predicted result size below which the guard does not price a call"),
     Setting("guard_hard", 60_000, int,
             "tokens above which the guard asks for confirmation, when blocking"),
+    Setting("uptake_cache", str(Path.home() / ".claude" / ".adder-uptake.json"), _as_path,
+            "cached measurement of how often guard advice was followed; the "
+            "hook reads it, `adder guard --learn` writes it"),
     Setting("guard_advice_taken", 0.5, float,
-            "assumed share of guard advice that is acted on; discounts the "
-            "saving before it is weighed against the cost of saying it"),
+            "share of guard advice that is acted on; discounts the saving "
+            "before it is weighed against the cost of saying it. Only a "
+            "fallback: once `adder guard --learn` has measured the rate on this "
+            "machine, the measurement is used instead -- unless this is set "
+            "explicitly, in which case what you set wins"),
     Setting("guard_max_fires", 15, int,
             "most times the guard may speak in one session"),
+    Setting("guard_enforce", "off", str,
+            "how far the guard may go: off (advise only), certain (refuse the "
+            "calls that admit nothing new), full (also refuse a large read that "
+            "has a cheaper equal)",
+            env="ADDER_GUARD_ENFORCE"),
     Setting("guard_state", str(Path.home() / ".claude" / ".adder-guard.json"), _as_path,
             "per-session guard memory: files read, shapes already advised"),
+    Setting("guard_narrow", False, _as_bool,
+            "where the guard would refuse a large Read or Grep, substitute the "
+            "bounded call instead of demanding it -- saves the turn spent "
+            "re-issuing, but a substitution travels with an approval and can "
+            "suppress a permission prompt, so it is off until you say otherwise",
+            env="ADDER_GUARD_NARROW"),
+    Setting("guard_route", True, _as_bool,
+            "on a delegated step, also name the cheapest tier that clears the "
+            "task -- advice only, and never a refusal",
+            env="ADDER_GUARD_ROUTE"),
     Setting("size_model", str(Path.home() / ".claude" / ".adder-sizes.json"), _as_path,
             "learned result-size quantiles the guard predicts from"),
     Setting("size_max_age", 86_400.0, float,

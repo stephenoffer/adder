@@ -1,7 +1,7 @@
 ---
 name: adder-context
 description: Decide what to do about a session's context - compact, restart, or carry on - and what a restart may carry. Also audits what CLAUDE.md and memory cost per turn. Use when context is large, a session feels expensive, or before compacting or restarting.
-allowed-tools: Bash(/Users/stephen.offer/Desktop/llm-router/scripts/adder:*), Read
+allowed-tools: Bash(adder:*), Bash(./scripts/adder:*), Read
 disable-model-invocation: false
 ---
 
@@ -12,7 +12,7 @@ prompt was assembled. **They cost zero model tokens.** Do not recompute them,
 and do not re-derive the arithmetic — it is measured, not estimated.
 
 ```
-!`/Users/stephen.offer/Desktop/llm-router/scripts/adder live`
+!`adder live`
 ```
 
 ## The one rule

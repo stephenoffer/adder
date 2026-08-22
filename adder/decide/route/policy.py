@@ -369,6 +369,7 @@ def right_size(
     project: str | None = None,
     p_fail_override: float | None = None,
     on: date | None = None,
+    task: str = "",
 ) -> tuple[Tier, list[Rung], list[str]]:
     """Pick the tier with the lowest expected cost, and show the whole ladder.
 
@@ -400,7 +401,7 @@ def right_size(
         if p_fail_override is not None:
             pf, ev = p_fail_override, None
         else:
-            ev = _evidence(tier, project)
+            ev = _evidence(tier, project, task)
             # One prior across the whole ladder when the log is silent. Giving
             # the higher rungs a lower prior would be inventing evidence, and
             # the invention is not harmless: it lets a made-up number, rather
@@ -457,7 +458,8 @@ def right_size(
         reasons.append(
             f"{best.tier.name} costs ${best.expected:,.4f} expected against "
             f"{floor.name}'s ${next(r.expected for r in rungs if r.tier is floor):,.4f}, "
-            f"and the outcome log backs it: {_evidence_note(best.tier, project)}")
+            f"and the outcome log backs it: "
+            f"{_evidence_note(best.tier, project, task)}")
     elif best.tier > floor:
         reasons.append(
             f"escalating {floor.name} -> {best.tier.name}: at p_fail "
@@ -504,12 +506,18 @@ def _haircut(ledger) -> float:
         return 1.0
 
 
-def _evidence(tier: Tier, project: str | None):
+def _evidence(tier: Tier, project: str | None, task: str = ""):
     """The outcome log's view of a tier, or None if it cannot be read.
 
     `DEFAULT_LOG` is resolved on every call rather than captured as a default
     argument, so a test can point the log somewhere harmless. A router that can
     only be tested against the caller's real `~/.claude` is not testable.
+
+    With a `task`, the tier-wide rate is sharpened by the rate over recorded
+    runs whose vocabulary resembles it -- but only in the directions
+    `similar.sharpen` permits, which are not symmetric. Without one, or with a
+    log that carries no sketches, this is exactly the estimate it always was:
+    the neighbour half is additive and its absence costs nothing.
     """
     try:
         from adder.decide.track.outcomes import evidence
@@ -518,13 +526,24 @@ def _evidence(tier: Tier, project: str | None):
         # call, so a project that points its outcome log somewhere is actually
         # read. Passing `DEFAULT_LOG` here pinned it to the import-time
         # environment and made the setting decorative.
-        return evidence(tier.name, project)
+        ev = evidence(tier.name, project)
     except Exception:
         return None
+    if not task:
+        return ev
+    try:
+        from adder.decide.track.similar import evidence_like, sharpen
+
+        return sharpen(ev, evidence_like(task, tier.name))
+    except Exception:
+        # A sharper estimate is an improvement, not a dependency. Anything that
+        # goes wrong reading it leaves the tier-wide rate in place rather than
+        # taking the gate down with it.
+        return ev
 
 
-def _evidence_note(tier: Tier, project: str | None) -> str:
-    ev = _evidence(tier, project)
+def _evidence_note(tier: Tier, project: str | None, task: str = "") -> str:
+    ev = _evidence(tier, project, task)
     return ev.describe() if ev is not None else "no outcome log"
 
 
@@ -727,7 +746,7 @@ def decide(
     tier, ladder, ladder_reasons = right_size(
         v, need_tokens=need, est_out_tokens=est_out_tokens,
         retry_overhead=overhead, floor_tier=tier, project=project,
-        p_fail_override=p_fail, on=on)
+        p_fail_override=p_fail, on=on, task=task)
     model = tier.model
     reasons += ladder_reasons
     p_fail = next((r.p_fail for r in ladder if r.tier is tier), p_fail or 0.0)
@@ -741,7 +760,7 @@ def decide(
     # then the inline read anyway. `p_redo` is that risk, and it is the tier's
     # own measured escalation rate rather than a new number -- an escalated
     # subagent run IS a delegation that did not hold.
-    ev = _evidence(tier, project)
+    ev = _evidence(tier, project, task)
     if ev is not None and ev.informative:
         p_redo, p_bounds, p_marg = ev.p_fail, ev.bounds(), ev.quantiles()
     else:
@@ -1004,6 +1023,10 @@ def substitutes(
     # call. An explicit string still wins, for callers that know.
     harness: str | None = None,
     project: str | None = None,
+    # The task text, for the neighbour-conditioned failure rate. Optional
+    # because a caller holding only a `Plan` no longer has it, and the
+    # tier-wide rate this used before is still a correct answer.
+    task: str = "",
 ) -> list[Substitute]:
     """Other vendors' models that could run this delegation for less.
 
@@ -1097,7 +1120,7 @@ def substitutes(
     # over 200 runs" from "0.5 because nothing was ever recorded".
     measured, basis = 0.0, "elo"
     ugl = UNUSABLE_GIVEN_LOSS
-    ev = _evidence(tier, project)
+    ev = _evidence(tier, project, task)
     if ev is not None and ev.informative:
         measured, basis = ev.p_fail, f"elo + {ev.scope} history"
         # With history for a tier that has somewhere to escalate to, the
@@ -1292,7 +1315,7 @@ def main(argv: list[str] | None = None) -> int:
             p.substitutes = substitutes(
                 p, est_read_tokens=read, context_tokens=ctx, remaining_turns=rem,
                 session_model=model, only_cheaper=not a.cross_vendor,
-                project=project)
+                project=project, task=" ".join(a.task))
         except Exception:
             # A missing or unreadable catalog must never take down a routing
             # decision that does not depend on it.

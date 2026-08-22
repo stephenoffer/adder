@@ -72,6 +72,12 @@ namespaces = false
 [tool.setuptools.package-data]
 adder = ["py.typed"]
 "adder.pricing" = ["data/*.json"]
+# The agent definitions `adder auto on` installs. Not code, so nothing here
+# includes them by inference -- and without them activation writes the hooks and
+# silently skips the delegation half of the saving `adder bench` reports.
+# `TestWhatTheWheelCarries` in tests/repo/test_invariants.py asserts every file
+# `auto.AGENTS` names is covered by a glob here, because the failure is a quiet one.
+"adder.decide" = ["agents/*.md"]
 
 [tool.setuptools.dynamic]
 version = { attr = "adder.__version__" }

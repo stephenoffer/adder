@@ -2,23 +2,106 @@
 
 ```bash
 pip install adder-cli
-adder live
+adder auto on --full
 ```
 
-That is the whole setup. No account, no API key, no configuration file. adder
+That is the setup. No account, no API key, no configuration file to write. adder
 never calls a model and never opens a network connection, with one exception:
 `adder models refresh`, which only runs when you type it.
+
+The second line is the one that changes the bill. Everything else on this page
+is a report, and a report saves nothing until somebody acts on it. Replaying the
+author's recorded turns, activation alone — installed, working the same way —
+priced a $7,888 bill at $2,567, which is 3.1x, and that is the whole reason this
+page starts with `auto on` rather than with a number. ([benchmark.md](benchmark.md))
 
 You can also run it from a checkout with no install step at all:
 
 ```bash
 git clone https://github.com/stephenoffer/adder && cd adder
-./scripts/adder live
+./scripts/adder auto on --full
 ```
 
 A full run over one machine's entire history takes under a second and needs
 nothing but Python 3.10+. There are no dependencies at all, deliberately, so it
 works on a machine with no reachable package index.
+
+## What activation actually does
+
+It prints the change, asks, and then writes it. Nothing is written before you
+answer, `--dry-run` stops after the printing, and `adder auto off` reverses it.
+
+```
+$ adder auto on --full
+
+  This will add:
+
+    add    PreToolUse: pretooluse_read_guard.py
+    add    PreCompact: precompact_learn.py
+    add    UserPromptSubmit: session_cost_advisor.py
+    in     /your/project/.claude/settings.json
+
+    set    guard_enforce: unset -> full
+    set    guard_max_fires: unset -> 200
+    set    guard_min_cost: unset -> 0.1
+    set    guard_min_tokens: unset -> 800
+    in     /your/project/.adder.json
+
+    copy   Explore.md
+    copy   route-t0.md
+    copy   route-t1.md
+    copy   route-t2.md
+    in     /your/project/.claude/agents
+
+  What each hook does:
+
+    PreToolUse        prices, and can refuse, a call before its result lands in context
+    PreCompact        forgets what compaction drops, and re-learns result sizes
+    UserPromptSubmit  prices compaction against a restart, once a session is expensive
+    agents            what a delegated step runs on — Explore on Haiku, three tiers
+
+  refusals              full: also a large read with a cheaper equal
+
+  Write these changes? [y/N]
+```
+
+Three properties of that, each of which is a test rather than a promise:
+
+- **Your `settings.json` survives it.** Hooks another tool registered are kept,
+  unrelated keys are kept, and a file that does not parse is refused rather than
+  replaced. The original is copied to `settings.json.adder.bak` before the first
+  edit, and that backup is never overwritten by a later run.
+- **An existing agent file is never overwritten.** If you already have an
+  `Explore` you rely on, it is reported as `keep ... (yours differs)` and left
+  exactly as it was.
+- **`adder auto off` removes precisely what `on` added**, matching on the script
+  name rather than the path, so it still works after you move the checkout.
+
+`--user` writes to `~/.claude` instead of this project, which is what you want
+once you have decided you like it. `--dry-run` prints the plan and stops.
+
+Nothing runs on a timer and nothing holds a socket. "In the background" here
+means the hooks your harness already fires, on events it already has, costing
+nothing on a turn where there is nothing to say. The hooks take effect in the
+**next** session; the agent files take effect immediately.
+
+Then, once it has been running:
+
+```bash
+adder auto status
+```
+
+which reports what it has prevented, what it merely argued for, and what its own
+messages cost you — kept apart, because only the first of those needs no
+assumption about whether anyone listened.
+
+## Before you have any history
+
+Every report here reads a transcript you have already paid for, so on a fresh
+machine `adder doctor` has nothing to measure and says so. That is the one
+asymmetry worth knowing on day one: **the reports need history, the guard does
+not.** Activation is useful before you have run a single session, and the size
+model it predicts with re-learns from your own transcripts as they accumulate.
 
 ## Words used here
 
@@ -33,7 +116,7 @@ works on a machine with no reachable package index.
 | **delegated** | handing the work to a subagent with its own throwaway context, and keeping only the answer |
 | **remaining turns** | how many turns the session probably has left. The multiplier on everything |
 
-## Your first run
+## Your first report
 
 ```bash
 adder live
@@ -160,9 +243,19 @@ and they are listed here rather than left for you to discover:
 | `~/.claude/adder-outcomes.jsonl` | `outcomes record` / `outcomes import --write` | the dispatch history that calibrates `p_fail` |
 | `~/.claude/adder-ledger.jsonl` | `policy --record` | recommendations made, so the tool can be held to them |
 | `~/.claude/adder/catalog.json` | `models refresh` | the cross-vendor model snapshot |
+| `~/.claude/.adder-sizes.json` | `guard --learn`, `auto on`, the PreCompact hook | what tool calls of each shape actually returned here |
+| `.claude/settings.json` + `.adder.json` | **`auto on` / `auto off` only** | the hooks, and the level they enforce at |
+| `.claude/agents/*.md` | **`auto on` only** | what a delegated step runs on |
+| `*.adder.bak` | `auto on`, once | whatever the two files above held before adder first touched them |
 
 Everything else is arithmetic over files you already have, printed to stdout.
 `adder config` shows the resolved path of each of the above.
+
+The three rows marked `auto` are the only writes in the tool that land in a file
+you did not name on the command line, which is why that command prints the whole
+change first, keeps a backup, and has an `off`. No report writes any of them —
+`live`, `trace`, `debt`, `context`, `cache`, `quality` and `horizon` are
+read-only, and a test asserts it.
 
 ## What adder itself costs
 
@@ -179,8 +272,8 @@ question, and it has its own page: [overhead.md](overhead.md).
 
 ## Using it inside Claude Code
 
-The CLI reports. The `.claude/` directory in this repo is what acts on those
-reports, and it ships as part of the product:
+The CLI reports. The hooks and agent definitions are what act on those reports,
+they ship inside the package, and `adder auto on` installs them:
 
 - **Agents.** `Explore` on Haiku plus three routing tiers (T0/T1/T2), each with
   rules that bound how much output comes back into your context. See
@@ -193,8 +286,10 @@ reports, and it ships as part of the product:
   token count cannot be right at both ends of a session. It advises by default
   and never blocks silently. See [guard.md](guard.md).
 - **Skills.** `/adder` routes one task, `/adder-doctor` diagnoses a session,
-  `/adder-init` installs the agents into your project after showing you exactly
-  what it will change.
+  `/adder-context` decides whether to compact or restart, and `/adder-init`
+  walks the install. These live in this repository's `.claude/skills/` and are a
+  convenience for a checkout, not part of the mechanism — activation does not
+  need them.
 
 If you want the habit without the machinery, `adder policy "<task>"` gives you
 the inline-versus-delegate call for a single task, and refuses to recommend
@@ -208,7 +303,7 @@ different. The *shares* are what drive the advice, and even those are worth
 re-checking on your own history, which is the entire point of the tool. **Run
 `adder savings` before believing any number here.**
 
-3,117 tests, no API key, and no network outside `adder models refresh`. Two of
+3,260 tests, no API key, and no network outside `adder models refresh`. Two of
 those tests exist only to enforce the last two clauses: one walks the code of
 every module and fails if anything outside `adder/pricing/sources.py` imports a
 networking library, the other fails if the dependency list stops being empty.

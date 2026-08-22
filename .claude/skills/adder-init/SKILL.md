@@ -1,7 +1,7 @@
 ---
 name: adder-init
 description: Install the cost-routing agents (Explore on Haiku, tier agents) into this project or user config, after showing exactly what will change. Use when asked to set up, install, or enable cost routing.
-allowed-tools: Bash(/Users/stephen.offer/Desktop/llm-router/scripts/adder:*), Read, Write, Bash(diff:*), Bash(ls:*), Bash(cat:*), Bash(env:*)
+allowed-tools: Bash(adder:*), Bash(./scripts/adder:*), Read, Write, Bash(diff:*), Bash(ls:*), Bash(cat:*), Bash(env:*)
 disable-model-invocation: true
 ---
 
@@ -20,11 +20,13 @@ disable-model-invocation: true
    until it is unset.
 
 2. Show the user what each change is worth before making it. Run
-   `/Users/stephen.offer/Desktop/llm-router/scripts/adder savings` and quote the top two levers.
+   `adder savings` and quote the top two levers.
 
 ## What to install
 
-Source agents live in `/Users/stephen.offer/Desktop/llm-router/.claude/agents/`:
+The agents ship inside the package, at `adder/decide/agents/`. Do not copy them
+by hand -- `adder auto on` installs them and reports what it skipped. What each
+one is for:
 
 | File | Effect |
 |---|---|
@@ -33,42 +35,47 @@ Source agents live in `/Users/stephen.offer/Desktop/llm-router/.claude/agents/`:
 | `route-t1.md` | Sonnet, scoped edits, capped turns. |
 | `route-t2.md` | Opus, the escalation target and safe default. |
 
-Copy to `.claude/agents/` in the target project, or `~/.claude/agents/` for all
-projects. **Show a diff against any existing file and get confirmation before
-overwriting** — a user may already have an Explore agent they rely on.
+`adder auto on` writes them to `.claude/agents/` in the current project, or
+`~/.claude/agents/` with `--user`. It never overwrites: a file whose contents
+differ is reported as `keep ... (yours differs — left alone)`, because a user may
+already have an `Explore` they rely on. If one is skipped, show the diff and ask
+before doing anything about it.
 
-## The hook, which is the part that actually prevents spend
+## The hooks, which are the part that actually prevents spend
 
 Everything else adder ships is a report, and a report saves nothing until
 somebody acts on it. The agent files and the PreToolUse guard are the only two
 components that act without being obeyed, and `adder bench` prices that pair on
 its own — on the author's history, **1.5x of the 1.6x "installed and changed
-nothing" figure is the guard**. Offer it, and say what it does before writing
-anything.
+nothing" figure is the guard, and letting it refuse rather than advise takes
+that to 3.1x**.
 
-`.claude/hooks/pretooluse_read_guard.py` prices a read **before** it lands in
-context and injects the price plus the alternative. It is advisory: it never
-denies a call, and it never blocks silently.
+Do not hand-write the hooks block. `adder auto` owns this now:
 
-```json
-{"hooks": {"PreToolUse": [{"matcher": "Read|Bash|Grep",
-   "hooks": [{"type": "command",
-              "command": "python3 /abs/path/.claude/hooks/pretooluse_read_guard.py"}]}]}}
+```bash
+adder auto on --full --dry-run   # prints every change, writes nothing
+adder auto on --full             # asks before writing; keeps a .adder.bak
 ```
 
-Rules for offering it:
+It merges into an existing `settings.json` without disturbing hooks another
+tool registered, and `adder auto off` removes exactly what it added. Show the
+user the `--dry-run` output and let them decide.
 
-- **Read the user's existing `settings.json` and show a diff first.** A hooks
-  block is easy to clobber; another PreToolUse hook may already be registered
-  and both must survive.
-- It fires on a **cost** (`ADDER_GUARD_MIN_COST`, default $0.25), not a token
-  count, because the same read is worth interrupting for at turn 400 and not at
-  turn 3. Do not suggest tuning it before running `adder bench`, which reports
-  whether the dollar gate or the token floor is the binding constraint — on this
-  workload it is the floor, so tuning the dollar gate would change nothing.
-- `ADDER_GUARD_BLOCK=1` escalates from advice to a confirmation prompt on very
-  large reads. Off by default, and it should stay off until the user has seen
-  the advisory version fire a few times.
+What to tell them about the levels, because this is the part that changes
+behaviour:
+
+- **`certain`** (plain `adder auto on`) refuses only calls that admit nothing
+  new — a read of a file already in the context, or one this session wrote.
+  Refusing these cannot lose information at any price.
+- **`--full`** also refuses a large read that has a strictly cheaper equal, and
+  names the cheaper call. This one changes how the agent works: it will
+  delegate and bound reads it would otherwise have made inline.
+- Either way it never refuses the same thing twice. If the model asks again it
+  gets through, so a wrong refusal costs one turn.
+
+Do not suggest tuning the thresholds by hand. `adder auto on --full --tune`
+sweeps them against the user's own transcripts, and `adder guard --explain
+"<command>"` answers "why would it say nothing about this".
 
 ## Bootstrap the routing evidence
 
@@ -90,8 +97,13 @@ so the rate is a lower bound. Do not run `--write` without asking.
 Tell the user plainly:
 
 - Explore-on-Haiku takes effect immediately, with no further action.
+- The hooks take effect in the **next** session, not this one.
 - `/adder` is opt-in per task; it deliberately declines to route when the saving
   would not clear the cost of the routing turn itself.
-- The largest remaining lever is usually **session length**, which no agent file
-  can fix: context cost grows with turns × context, so splitting a long session
-  cuts it roughly in proportion.
+- `adder auto status` reports what it has been worth, and keeps the calls it
+  prevented separate from the advice it gave — only the first of those needs no
+  assumption about whether anyone listened.
+- The largest remaining lever is usually **session length**, and no hook can
+  pull it: context cost grows with turns × context, so splitting a long session
+  cuts it roughly in proportion, and nothing here can restart a session for
+  them. That gap is the difference between the 3.1x above and 6.4x.

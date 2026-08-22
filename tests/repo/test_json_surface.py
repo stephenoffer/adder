@@ -44,7 +44,10 @@ EXTRA: dict[str, list[str]] = {
 # Commands that do not read a transcript root, so must not be handed one.
 NO_ROOT = {"policy", "classify", "pick", "models", "config", "outcomes", "ledger",
            "live", "completion", "routereval", "calib", "cascade", "frontier",
-           "handoff", "design", "deadline", "place", "verbosity", "blend"}
+           "handoff", "design", "deadline", "place", "verbosity", "blend",
+           # `auto` reads settings files and the guard's own ledger, not a
+           # transcript root. Its first positional is on/off/status.
+           "auto"}
 
 # `export` offers JSON through `--format json` rather than `--json`, so the
 # discovery below does not see it; `TestExportSurface` covers it directly.

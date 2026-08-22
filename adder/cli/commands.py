@@ -68,6 +68,9 @@ COMMANDS: tuple[Command, ...] = (
             "what CLAUDE.md, memory, and skill descriptions cost every turn"),
     Command("sessions", "adder.measure.spend.sessions", "Measure", "[root] [--sort K] [--top N]",
             "one row per session: cost, $/turn, peak context, cache damage"),
+    Command("limits", "adder.measure.spend.limits", "Measure",
+            "[root] [--hours H] [--json]",
+            "the 5-hour metering window, and what the carry costs it"),
     Command("budget", "adder.measure.spend.budget", "Measure", "[root] [--limit USD] [--period P]",
             "burn-down and projection against a spend target"),
     Command("export", "adder.measure.spend.export", "Measure", "[root] [--format F] [--grain G]",
@@ -93,6 +96,9 @@ COMMANDS: tuple[Command, ...] = (
             "how much may cross a restart, and what the brief must name"),
     Command("classify", "adder.decide.route.classify", "Decide", '"<task>"',
             "task-complexity classification, on its own"),
+    Command("similar", "adder.decide.track.similar", "Decide",
+            '"<task>" [--floor R] [--top K] [--json]',
+            "what happened last time on tasks like this one"),
     Command("pick", "adder.decide.route.select", "Decide", '"<task>" [--combos] [--json]',
             "cheapest model, or combination, that clears the quality bar"),
     Command("harvest", "adder.decide.route.harvest", "Decide",
@@ -149,7 +155,11 @@ COMMANDS: tuple[Command, ...] = (
             "fingerprint every input a number depended on, and diff it"),
     Command("doctor", "adder.evaluate.doctor", "Evaluate", "[root] [--strict] [--json]",
             "run every check and rank the findings by dollars at stake"),
-    # Setup — inspect the machine's own configuration.
+    # Setup — inspect the machine's own configuration, and the one command
+    # that changes it.
+    Command("auto", "adder.decide.auto", "Setup",
+            "[on|off|status] [--full] [--user] [--yes]",
+            "run adder between your turns: install the hooks, enforce the levers"),
     Command("config", "adder.cli.config", "Setup", "[name] [--json] [--init]",
             "settings in effect, and which layer set each one"),
     Command("completion", "adder.cli.completion", "Setup", "[bash|zsh|fish]",
@@ -168,5 +178,5 @@ GROUP_BLURB = {
     # only ever runs when typed.
     "Decide": "offline except `models refresh`",
     "Evaluate": "",
-    "Setup": "what is configured, and where it came from",
+    "Setup": "what is configured, and the one command that changes it",
 }

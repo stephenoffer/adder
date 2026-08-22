@@ -34,6 +34,7 @@ Read-only reports over transcript files. None of these write anything.
 | `adder agents [root] [--top N] [--json]` | delegation as measured: subagent spend, subagent model choice, and the large reads that went inline |
 | `adder anomaly [root] [--z N] [--top N] [--json]` | the turns that cost far more than the rest, each with the mechanism that explains it |
 | `adder effort [root] [--model M] [--json]` | re-fit the effort→output-volume priors against local transcripts |
+| `adder limits [root] [--hours H] [--json]` | the five-hour metering window rebuilt from timestamps: what each window read, how much of it was carry, and what a turn late in a window costs against one early in it, plus the heaviest sliding 7 days as a proxy for the weekly cap. For plan users, where the constraint is a lockout rather than a bill |
 | `adder budget [root] [--limit USD] [--period P] [--strict]` | burn-down and projection against a spend target |
 | `adder export [root] [--format F] [--grain G] [-o PATH]` | priced turns, sessions, or days as CSV/JSON/JSONL — never any message content |
 
@@ -52,6 +53,7 @@ Turn a measurement into a choice.
 | `adder guard [root] [--learn] [--explain CMD] [--json]` | what the PreToolUse guard predicts, decides, and has cost ([guard.md](guard.md)) |
 | `adder handoff [--cwd DIR] [--context TOK] [--remaining N] [--top N] [--json]` | the largest brief that can cross a restart before restarting stops paying, what the brief has to name (files edited, commands re-run, reads by re-establishment cost), and what handoffs on this machine have actually been |
 | `adder classify "<task>"` | task-complexity classification, on its own |
+| `adder similar "<task>" [--floor R] [--top K] [--json]` | what happened last time on tasks whose vocabulary resembles this one: the per-tier escalation rate over the nearest recorded runs, against the tier-wide rate the router used before ([tiers.md](tiers.md)) |
 | `adder pick "<task>" [--combos] [--json]` | cheapest model, or combination, that clears the quality bar ([models.md](models.md)) |
 | `adder harvest [root] [--handoff TOK] [--discount R] [--interruptions N] [--json]` | whether cheap-but-interruptible capacity would pay, given how much context an interruption destroys ([research-map.md](research-map.md)) |
 | `adder place [--model M] [--context TOK] [--turns N] [--rated-only] [--json]` | should this warm session move to a cheaper model? prices the resident prefix you would discard and the turns a move needs to repay itself  ([systems.md](systems.md))|
@@ -84,11 +86,17 @@ Check that a lever is real before trusting it.
 
 ## Setup
 
-Inspect what the tool is configured to do. Read-only: nothing here writes a
-config file.
+Inspect what the tool is configured to do, and turn on the parts that run
+without being asked. `adder auto on` is the only command in this tool that
+writes a file you did not name — it says what it will change before it changes
+it, keeps a `.adder.bak` of whatever was there, and `adder auto off` removes
+exactly what it added.
 
 | Command | What it does |
 |---|---|
+| `adder auto [status]` | is anything running between your turns, and what has it been worth: refusals at par, advice discounted by measured uptake |
+| `adder auto on [--full] [--user] [--yes] [--dry-run]` | install the three hooks and start enforcing. `certain` (default) refuses only calls that admit nothing new; `--full` also refuses a large read that has a cheaper equal |
+| `adder auto off [--yes]` | remove the hooks and stop enforcing; foreign hooks in the same file are left alone |
 | `adder config [name] [--json] [--explain]` | every setting in effect, its value, and which layer set it |
 | `adder config --init` | print a config-file template to stdout |
 | `adder completion [bash\|zsh\|fish]` | shell completion, generated from the command table and each module's own parser |
@@ -142,15 +150,17 @@ Replay a saved capture instead of fetching with
   analysis, quality proxies, the model catalog, and the routing policy.
 - **`adder/cli/commands.py`** — the dispatcher. Adding a command means one row here plus
   a module, a test, and a line in this file.
-- **`.claude/agents/`** — Explore on Haiku plus three routing tiers, each with
-  output-bounding rules.
-- **`.claude/hooks/`** — a prompt hook that prices the session, and a
+- **`adder/decide/agents/`** — Explore on Haiku plus three routing tiers, each
+  with output-bounding rules. Inside the package, so a `pip install` carries
+  them; `adder auto on` copies them to `.claude/agents/`.
+- **`adder/decide/hooks/`** — a prompt hook that prices the session, and a
   **PreToolUse guard** that prices a large read *before* it lands in context.
   The guard is the only thing here that prevents cost rather than reporting it.
   It fires on a **cost**, not a token count (`ADDER_GUARD_MIN_COST`, default
   $0.25), because the same read is worth interrupting for with 400 turns left
   and not worth mentioning with three. `ADDER_GUARD_BLOCK=1` escalates from
   advice to a confirmation prompt; it never denies, and never blocks silently.
-- **`.claude/skills/`** — `/adder`, `/adder-doctor`, `/adder-init`.
+- **`.claude/skills/`** — `/adder`, `/adder-doctor`, `/adder-context`,
+  `/adder-init`. Checkout-only; they are conveniences, not the mechanism.
 - **`scripts/adder`** — launcher for a git checkout; `pip install` provides `adder`
   directly.

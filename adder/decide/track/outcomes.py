@@ -82,6 +82,11 @@ class Outcome:
     # confident wrong answer and was believed looks like a success in the
     # transcript AND to the person filing the report afterwards.
     source: str = "recorded"
+    # Irreversible MinHash sketch of the task's vocabulary, for `similar.py`.
+    # A list rather than a tuple because that is what survives a JSON round
+    # trip, and empty on every row written before sketches existed -- which is
+    # read as "not comparable" rather than "matches nothing".
+    sketch: list[int] = field(default_factory=list)
 
 
 _FIELDS = {f.name for f in fields(Outcome)}
@@ -185,10 +190,21 @@ def prune(log: Path | str | None = None, keep: int = MAX_ROWS) -> int:
     return len(rows) - len(kept)
 
 
-def _weight(o: Outcome, now: float) -> float:
-    """Exponential recency weight. Recent evidence should move the gate more."""
+def recency_weight(o: Outcome, now: float) -> float:
+    """Exponential recency weight. Recent evidence should move the gate more.
+
+    Public because `similar.py` re-weights the same rows by task similarity and
+    has to decay them on the same curve. Two half-lives in the router, drifting
+    apart across two modules, is a way for the neighbour estimate and the
+    tier-wide estimate to stop being comparable without anything looking wrong.
+    """
     age_days = max(0.0, (now - o.ts) / 86400.0)
     return 0.5 ** (age_days / HALF_LIFE_DAYS)
+
+
+# The old private name, kept because this module's own call sites read better
+# with it and renaming them is churn in a file nothing else needed to change.
+_weight = recency_weight
 
 
 @dataclass(frozen=True)
@@ -442,11 +458,17 @@ def cmd_record(a) -> int:
     `p_fail` never leaves its prior, so the router never learns that a cheaper
     tier works here and never stops sending the work to Opus.
     """
+    from adder.decide.track.similar import sketch
+
+    # `--task` is not stored, only sketched. A row recorded without one still
+    # calibrates the tier-wide rate; it is simply invisible to the neighbour
+    # estimator, which is the honest outcome for a row that never said what the
+    # task was.
     record(Outcome(
         tier=a.tier, model=a.model, project=a.project, escalated=a.escalated,
         context_tokens=a.context, remaining_turns=a.remaining, cost=a.cost,
         task_hash=a.task_hash, reason=a.reason, effort=a.effort,
-        duration_s=a.duration,
+        duration_s=a.duration, sketch=list(sketch(getattr(a, "task", "") or "")),
     ), a.log)
     ev = evidence(a.tier, a.project, a.log)
     print(f"  recorded: {a.tier} {'escalated' if a.escalated else 'completed'} "
@@ -492,6 +514,9 @@ def main(argv: list[str] | None = None) -> int:
     p_rec.add_argument("--effort", default="")
     p_rec.add_argument("--reason", default="")
     p_rec.add_argument("--task-hash", default="")
+    p_rec.add_argument("--task", default="",
+                       help="the task text, hashed into a vocabulary sketch and "
+                            "then discarded; lets `adder similar` find this run")
     p_rec.add_argument("--duration", type=float, default=0.0)
     p_rec.add_argument("--log", default=None)
 

@@ -106,3 +106,95 @@ class TestRepoInvariants:
         docs = (REPO / "docs" / "commands.md").read_text(encoding="utf-8")
         missing = [c.name for c in COMMANDS if f"adder {c.name}" not in docs]
         assert not missing, f"undocumented in docs/commands.md: {missing}"
+
+
+class TestWhatTheWheelCarries:
+    """Everything `adder auto on` installs has to survive `pip install`.
+
+    It did not, for four releases. The hooks and the tier agents lived under
+    `.claude/`, which `MANIFEST.in` prunes, so the wheel carried none of them:
+    activation wrote three hook entries pointing at files that did not exist and
+    copied zero agents, and said nothing, because `agent_plan` skips a source it
+    cannot find. The only cost-*prevention* in the tool was inert for everybody
+    who had not cloned the repository -- which is to say, for everybody the
+    README's install line was written for.
+
+    Nothing about that failure was loud. These are the assertions that make it
+    loud: the payload lives inside the package, and anything in it that is not a
+    module is named by a `package-data` glob.
+    """
+
+    def test_the_hooks_and_agents_live_inside_the_package(self):
+        from adder.decide.auto import agents_dir, hooks_dir
+
+        pkg = pathlib.Path(REPO / "adder").resolve()
+        for d in (hooks_dir(), agents_dir()):
+            assert pkg in d.resolve().parents or d.resolve() == pkg, (
+                f"{d} is outside adder/, so a wheel cannot carry it and "
+                "`pip install adder-cli && adder auto on` installs nothing"
+            )
+
+    def test_every_installed_file_exists_where_activation_looks_for_it(self):
+        from adder.decide.auto import AGENTS, HOOKS, agents_dir, hooks_dir
+
+        missing = [str(hooks_dir() / h["script"]) for h in HOOKS
+                   if not (hooks_dir() / str(h["script"])).is_file()]
+        missing += [str(agents_dir() / a) for a in AGENTS
+                    if not (agents_dir() / a).is_file()]
+        assert not missing, f"activation would install nothing for: {missing}"
+
+    def test_the_hooks_are_modules_so_setuptools_finds_them(self):
+        """`packages.find` ships a package; it does not ship a stray directory."""
+        from adder.decide.auto import hooks_dir
+
+        assert (hooks_dir() / "__init__.py").is_file()
+
+    def test_non_python_payload_is_declared_as_package_data(self):
+        """A `.md` is invisible to `packages.find`, so it needs a glob naming it."""
+        from adder.decide.auto import AGENTS, agents_dir
+
+        globs = pyproject()["tool"]["setuptools"]["package-data"]
+        rel = agents_dir().resolve().relative_to(pathlib.Path(REPO / "adder").resolve())
+        owner = "adder." + ".".join(rel.parts[:-1]) if len(rel.parts) > 1 else "adder"
+        declared = globs.get(owner) or globs.get(f'"{owner}"') or []
+        assert any(g.startswith(f"{rel.parts[-1]}/") for g in declared), (
+            f"pyproject declares {declared!r} for {owner}; nothing there carries "
+            f"{AGENTS[0]} into the wheel"
+        )
+
+    def test_the_repository_runs_the_agents_it_ships(self):
+        """`.claude/agents/` here is a copy of what activation installs.
+
+        Two copies of four files, on purpose. The package needs them because
+        that is what a wheel can carry; this checkout needs them at
+        `.claude/agents/` because that is where Claude Code looks while somebody
+        is working in this repository, and a fresh clone should be dogfooding
+        what it ships rather than something adjacent to it. Copies drift, so the
+        test is here rather than the trust.
+        """
+        from adder.decide.auto import AGENTS, agents_dir
+
+        drifted = []
+        for name in AGENTS:
+            mine = REPO / ".claude" / "agents" / name
+            if not mine.is_file():
+                continue
+            if mine.read_text(encoding="utf-8") != \
+                    (agents_dir() / name).read_text(encoding="utf-8"):
+                drifted.append(name)
+        assert not drifted, (
+            f"{drifted} differ between .claude/agents/ and the packaged copy in "
+            "adder/decide/agents/. The packaged one is what users get; copy it over."
+        )
+
+    def test_nothing_installable_is_read_out_of_dot_claude(self):
+        """The directory the manifest prunes may not be a source of payload.
+
+        `.claude/hooks/*.py` still exists as forwarding shims for a settings.json
+        written before the move. A shim is a few lines; if one of these grows a
+        decision again, it is a decision only a checkout has.
+        """
+        for path in sorted((REPO / ".claude" / "hooks").glob("*.py")):
+            assert len(path.read_text(encoding="utf-8").splitlines()) < 30, (
+                f"{path} is doing real work again; the wheel does not carry it"
+            )

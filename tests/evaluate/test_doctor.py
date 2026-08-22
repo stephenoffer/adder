@@ -9,6 +9,7 @@ something stable, and a check that cannot run says SKIP rather than OK.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from adder.evaluate.doctor import (
     MATERIAL_SHARE,
@@ -33,6 +34,34 @@ class TestMateriality:
     def test_share_threshold_is_honoured(self):
         total = 100.0
         assert _material(total * MATERIAL_SHARE, total) is True
+
+
+class TestTheGuardCheck:
+    """The only finding in `doctor` about money that has not been spent yet,
+    which is why an advisory guard is reported as a problem and not as a
+    preference. Its whole saving is multiplied by a guess."""
+
+    def test_an_uninstalled_guard_fails_and_points_at_activation(self, monkeypatch):
+        from adder.evaluate import doctor
+        monkeypatch.setattr("adder.decide.guard.installed_in", lambda *a, **k: [])
+        got = doctor.check_guard()
+        assert not got.ok and 'adder auto on' in got.action
+
+    def test_an_installed_but_advisory_guard_is_also_a_finding(self, monkeypatch):
+        from adder.evaluate import doctor
+        monkeypatch.setattr("adder.decide.guard.installed_in",
+                            lambda *a, **k: [Path('/somewhere/settings.json')])
+        monkeypatch.setenv('ADDER_GUARD_ENFORCE', 'off')
+        got = doctor.check_guard()
+        assert not got.ok and '--full' in got.action
+
+    def test_an_enforcing_guard_passes_that_gate(self, monkeypatch):
+        from adder.evaluate import doctor
+        monkeypatch.setattr("adder.decide.guard.installed_in",
+                            lambda *a, **k: [Path('/somewhere/settings.json')])
+        monkeypatch.setenv('ADDER_GUARD_ENFORCE', 'full')
+        got = doctor.check_guard()
+        assert 'advisory' not in got.headline
 
 
 class TestChecks:

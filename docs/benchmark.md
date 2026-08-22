@@ -34,6 +34,40 @@ Reporting only the 6.7x would be the more impressive claim and a lie by
 omission. It is not what installing the tool gets you; it is what restructuring
 your work around the tool gets you.
 
+## What moved when the guard learned to refuse
+
+That gap was the tool's own indictment, and `adder auto` is the answer to it.
+An enforcing guard does not advise the delegation threshold, it refuses the
+calls above it, so most of the fourth row crossed the line. Re-run on a later
+and larger corpus — 118 sessions, 33,192 turns, $7,888 as run:
+
+| configuration | total | vs no adder | who does it |
+|---|---|---|---|
+| no adder — as run | $7,888 | 1.0x | — |
+| + the read guard, refusing over 800 tok | $3,186 | **2.5x** | the hook |
+| + the tier agents in `.claude/agents/` | $2,567 | **3.1x** | the agent files |
+| + the threshold it solves for, over 300 tok | $1,667 | 4.7x | you |
+| + restarting every 21 turns | $1,233 | 6.4x | you |
+
+For comparison, the advisory install on that same corpus is $4,954 — **1.6x**.
+
+**1.6x → 3.1x for installing it and changing nothing.** The ladder is longer by
+one row because the delegation threshold and the restart cadence used to be
+bundled, and they are enforceable by different things: a hook can refuse a
+read, and nothing here can restart a session. Bundling them marked the whole
+rung advisory and hid the fact that most of it no longer is.
+
+Two rows are still yours, and the larger of the two is the cadence. That is the
+honest ceiling of the automatic number on this workload: session length is the
+biggest single lever in `adder savings` (39% of the addressable pool) and no
+hook event can pull it.
+
+The third row does not become enforced when you activate, and the reason is
+worth stating: the guard refuses at 800 tokens, the reports solve for ~300, and
+below 800 the hook would parse a transcript on half of all tool calls to find
+money the dollar gate has already found. Crediting activation with the
+difference would be crediting it with money it does not collect.
+
 ## Method
 
 `adder bench` replays every recorded turn under each configuration and re-prices

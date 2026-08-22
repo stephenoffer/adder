@@ -12,8 +12,11 @@ that it never parses a transcript for a call it has no opinion on, that it
 writes its state where it was told to and nowhere else, and that its install
 snippet describes the tools it actually handles.
 
-The hooks live under `.claude/` rather than in the package, so they are loaded
-by path. `.claude/` is tracked and shipped, so it is testable and it is tested.
+The hooks are loaded by path here rather than imported, because that is how the
+harness runs them: as a file, possibly under a different interpreter than the one
+adder was installed into. They live inside the package (`adder/decide/hooks/`)
+for the reason `__init__.py` there gives -- `.claude/` is pruned from the wheel,
+so the copy that used to live there was one only a git checkout ever had.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import pathlib
 
 import pytest
 
-HOOKS = pathlib.Path(__file__).resolve().parents[2] / ".claude" / "hooks"
+HOOKS = pathlib.Path(__file__).resolve().parents[3] / "adder" / "decide" / "hooks"
 
 
 def _load(name: str):
@@ -262,6 +265,90 @@ class TestItRemembersReads:
         assert other is None or "already in this context" not in json.dumps(other)
 
 
+class TestItRefusesThroughTheHook:
+    """`decide` is unit-tested for refusing; this is the wire.
+
+    A refusal only exists if it survives the round trip through the hook's
+    stdout as a `permissionDecision`, and the enforcing path had never been
+    exercised end to end. Everything else in this file exists because a guard
+    whose failure is silent needs its plumbing asserted, and this is the part
+    of the plumbing that can now change what happens rather than describe it.
+    """
+
+    @pytest.fixture
+    def enforcing(self, guard, monkeypatch):
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "certain")
+        return guard
+
+    @staticmethod
+    def _payload(f):
+        return {"tool_name": "Read", "session_id": "s1",
+                "tool_input": {"file_path": str(f)}}
+
+    def test_the_second_read_is_denied_not_described(
+            self, enforcing, monkeypatch, capsys, tmp_path):
+        _wire(monkeypatch, remaining=300)
+        f = tmp_path / "big.py"
+        f.write_text("x" * 40_000)
+        _run(enforcing, self._payload(f), monkeypatch, capsys)
+        again = _run(enforcing, self._payload(f), monkeypatch, capsys)
+        out = again["hookSpecificOutput"]
+        assert out["permissionDecision"] == "deny"
+        assert out["permissionDecisionReason"]
+
+    def test_the_third_attempt_is_allowed_through(
+            self, enforcing, monkeypatch, capsys, tmp_path):
+        """The safety property, at the wire. A guard that says no forever is a
+        session that cannot finish, and the model cannot argue with it."""
+        _wire(monkeypatch, remaining=300)
+        f = tmp_path / "big.py"
+        f.write_text("x" * 40_000)
+        for _ in range(2):
+            _run(enforcing, self._payload(f), monkeypatch, capsys)
+        third = _run(enforcing, self._payload(f), monkeypatch, capsys)
+        assert third is None or \
+            third["hookSpecificOutput"].get("permissionDecision") != "deny"
+
+    def test_it_still_only_advises_with_enforcement_off(
+            self, guard, monkeypatch, capsys, tmp_path):
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "off")
+        _wire(monkeypatch, remaining=300)
+        f = tmp_path / "big.py"
+        f.write_text("x" * 40_000)
+        _run(guard, self._payload(f), monkeypatch, capsys)
+        again = _run(guard, self._payload(f), monkeypatch, capsys)
+        assert "permissionDecision" not in again["hookSpecificOutput"]
+
+    def test_a_refused_read_is_not_remembered_as_read(
+            self, enforcing, monkeypatch, capsys, tmp_path):
+        _wire(monkeypatch, remaining=300)
+        f = tmp_path / "big.py"
+        f.write_text("x" * 40_000)
+        _run(enforcing, self._payload(f), monkeypatch, capsys)
+        _run(enforcing, self._payload(f), monkeypatch, capsys)
+        state = json.loads((tmp_path / "guard.json").read_text())["s1"]
+        assert state["prevented"] > 0
+        assert str(f) in state["denied"] or f"Read:{f}" in state["denied"]
+
+    def test_compaction_clears_the_claim_the_refusal_rests_on(
+            self, enforcing, monkeypatch, capsys, tmp_path):
+        """The PreCompact hook is what keeps an enforcing guard honest: after a
+        compaction the content is no longer in the context, so the grounds for
+        refusing are gone."""
+        _wire(monkeypatch, remaining=300)
+        f = tmp_path / "big.py"
+        f.write_text("x" * 40_000)
+        _run(enforcing, self._payload(f), monkeypatch, capsys)
+        learner = _load("precompact_learn")
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "s1"})))
+        assert learner.main() == 0
+        state = json.loads((tmp_path / "guard.json").read_text())["s1"]
+        assert state["reads"] == {}
+        again = _run(enforcing, self._payload(f), monkeypatch, capsys)
+        assert again is None or \
+            again["hookSpecificOutput"].get("permissionDecision") != "deny"
+
+
 class TestSessionCostAdvisor:
     def test_malformed_stdin_is_survived(self, monkeypatch, capsys):
         mod = _load("session_cost_advisor")
@@ -316,12 +403,12 @@ class TestItWatchesWrites:
 
 
 class TestTheAgentsAndTheGuardAgree:
-    """`.claude/agents/` and the guard both state a return budget, and they are
-    two copies of one number. The guard prices a `Task` against it; the agent
+    """The agent definitions and the guard both state a return budget, and they
+    are two copies of one number. The guard prices a `Task` against it; the agent
     files instruct the subagent to meet it. If they drift, the tool advises one
     thing and the agent is told another."""
 
-    AGENTS = pathlib.Path(__file__).resolve().parents[2] / ".claude" / "agents"
+    AGENTS = pathlib.Path(__file__).resolve().parents[3] / "adder" / "decide" / "agents"
 
     def test_every_routing_tier_states_the_budget(self):
         from adder.decide.guard import BRIEF_TARGET_TOKENS

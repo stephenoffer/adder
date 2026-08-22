@@ -43,7 +43,7 @@ Seven packages, ordered. An import may point down this list, never up.
 | 1 | `adder.pricing` | prices, catalog, providers, registry, cost, bt, sources | what a token costs |
 | 2 | `adder.core` | trace, filters, settings, shapes | reading a session off disk |
 | 3 | `adder.measure` | the read-only reports | what happened |
-| 4 | `adder.decide` | `route/`, `track/`, guard, handoff | what to do about it |
+| 4 | `adder.decide` | `route/`, `track/`, guard, handoff, delegate, auto, `hooks/`, `agents/` | what to do about it |
 | 5 | `adder.evaluate` | `replay/`, `claims/`, doctor | whether the advice held |
 | 6 | `adder.cli` | dispatcher, command table, help | how a person reaches all of it |
 

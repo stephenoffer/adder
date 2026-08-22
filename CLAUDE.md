@@ -25,7 +25,10 @@ recommendation that someone acts on.
    files. Never add an implicit fetch to make a report "more accurate".
 3. **No mutation of user data.** The tool reads `~/.claude/projects/**`. It does
    not write there, rename there, or delete there. Ever. Outputs go to stdout or
-   to a path the user named.
+   to a path the user named. The one exception is `adder auto on`, which writes
+   `settings.json` and `.adder.json` — it prints the change first, keeps a
+   `.adder.bak`, and `adder auto off` reverses it. Nothing else may grow a
+   write path.
 4. **Read-only means read-only.** `adder live`, `adder trace`, `adder debt`, `adder context`,
    `adder cache`, `adder quality`, `adder horizon` must never change state on disk.
 5. **Every claim is testable or it is not made.** A number in the README, a
@@ -69,12 +72,18 @@ adder/
   core/       reading a session off disk: trace, filters, settings, shapes
   measure/    read-only reports:  spend/  window/  session/
   decide/     measurement -> choice:  route/  track/  guard.py  handoff.py
+              delegate.py (the tier a delegated step should run on)
+              auto.py (the one module that writes a file the user did not name)
+              hooks/ and agents/ — the payload `auto on` installs, in the
+              package because the wheel prunes `.claude/`
   evaluate/   did it hold up:  replay/  claims/  doctor.py
   cli/        dispatcher, command table, help, completion, config
 tests/        mirrors the package tree, directory for directory
 docs/         the reasoning; the README is the summary of it
 scripts/adder launcher for a checkout; delegates to adder.cli
-.claude/      agents, hooks, and skills — part of the product, tracked
+.claude/      skills, and forwarding shims for hooks installed before v0.2.
+              Not shipped: `MANIFEST.in` prunes it. Nothing installable may
+              live here — see `tests/repo/test_invariants.py`
 ```
 
 Three limits, all enforced by `tests/repo/test_structure.py`:

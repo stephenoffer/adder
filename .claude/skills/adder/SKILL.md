@@ -2,7 +2,7 @@
 name: adder
 description: Pick the cheapest capable model and the cheapest place to run a task (inline vs delegated subagent), using a cache-aware cost model. Use when explicitly asked to route, delegate, or minimise cost for a specific task.
 argument-hint: [task description]
-allowed-tools: Bash(/Users/stephen.offer/Desktop/llm-router/scripts/adder:*), Agent, Read, Grep, Glob
+allowed-tools: Bash(adder:*), Bash(./scripts/adder:*), Agent, Read, Grep, Glob
 disable-model-invocation: true
 ---
 
@@ -12,7 +12,7 @@ The recommendation below was computed locally before this prompt was assembled.
 It cost **zero model tokens**. Do not recompute or second-guess the arithmetic.
 
 ```
-!`/Users/stephen.offer/Desktop/llm-router/scripts/adder policy "$ARGUMENTS"`
+!`adder policy "$ARGUMENTS"`
 ```
 
 ## Act on it

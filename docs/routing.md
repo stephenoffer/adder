@@ -76,6 +76,41 @@ that router does not understate the answer, it inverts it.
 When they disagree by more than 0.05 APGR, the report says so explicitly. That
 gap is a property of the workload, and on agent sessions it is usually large.
 
+## The comparison PGR structurally cannot make
+
+PGR is 0 at the all-weak endpoint and 1 at the all-strong one, by construction.
+The all-strong endpoint *is* a single model — so no PGR-derived number, APGR
+included, can answer the question a sceptical reader asks first: **would picking
+one model and never routing at all have done just as well?**
+
+The published benchmarks ask it, and it is the question that embarrasses the
+field. Several well-known routers — a binary-classifier one, a cascade, and a
+commercial auto-router — fail to beat the best single model in at least one
+regime. A metric family anchored at the weak arm cannot show that, which is
+presumably part of why it went unreported for so long.
+
+So two more numbers are printed, named as the benchmarks name them so they can
+be quoted next to a published figure without translation:
+
+- **gain vs best single** — the quality the best threshold on the curve adds over
+  the better of the two fixed choices. Zero is the common answer and it is a
+  finding, not a measurement failure: it means no mix beat just picking one.
+  It is positive only where the two models are genuinely complementary.
+- **cost saved at equal quality** — the cheapest threshold whose quality still
+  matches that better fixed choice, read as a share of the all-strong budget.
+  This is the figure a reader actually wants: not "how much of the gap did it
+  recover" but "how much cheaper can this get before it starts costing me
+  answers".
+
+`best_single` is the *better* of the two arms and is deliberately not assumed to
+be the strong one. On a task mix where the weak model wins, quoting the strong
+arm as the baseline would flatter every router scored against it.
+
+The one benchmark metric not adopted is ParetoDist, distance to the Pareto
+frontier. Here the frontier is two fixed points and an oracle, so the distance to
+it collapses into the oracle regret already reported — adding it would be the
+same number under a second name.
+
 ## Where the episodes come from
 
 An episode is one task scored and priced under both arms. That is a

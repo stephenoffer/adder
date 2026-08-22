@@ -49,6 +49,13 @@ class TestCommandTable:
             "adder.__main__",   # `python -m adder`
             "adder.pricing.sources",    # reachable as `adder models refresh`, not top-level
         }
+        # The hooks are invoked by the harness by path, not by a user typing a
+        # command name, and `adder auto on` is how they get installed. They have
+        # a `main()` because they are scripts, not because they are commands.
+        exempt |= {
+            ".".join(path.relative_to(REPO).with_suffix("").parts)
+            for path in (REPO / "adder" / "decide" / "hooks").glob("*.py")
+        }
         # `rglob`, not `glob`: the package is a tree, and a report module added
         # three levels down is exactly as invisible as one added at the top.
         unregistered = []

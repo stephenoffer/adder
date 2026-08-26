@@ -95,7 +95,7 @@ separately, prequentially, by `adder calib`. See [routing.md](routing.md).
 A per-project failure rate is an average over a population that is not one
 population. The same repository gets "where is the retry logic" and "make the
 scheduler preemptible", and one T0 number across both is too timid for the
-lookups and too bold for the refactors — with which error you get depending on
+lookups and too bold for the refactors, with which error you get depending on
 that week's task mix.
 
 So `p_fail` is now conditioned on the task as well as the rung. `adder similar
@@ -109,7 +109,7 @@ Jaccard between sketches. Three properties earn it its place:
 - **No model, no dependency, no network.** The routing benchmarks find that
   clustering queries and scoring each cluster is competitive with trained
   matrix-factorization and graph routers, which says the recoverable signal is
-  mostly "which kind of task is this" — and that kind survives being reduced to
+  mostly "which kind of task is this", and that kind survives being reduced to
   vocabulary. Nearest neighbours rather than k clusters, because the log is
   small enough that the extra resolution is free and needs no k chosen up front.
 - **The task is not stored.** Each slot of the sketch is a minimum over the whole
@@ -119,8 +119,8 @@ Jaccard between sketches. Three properties earn it its place:
   again, one level deeper, because a rate over four neighbours is far easier to
   push around than one over four hundred runs. A neighbour estimate with real
   mass behind it replaces the tier-wide rate in either direction. A thin one may
-  *raise* `p_fail` — which can only decline a downgrade, and declining a
-  downgrade costs at most the model you would have used anyway — and is
+  *raise* `p_fail`, which can only decline a downgrade, and declining a
+  downgrade costs at most the model you would have used anyway. It is
   discarded when it is thin and optimistic, which is the exact case that would
   spend money on four rows.
 

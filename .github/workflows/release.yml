@@ -73,6 +73,35 @@ jobs:
           python -m pip install --upgrade build twine
           python -m build
           python -m twine check dist/*
+      - name: The exact artifacts that go to PyPI install and run
+        # Not a duplicate of the CI job: that one gates `main`, this one gates
+        # the files that are actually uploaded. They are built by separate runs
+        # and only one of them is published.
+        env:
+          ADDER_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          WHL="$(ls "$PWD"/dist/*.whl)"
+          SDIST="$(ls "$PWD"/dist/*.tar.gz)"
+          for art in "$WHL" "$SDIST"; do
+            rm -rf /tmp/rel-env
+            python -m venv /tmp/rel-env
+            /tmp/rel-env/bin/python -m pip install --quiet "$art"
+            # Outside the checkout, or `import adder` finds the source tree.
+            (cd /tmp && /tmp/rel-env/bin/adder version && \
+                        /tmp/rel-env/bin/adder help > /dev/null)
+            /tmp/rel-env/bin/python - <<'PY'
+          from adder.pricing.catalog import BUNDLED
+          from adder.decide.auto import AGENTS, HOOKS, agents_dir, hooks_dir
+          missing = [] if BUNDLED.is_file() else [str(BUNDLED)]
+          missing += [a for a in AGENTS if not (agents_dir() / a).is_file()]
+          missing += [str(h["script"]) for h in HOOKS
+                      if not (hooks_dir() / str(h["script"])).is_file()]
+          if missing:
+              raise SystemExit(f"artifact is missing package data: {missing}")
+          PY
+            echo "  $(basename "$art") ok"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: dist

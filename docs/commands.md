@@ -1,11 +1,11 @@
 # Command reference
 
 Every report is computed locally from transcript files. No API key, no model
-calls, and no network — with exactly one exception, `adder models refresh`, which
+calls, and no network, with exactly one exception: `adder models refresh`, which
 is opt-in and named as such below.
 
-Generated from the command table in `adder/cli/commands.py`; `tests/cli/test_dispatch.py` fails
-if a command is missing here.
+Generated from the command table in `adder/cli/commands.py`;
+`tests/repo/test_invariants.py` fails if a command is missing here.
 
 ## Measure
 
@@ -18,7 +18,7 @@ Read-only reports over transcript files. None of these write anything.
 | `adder debt [root]` | what an output token really costs ([cost-model.md](cost-model.md)) |
 | `adder context [root]` | where context growth comes from |
 | `adder cache [root]` | cache hit rate and rebuild waste, by cause |
-| `adder speed [root] [--max-gap S] [--json]` | the fast serving path bills at 2x — audit whether the speed arrived, paired within model, wall clock only ([research-map.md](research-map.md)) |
+| `adder speed [root] [--max-gap S] [--json]` | the fast serving path bills at 2x; audit whether the speed arrived, paired within model, wall clock only ([research-map.md](research-map.md)) |
 | `adder sched [root] [--json]` | the mean-residual-life curve: whether how far a session has run predicts how much is left, against the equal-length reference of -0.50 turns/turn  ([systems.md](systems.md))|
 | `adder spec [root] [--top N] [--json]` | agent sessions read as search: probe scale, the explore/formulate/validate mix, repeated probes and what they cost, and how much a human steer collapses the search |
 | `adder cachesim [root] [--ttl S] [--json]` | replay the workload against a simulated prefix cache: hit rate against capacity, block size and TTL (SIMULATED) |
@@ -29,14 +29,14 @@ Read-only reports over transcript files. None of these write anything.
 | `adder tools [root] [--top N] [--json]` | which tool fills your context, and what carrying its results costs |
 | `adder compact [root] [--top N] [--vs-restart TOK] [--handoff TOK] [--json]` | every compaction on record with its measured rebuild and net verdict, the turns-remaining threshold above which compacting pays, the sessions that carried a full context and never compacted, and compact-vs-restart at a given context |
 | `adder reread [root] [--top N] [--min-tokens TOK] [--min-sessions N] [--json]` | content the agent admitted to the context more than once (separating a redundant copy from a justified refresh), plus the reads that recur across sessions and the largest resident note that would still beat them |
-| `adder memory [root] [--repo DIR] [--home DIR] [--model M] [--top N] [--what-if TOK] [--json]` | what the always-loaded prefix — CLAUDE.md, the memory index, skill and agent descriptions — costs on every turn of every session, per file, plus what is duplicated, stale, or unindexed |
+| `adder memory [root] [--repo DIR] [--home DIR] [--model M] [--top N] [--what-if TOK] [--json]` | what the always-loaded prefix (CLAUDE.md, the memory index, skill and agent descriptions) costs on every turn of every session, per file, plus what is duplicated, stale, or unindexed |
 | `adder sessions [root] [--sort K] [--top N] [--json]` | one row per session: cost, $/turn, peak context, compactions, cache rebuilds |
 | `adder agents [root] [--top N] [--json]` | delegation as measured: subagent spend, subagent model choice, and the large reads that went inline |
 | `adder anomaly [root] [--z N] [--top N] [--json]` | the turns that cost far more than the rest, each with the mechanism that explains it |
 | `adder effort [root] [--model M] [--json]` | re-fit the effort→output-volume priors against local transcripts |
 | `adder limits [root] [--hours H] [--json]` | the five-hour metering window rebuilt from timestamps: what each window read, how much of it was carry, and what a turn late in a window costs against one early in it, plus the heaviest sliding 7 days as a proxy for the weekly cap. For plan users, where the constraint is a lockout rather than a bill |
 | `adder budget [root] [--limit USD] [--period P] [--strict]` | burn-down and projection against a spend target |
-| `adder export [root] [--format F] [--grain G] [-o PATH]` | priced turns, sessions, or days as CSV/JSON/JSONL — never any message content |
+| `adder export [root] [--format F] [--grain G] [-o PATH]` | priced turns, sessions, or days as CSV/JSON/JSONL; never any message content |
 
 ## Decide
 
@@ -47,7 +47,7 @@ Turn a measurement into a choice.
 | `adder policy "<task>" [--json] [--cross-vendor] [--record]` | route a task: inline vs delegate, and whether another vendor should run the subagent ([models.md](models.md)). `--record` books the recommendation in the ledger |
 | `adder outcomes [--log PATH] [--project P] [--context TOK] [--json]` | escalation calibration (p_fail), and how far each tier is from being allowed to take work |
 | `adder outcomes record --tier T [--model M] [--project P] [--escalated] ...` | append one dispatch outcome by hand |
-| `adder outcomes import [root] [--write] [--json]` | backfill that log from transcripts — every `Agent` dispatch and whether it escalated. Dry run unless `--write`; idempotent, so re-running adds only what is new |
+| `adder outcomes import [root] [--write] [--json]` | backfill that log from transcripts: every `Agent` dispatch and whether it escalated. Dry run unless `--write`; idempotent, so re-running adds only what is new |
 | `adder guard [root] [--learn] [--replay] [--explain CMD] [--install] [--json]` | what the PreToolUse guard predicts, decides, and has cost |
 | `adder ledger [--log PATH] [--json]` | has the advice been worth more than the asking? |
 | `adder guard [root] [--learn] [--explain CMD] [--json]` | what the PreToolUse guard predicts, decides, and has cost ([guard.md](guard.md)) |
@@ -81,14 +81,14 @@ Check that a lever is real before trusting it.
 | `adder verbosity [battles.jsonl] [--turns N] [--json]` | fit the style-controlled Bradley-Terry model: how much of a model's rating is length rather than capability, and what those extra tokens cost per answer ([research-map.md](research-map.md)) |
 | `adder design [battles.jsonl] [--budget N] [--cost USD] [--json]` | allocate a fixed comparison budget to the model pairs that would actually reduce uncertainty about the ranking, instead of spreading it evenly ([routing.md](routing.md)) |
 | `adder ab --help` | controlled A/B on answer quality |
-| `adder repro [root] [--deep] [--write PATH] [--check PATH] [--json]` | hash the four things every number depends on — transcripts, prices, catalog, code — and diff against a manifest recorded earlier; exits 1 on drift |
+| `adder repro [root] [--deep] [--write PATH] [--check PATH] [--json]` | hash the four things every number depends on (transcripts, prices, catalog, code) and diff against a manifest recorded earlier; exits 1 on drift |
 | `adder doctor [root] [--strict] [--json]` | run every check and rank the findings by dollars at stake |
 
 ## Setup
 
 Inspect what the tool is configured to do, and turn on the parts that run
 without being asked. `adder auto on` is the only command in this tool that
-writes a file you did not name — it says what it will change before it changes
+writes a file you did not name: it says what it will change before it changes
 it, keeps a `.adder.bak` of whatever was there, and `adder auto off` removes
 exactly what it added.
 
@@ -114,8 +114,8 @@ when two machines produce different numbers from the same transcripts.
   `--since DATE`, `--until DATE`, `--project SUBSTR`, `--model-filter PREFIX`,
   `--session ID`, `--min-turns N`, and `--only-subagents` / `--no-subagents`.
   Dates may be absolute (`2026-08-01`) or relative (`7d`, `2w`, `today`,
-  `yesterday`). The window is half-open — `--since` is inclusive, `--until` is
-  exclusive — so two adjacent windows partition the data exactly.
+  `yesterday`). The window is half-open (`--since` is inclusive, `--until` is
+  exclusive), so two adjacent windows partition the data exactly.
 - `adder` with no arguments, or `adder help`, prints the command list.
 - `adder help <command>` and `adder <command> --help` both show that command's flags.
   Each module owns its own parser, so the flags shown are always the real ones.
@@ -145,22 +145,22 @@ Replay a saved capture instead of fetching with
 
 ## What ships
 
-- **`adder/`** — pricing with context limits and cache minimums, a cache-aware
+- **`adder/`**: pricing with context limits and cache minimums, a cache-aware
   cost model, transcript parsing with deduplication, growth attribution, cache
   analysis, quality proxies, the model catalog, and the routing policy.
-- **`adder/cli/commands.py`** — the dispatcher. Adding a command means one row here plus
-  a module, a test, and a line in this file.
-- **`adder/decide/agents/`** — Explore on Haiku plus three routing tiers, each
+- **`adder/cli/commands.py`**: the dispatcher. Adding a command means one row
+  here plus a module, a test, and a line in this file.
+- **`adder/decide/agents/`**: Explore on Haiku plus three routing tiers, each
   with output-bounding rules. Inside the package, so a `pip install` carries
   them; `adder auto on` copies them to `.claude/agents/`.
-- **`adder/decide/hooks/`** — a prompt hook that prices the session, and a
+- **`adder/decide/hooks/`**: a prompt hook that prices the session, and a
   **PreToolUse guard** that prices a large read *before* it lands in context.
   The guard is the only thing here that prevents cost rather than reporting it.
   It fires on a **cost**, not a token count (`ADDER_GUARD_MIN_COST`, default
   $0.25), because the same read is worth interrupting for with 400 turns left
   and not worth mentioning with three. `ADDER_GUARD_BLOCK=1` escalates from
   advice to a confirmation prompt; it never denies, and never blocks silently.
-- **`.claude/skills/`** — `/adder`, `/adder-doctor`, `/adder-context`,
+- **`.claude/skills/`**: `/adder`, `/adder-doctor`, `/adder-context`,
   `/adder-init`. Checkout-only; they are conveniences, not the mechanism.
-- **`scripts/adder`** — launcher for a git checkout; `pip install` provides `adder`
-  directly.
+- **`scripts/adder`**: launcher for a git checkout; `pip install` provides
+  `adder` directly.

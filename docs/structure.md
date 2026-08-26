@@ -4,7 +4,7 @@ How this repository is laid out, why, and what to do when you add a file.
 
 Everything here is checked by `tests/repo/test_structure.py`. If you are reading
 this because that test failed, the rule you broke is below with the reasoning
-behind it — and the failure message already told you where the file should go.
+behind it, and the failure message already told you where the file should go.
 
 ## The problem this solves
 
@@ -12,7 +12,7 @@ behind it — and the failure message already told you where the file should go.
 each one added one more report next to the others, which was obviously fine at
 the time. That is how breadth happens. By the end, finding the module that
 priced a cache write meant reading a fifty-line `ls`, and `trace.py` — the
-transcript reader that every report depends on — sat between `tools.py` and
+transcript reader every report depends on — sat between `tools.py` and
 `validate.py` with nothing marking it as the foundation.
 
 So the rules below are not about tidiness. Two of them are about **cost**
@@ -25,7 +25,7 @@ So the rules below are not about tidiness. Two of them are about **cost**
 **No more than 12 Python files or 10 subdirectories in one directory.**
 
 Crossing either is the signal to add a level, not to keep going sideways. When
-you split, split by *subject* — the thing the modules are about — not by kind.
+you split, split by *subject* (the thing the modules are about), not by kind.
 `measure/window/` holds everything about what fills the context window; a
 `helpers/` or `utils/` directory holds whatever nobody had a name for, and fills
 up again within a month.
@@ -53,10 +53,10 @@ takes a `Session` does not.
 
 Two things the layering buys:
 
-* **The hook stays cheap.** The PreToolUse guard runs on every submit. It reaches
+- **The hook stays cheap.** The PreToolUse guard runs on every submit. It reaches
   `core.trace` and `pricing.cost`, and because those may not import upward, it
   cannot accidentally pull in an argparse parser, a report, or the A/B harness.
-* **A cycle becomes a design question.** When `core.filters` wanted a date
+- **A cycle becomes a design question.** When `core.filters` wanted a date
   helper that lived in a report, the fix was to move the helper down into
   `core`, not to add a function-level import that hides the cycle. The rule made
   that the obvious move rather than the annoying one.
@@ -84,11 +84,10 @@ itself and mirrors no package.
 No test file sits at the top of `tests/`. A test that belongs to no module never
 acquires one.
 
-Two test modules may share a basename — `tests/cli/test_dispatch.py` and
+Two test modules may share a basename. `tests/cli/test_dispatch.py` and
 `tests/decide/track/test_dispatch.py` are both the obvious name for what they
-cover.
-That works because `pytest` runs with `--import-mode=importlib`; do not remove
-it.
+cover, which works because `pytest` runs with `--import-mode=importlib`. Do not
+remove that flag.
 
 ## Naming and style
 
@@ -120,7 +119,7 @@ it.
    declare flags.
 3. Add one `Command(...)` row to `COMMANDS` in `adder/cli/commands.py`.
 4. Add `tests/<same path>/test_<name>.py`.
-5. Add a row to `docs/commands.md` — a test checks for it.
+5. Add a row to `docs/commands.md`; a test checks for it.
 
 If step 2 would make the directory the 13th file, split the directory first.
 

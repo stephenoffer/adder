@@ -19,8 +19,8 @@ multi-counts most turns:
 | median session length | 607 turns | **340 turns** |
 
 Records are now grouped by `message.id`, keeping the record with the highest
-`output_tokens` — partial records carry a running count that only the final one
-completes, so keeping the *first* instead undercounts output by 2.6%.
+`output_tokens`, because partial records carry a running count that only the
+final one completes, so keeping the *first* instead undercounts output by 2.6%.
 
 This is the kind of error that makes a cost tool worse than no cost tool, so it
 is tested directly (`tests/core/test_trace_dedup.py`).
@@ -53,7 +53,7 @@ Re-derived on deduplicated records, context growth splits roughly in half:
 | tool results | ~26% | estimated | delegation, bounded reads |
 | user messages | ~5% | estimated | — |
 
-*(The remaining ~19% is tool-result estimation error and injected context —
+*(The remaining ~19% is tool-result estimation error and injected context:
 read content, not written.)*
 
 `Bash` alone accounts for ~4.1M tokens of admitted context, more than every
@@ -72,7 +72,7 @@ deduplicated *between* transcripts, and there are two routine reasons the same
 turn appears in two files: a resumed session writes a new `.jsonl` that replays
 earlier turns, and a sidechain file restates the parent turn it branched from.
 Both carry the original `message.id`. `load_sessions` now keys on
-`(session id, message id)` — the session id is part of the key because message
+`(session id, message id)`. The session id is part of the key because message
 ids are only unique within a conversation, and dropping it would collapse two
 genuinely different turns that happened to share one.
 
@@ -92,7 +92,7 @@ a majority of the total is a broken join rather than a finding.
 ## A third counting error, in the other direction
 
 Not every assistant record is a turn. Claude Code writes one with the model id
-`<synthetic>` when the *client* produced the message — "API Error: Connection
+`<synthetic>` when the *client* produced the message: "API Error: Connection
 closed mid-response", an interrupted stream, a context that would not fit. Their
 usage block is all zeros and nothing was billed.
 
@@ -116,6 +116,6 @@ Estimating model output from text lengths undercounts it roughly sixtyfold.
 
 These figures are from one machine's transcripts, dominated by one workload.
 The *shares* (output vs tool output, cache hit rate, gap distribution) are what
-drive the advice, and they will differ for you — which is the point of measuring
+drive the advice, and they will differ for you, which is the point of measuring
 rather than assuming. Run `adder savings` against your own history before believing
 any number here.

@@ -16,7 +16,7 @@ them is the finding.
 
 | configuration | total | vs no adder |
 |---|---|---|
-| no adder — as run | $5,846 | 1.0x |
+| no adder (as run) | $5,846 | 1.0x |
 | + the read guard, at its shipped defaults | $3,943 | **1.5x** |
 | + the tier agents in `.claude/agents/` | $3,730 | **1.6x** |
 | + the threshold and cadence the reports solve | $869 | **6.7x** |
@@ -27,7 +27,7 @@ and nothing in this repo enforces it.
 So the honest one-line summary is two numbers, not one:
 
 - **1.6x** for installing it and changing nothing.
-- **6.7x** if you then work the way it tells you to — at nominal assumptions,
+- **6.7x** if you then work the way it tells you to, at nominal assumptions.
   **3.4x** at the pessimistic corner of them.
 
 Reporting only the 6.7x would be the more impressive claim and a lie by
@@ -39,17 +39,17 @@ your work around the tool gets you.
 That gap was the tool's own indictment, and `adder auto` is the answer to it.
 An enforcing guard does not advise the delegation threshold, it refuses the
 calls above it, so most of the fourth row crossed the line. Re-run on a later
-and larger corpus — 118 sessions, 33,192 turns, $7,888 as run:
+and larger corpus (118 sessions, 33,192 turns, $7,888 as run):
 
 | configuration | total | vs no adder | who does it |
 |---|---|---|---|
-| no adder — as run | $7,888 | 1.0x | — |
+| no adder (as run) | $7,888 | 1.0x | — |
 | + the read guard, refusing over 800 tok | $3,186 | **2.5x** | the hook |
 | + the tier agents in `.claude/agents/` | $2,567 | **3.1x** | the agent files |
 | + the threshold it solves for, over 300 tok | $1,667 | 4.7x | you |
 | + restarting every 21 turns | $1,233 | 6.4x | you |
 
-For comparison, the advisory install on that same corpus is $4,954 — **1.6x**.
+For comparison, the advisory install on that same corpus is $4,954, or **1.6x**.
 
 **1.6x → 3.1x for installing it and changing nothing.** The ladder is longer by
 one row because the delegation threshold and the restart cadence used to be
@@ -78,7 +78,7 @@ baseline does not reproduce reality cannot say anything about a ratio taken
 against it.
 
 Rows are **cumulative**, because the levers are substitutes. They all attack the
-same pool — tokens admitted to a context that is then re-read every turn — so
+same pool (tokens admitted to a context that is then re-read every turn), so
 pricing them independently and adding the results counts the same dollars more
 than once.
 
@@ -91,7 +91,7 @@ token to a context that will be re-read `E` more times costs `(w + m·E)` times
 the input rate, so the size at which that reaches $0.25 falls straight out.
 
 On this workload `E` is 321 expected re-reads, which puts the dollar gate at
-1,500 tokens — **below** the hook's 2,000-token floor. That floor exists so the
+1,500 tokens, **below** the hook's 2,000-token floor. That floor exists so the
 hook does not parse a transcript on every trivial read, and here it is the
 binding constraint. Anyone tuning `ADDER_GUARD_MIN_COST` on this workload would
 be tuning a gate that is not doing the work.
@@ -120,19 +120,19 @@ asserted:
 | 30% | 30% | 2,000 | 4.7x |
 | 30% | 30% | 20,000 | **3.4x** |
 
-- **Summary ratio** — what a delegated read hands back. At 10% the content stays
+- **Summary ratio.** What a delegated read hands back. At 10% the content stays
   out of the context; at 30% most of the carry it was supposed to avoid comes
   back. This sets the floor of the range, and `adder ab` is the only thing here
   that can test it.
-- **p_fail** — how often a delegated step has to be redone on the expensive
+- **p_fail.** How often a delegated step has to be redone on the expensive
   model. Doubling it costs about 0.7x of the multiple, which is less than the
   summary ratio and less than the handoff.
-- **Handoff** — how many tokens a restarted session has to be told. Nothing in a
+- **Handoff.** How many tokens a restarted session has to be told. Nothing in a
   transcript records what a person needs to resume. A 10x larger handoff costs
   about 2.2x of the multiple, which makes it the second-softest input here.
 
 At this threshold 99% of admitted tokens are delegated. That is not a tweak to
-how you work — it is the orchestrator pattern, where the main session holds the
+how you work. It is the orchestrator pattern, where the main session holds the
 thread and almost every step that would admit content runs somewhere else. It is
 worth being clear that the 6.7x is the price of adopting that pattern, not the
 price of installing a hook.
@@ -160,8 +160,8 @@ adder validate                   # re-test both headline numbers as claims
 
 Two of `adder validate`'s claims are these numbers:
 
-- *installing it pays before you obey it* — the enforced rungs clear 1.3x.
-- *the advice reaches 5x* — the solved regime clears 5x at nominal assumptions.
+- *installing it pays before you obey it*: the enforced rungs clear 1.3x.
+- *the advice reaches 5x*: the solved regime clears 5x at nominal assumptions.
 
 Both are workload-dependent and expected to fail on some workloads. A workload
 whose sessions stay short has little carry to remove, and the honest answer

@@ -1,5 +1,12 @@
 [build-system]
-requires = ["setuptools>=68"]
+# 77, not 68: `license = "MIT"` and `license-files` below are PEP 639, and
+# setuptools only understood them from 77.0.0. Under 76.1.0 the build dies on
+# `project.license must be valid exactly by one definition` -- which nobody saw,
+# because pip's isolated build env resolves the newest setuptools and the floor
+# is never exercised. It is exercised by anyone who installs the sdist with
+# `--no-build-isolation`, and a floor that cannot build the project is a lie
+# about what this package needs. `tests/repo/test_invariants.py` pins it.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]

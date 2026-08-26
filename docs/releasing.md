@@ -19,7 +19,7 @@ minimum a minor bump, even if no code signature changed.** Someone made a
 decision on the old number.
 
 `adder/__version__` in `adder/__init__.py` is the single source of truth.
-`pyproject.toml` reads it dynamically — never restate a version there, and
+`pyproject.toml` reads it dynamically; never restate a version there, and
 `tests/cli/test_dispatch.py` fails if you do.
 
 ## Steps
@@ -48,13 +48,13 @@ git push origin v0.2.0
 
 `.github/workflows/release.yml` runs four jobs in order. Each one is a gate.
 
-1. **guard** — refuses to continue unless `v<tag>` equals `adder.__version__`
+1. **guard** refuses to continue unless `v<tag>` equals `adder.__version__`
    *and* `CHANGELOG.md` contains a `## [<version>]` section. This is the check
    that catches the most common release mistake: tagging before bumping.
-2. **test** — the full matrix, Python 3.10 through 3.14, plus `ruff`. `fail-fast`
-   is on; a release does not proceed on a partial pass.
-3. **build** — `python -m build` and `twine check`.
-4. **github-release** and **pypi** — the release notes are extracted from this
+2. **test** runs the full matrix, Python 3.10 through 3.14, plus `ruff`.
+   `fail-fast` is on; a release does not proceed on a partial pass.
+3. **build** runs `python -m build` and `twine check`.
+4. **github-release** and **pypi** extract the release notes from this
    version's CHANGELOG section, so what users read is what you wrote. PyPI
    publishing uses [trusted publishing](https://docs.pypi.org/trusted-publishers/)
    over OIDC; there is no API token stored in this repository.
@@ -62,16 +62,29 @@ git push origin v0.2.0
 ## One-time PyPI setup
 
 The `pypi` job fails until this exists. That failure does not block the GitHub
-Release, which is deliberate — you can ship before PyPI is wired up.
+Release, which is deliberate: you can ship before PyPI is wired up.
 
-1. On PyPI, add a trusted publisher for the project **`adder-cli`** (the bare
-   name `adder` is held by an unrelated 2014 package — see
-   [naming.md](naming.md)): owner `stephenoffer`, repository `adder`,
-   workflow `release.yml`, environment `pypi`.
-2. In GitHub repository settings, create an environment named `pypi`. Add
-   required reviewers if you want a human approval step before upload.
+1. On PyPI, add a **pending** publisher, not a project one. `adder-cli` has
+   never been published, so there is no project page to attach a publisher to;
+   the per-project form under "Your projects" will not find it. Use *Account
+   settings -> Publishing -> Add a pending publisher* instead, and fill in:
+   PyPI project name `adder-cli`, owner `stephenoffer`, repository `adder`,
+   workflow `release.yml`, environment `pypi`. PyPI converts the pending
+   publisher into a real one on the first successful upload, which is also what
+   registers the name. (The bare name `adder` is held by an unrelated 2014
+   package; see [naming.md](naming.md).)
+2. In GitHub repository settings, create an environment named `pypi`. The
+   workflow declares `environment: pypi`, and the pending publisher above names
+   it too -- all three spellings have to agree or the OIDC exchange is rejected.
+   Add required reviewers if you want a human approval step before upload.
 
 Nothing else. No token to rotate, no secret to leak.
+
+Until both exist, `pypi` is the only job that fails, and `pip install adder-cli`
+finds nothing. Everything up to that point -- the artifacts, the metadata, and
+the GitHub Release -- is already verified by CI: the `build` job installs the
+wheel and the sdist into clean environments and drives the installed console
+script, so what reaches PyPI has been run the way a user runs it.
 
 ## Dry run
 

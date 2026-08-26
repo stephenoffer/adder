@@ -13,13 +13,13 @@
 | *(separate)* delete duplicated resident memory | $0 | attributed |
 | *(separate)* recoverable cache rebuilds | $0 | **measured** |
 
-Summing the first six double-counts — they attack the same pool. Composed
+Summing the first six double-counts; they attack the same pool. Composed
 multiplicatively on the residual: **~$4,436, or 69% of measured spend**, over
 105 sessions and $6,394 of measured spend.
 
 Compaction is in the pool, not beside it, because it is a substitute for
 splitting: a session that was split never reaches the ceiling, so it has no
-compaction to miss. Memory is *not* in the pool, for the opposite reason — it
+compaction to miss. Memory is *not* in the pool, for the opposite reason: it
 is resident floor rather than accumulated context, which is the term
 `debt.decompose_read_cost` calls the irreducible baseline. Part of that
 baseline is a file on disk, so it was never entirely irreducible; see
@@ -73,7 +73,7 @@ rounding them up.
 Every row above is a substitute for the others and every one of them costs
 something: a delegated read risks a redo, a split session pays a handoff, terser
 output is output somebody wanted. Three findings are not like that, which is why
-they are not in the table — nothing is given up to take them.
+they are not in the table; nothing is given up to take them.
 
 | | measured here | mechanism |
 |---|---|---|
@@ -98,8 +98,8 @@ and a much larger one appears: what the same work would have cost had it started
 on Sonnet.
 
 It is missing from the table for a structural reason, not an oversight. The
-pooled levers are substitutes that drain one pool, and this one is not — it changes the
-*price* of whatever is left in the pool after the others, so it multiplies
+pooled levers are substitutes that drain one pool, and this one is not. It
+changes the *price* of whatever is left in the pool after the others, so it multiplies
 rather than competes. Composing it into that table would be wrong twice over.
 `adder plan` handles it instead, as the last row of a cumulative regime.
 
@@ -131,7 +131,7 @@ Recoverable: $0
 ```
 
 97% of writes already use the 1h TTL, so "switch to 1h" is not available. The
-$296 comes from gaps **longer than an hour** — which no TTL setting covers. The
+$296 comes from gaps **longer than an hour**, which no TTL setting covers. The
 tool says so rather than claiming a saving: that is a session-boundary problem,
 and it reinforces the splitting lever instead.
 
@@ -160,8 +160,8 @@ One restart on claude-opus-5, carrying a 2,000-token handoff:
   assumed  (full rebuild)  $  0.2995   2.9x more than it costs
 ```
 
-A session opening is not a rebuild. The expensive part of the floor — system
-prompt, tool schemas, `CLAUDE.md` — is byte-identical across sessions, so it is
+A session opening is not a rebuild. The expensive part of the floor (system
+prompt, tool schemas, `CLAUDE.md`) is byte-identical across sessions, so it is
 still resident and is served at 0.10x. Only the session's own tail is written.
 
 Because the optimum goes as `sqrt(W)`, pricing the restart correctly moves the
@@ -175,8 +175,8 @@ cadence from 33 turns to 19, and per-turn input cost falls **6.1x** against the
 ```
 
 That is the single largest lever in `adder plan`, and together with the
-delegation threshold it solves — which the same cache arithmetic sets, at ~300
-tokens rather than the hand-picked 5,000 — it is why the ladder now reaches
+delegation threshold it solves, which the same cache arithmetic sets at ~300
+tokens rather than the hand-picked 5,000, it is why the ladder now reaches
 10.5x where it used to reach 5.8x. Note that the table at the top of this
 page still prices splitting at a 300-turn cadence, because `adder savings` prices
 each lever in isolation against the read pool and has no restart term to solve.

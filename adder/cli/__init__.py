@@ -8,6 +8,7 @@ Lazy import matters: `adder live` should not pay to import the A/B harness.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import importlib
 import os
@@ -69,12 +70,38 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if rc is None else int(rc)
 
 
+def _widen_output_encoding() -> None:
+    """Never lose a report to the console's code page.
+
+    Reports print `→`, `⚠` and `█`, and none of the three exist in cp1252 --
+    which is what Python encodes a *redirected* stdout in on Windows, where the
+    ANSI code page stands in for a locale. `adder help > out.txt` raised
+    UnicodeEncodeError there before printing a line. Reproduce it anywhere with
+    `PYTHONIOENCODING=cp1252 python -c "from adder.cli import main;
+    main(['help'])" > /dev/null`; a real Windows console does take UTF-8, so
+    the only place this shows is the redirected one CI uses.
+
+    UTF-8 first so the glyph survives; `errors="replace"` is the floor, so a
+    stream that refuses to be reconfigured degrades to `?` rather than raising.
+    Losing a character is a cosmetic failure and losing the report is not.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if (getattr(stream, "encoding", "") or "").lower().replace("-", "") == "utf8":
+            continue
+        # Suppressed rather than handled: not every stream here is a
+        # reconfigurable text wrapper -- a capture buffer or a closed fd is not,
+        # and the command runs either way. Only the glyphs are at risk.
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def run() -> int:
     """Console-script wrapper: turn expected interruptions into clean exits.
 
     A report piped into `head` closes the pipe early; without this the user sees
     a BrokenPipeError traceback instead of the output they asked for.
     """
+    _widen_output_encoding()
     try:
         return main()
     except KeyboardInterrupt:

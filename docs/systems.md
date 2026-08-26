@@ -44,7 +44,7 @@ Two gates come before price, and both have bitten:
 
 ## Deadlines: a discount you cannot collect is not a discount
 
-Batch processing is half price — the largest single price lever available, and
+Batch processing is half price, the largest single price lever available, and
 one `adder` never recommended because nothing here knew what a deadline was.
 
 The trade is not "cheaper but slower", it is **cheaper but uncertain**. The
@@ -56,8 +56,9 @@ deadline. It deliberately does not have a favourite, because the obvious
 candidate is optimal under one assumption and bad under another:
 
 - **Greedy** (batch until the slack runs out, then sprint) wins outright when
-  the guaranteed path can absorb the whole remaining queue at once — true of an
-  API you can fan out against. On a 200-unit queue over 24 steps it costs
+  the guaranteed path can absorb the whole remaining queue at once, which is
+  true of an API you can fan out against. On a 200-unit queue over 24 steps it
+  costs
   $100.52 against the proportional policy's $130.35, and both meet every
   deadline.
 - **Proportional** (keep completed work on the line `total × t / horizon`) wins
@@ -65,7 +66,7 @@ candidate is optimal under one assumption and bad under another:
   expensive unit into the window with the least capacity to place them.
 
 The proportional rule has no slack fraction, risk tolerance, or threshold to
-fit — a parameter is a thing that gets set once from one workload and is then
+fit: a parameter is a thing that gets set once from one workload and is then
 wrong everywhere else.
 
 One addition to that rule is load-bearing, and the tests caught its absence.
@@ -86,7 +87,7 @@ cheapest strategy is always the one that gives up.
 ## Attained service: what the data would not support
 
 Schedulers that treat an agent program as the unit prioritise by **attained
-service** — programs that have consumed little go first, because they will
+service**: programs that have consumed little go first, because they will
 finish soon. That is an empirical claim about the conditional distribution of
 work, and nothing here had checked it.
 
@@ -112,9 +113,9 @@ And the conclusion the data will not support: **a heavy-tailed verdict.** Every
 real workload is finite, so past the median length the survivors are simply
 running out and the curve must fall to zero. Four synthetic workloads built with
 long tails all summarised negative, for that reason rather than for lack of a
-tail. So the verdict is two-way — `uniform-length` or `dispersed` — and the
-module says why the third category is missing rather than printing one it
-cannot defend.
+tail. So the verdict is two-way (`uniform-length` or `dispersed`), and the module
+says why the third category is missing instead of printing one it cannot
+defend.
 
 What it is for: `uniform-length` means a "hand off after N turns" rule can work.
 `dispersed` means it is sorting noise, and restarts should key on context size

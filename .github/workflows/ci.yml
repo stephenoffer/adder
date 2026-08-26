@@ -111,12 +111,81 @@ jobs:
           import glob, sys, zipfile
           whl = glob.glob("dist/*.whl")[0]
           names = zipfile.ZipFile(whl).namelist()
-          required = ["adder/cli.py", "adder/__main__.py", "adder/py.typed"]
+          # The dispatcher is a package, not a module: this asked for
+          # `adder/cli.py`, which the layer split turned into `adder/cli/`, and
+          # the job failed on every build after it. Data files are listed too --
+          # setuptools ships only .py files unless package-data names them, and
+          # that failure is invisible from a checkout, where the file is there.
+          required = [
+              "adder/__main__.py",
+              "adder/cli/__init__.py",
+              "adder/cli/commands.py",
+              "adder/py.typed",
+              "adder/pricing/data/catalog.json",
+          ]
           missing = [r for r in required if r not in names]
+          if not any(n.startswith("adder/decide/agents/") and n.endswith(".md")
+                     for n in names):
+              missing.append("adder/decide/agents/*.md")
           if missing:
               sys.exit(f"missing from {whl}: {missing}")
           print(f"{whl} ok ({len(names)} entries)")
           PY
+      - name: The wheel installs and runs like a PyPI install
+        # A name check inside the zip proves the file was packed. It does not
+        # prove `pip install adder-cli` gives a working tool: a subpackage
+        # missing from `packages.find`, a broken entry point, or a data file the
+        # code cannot locate once it is in site-packages all pass that check and
+        # fail the user. So install it for real, from outside the checkout.
+        env:
+          ADDER_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          # Resolved before the `cd` below, not after it.
+          WHL="$(ls "$PWD"/dist/*.whl)"
+          python -m venv /tmp/whl-env
+          /tmp/whl-env/bin/python -m pip install --quiet "$WHL"
+          # `cd /tmp` matters: in the checkout `import adder` finds the source
+          # tree, and every one of these checks would pass on a broken wheel.
+          cd /tmp
+          test "$(/tmp/whl-env/bin/python -c 'import adder,os;print(os.path.dirname(adder.__file__))')" \
+            != "$GITHUB_WORKSPACE/adder"
+          /tmp/whl-env/bin/adder version
+          /tmp/whl-env/bin/adder help > /dev/null
+          for c in $(/tmp/whl-env/bin/python -c "from adder.cli import COMMANDS; print(' '.join(c.name for c in COMMANDS))"); do
+            /tmp/whl-env/bin/adder "$c" --help > /dev/null || { echo "FAIL: adder $c --help"; exit 1; }
+          done
+          /tmp/whl-env/bin/adder models list --limit 1 > /dev/null
+          # Everything that is not a .py file, checked where `pip install` put
+          # it. This is the check the four releases that shipped an inert
+          # activation payload would have failed. `models list` above is not
+          # that check: without the bundled snapshot it falls back to nine
+          # built-in models and still exits 0.
+          /tmp/whl-env/bin/python - <<'PY'
+          from adder.pricing.catalog import BUNDLED
+          from adder.decide.auto import AGENTS, HOOKS, agents_dir, hooks_dir
+          missing = [] if BUNDLED.is_file() else [str(BUNDLED)]
+          missing += [a for a in AGENTS if not (agents_dir() / a).is_file()]
+          missing += [str(h["script"]) for h in HOOKS
+                      if not (hooks_dir() / str(h["script"])).is_file()]
+          if missing:
+              raise SystemExit(f"installed wheel is missing package data: {missing}")
+          print(f"package data present in site-packages ({BUNDLED.stat().st_size:,} B catalog)")
+          PY
+      - name: The sdist installs too
+        # pip falls back to the sdist whenever the wheel does not apply, and the
+        # sdist is built by a different code path -- MANIFEST.in, not
+        # package-data. The two have disagreed before.
+        env:
+          ADDER_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          SDIST="$(ls "$PWD"/dist/*.tar.gz)"
+          python -m venv /tmp/sdist-env
+          /tmp/sdist-env/bin/python -m pip install --quiet "$SDIST"
+          cd /tmp
+          /tmp/sdist-env/bin/adder version
+          /tmp/sdist-env/bin/adder models list --limit 1 > /dev/null
       - uses: actions/upload-artifact@v4
         with:
           name: dist

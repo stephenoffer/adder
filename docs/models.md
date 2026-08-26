@@ -1,7 +1,7 @@
 # Choosing across vendors
 
 The rest of this repo answers *where* work should run. This page is about
-*what* runs it — and about the three ways an answer to that question goes
+*what* runs it, and about the three ways an answer to that question goes
 wrong.
 
 `adder pick` and `adder models` exist because the previous answer was nine model ids
@@ -24,13 +24,13 @@ an aggregator, so its prices are *reported*, not authoritative.
 They disagree on nearly every surface detail. The arena writes
 `claude-opus-4-6-thinking`; the aggregator writes `anthropic/claude-opus-4.6`.
 Without normalisation the join rate between them is about a third of what it
-should be, and the models that fall out are disproportionately the new ones —
+should be, and the models that fall out are disproportionately the new ones,
 exactly the ones worth routing to. `catalog.normalize_key` collapses effort
 suffixes, date stamps, thinking budgets, and version separators. Measured on a
 live refresh (2026-08-14 captures): joining on the raw names matches 73 models
 across the two sources; normalising first matches 114, a 56% increase. The 41
-recovered are the ones where the two sources spell a version differently —
-`claude-haiku-4-5` against `claude-haiku-4.5` — which skews new.
+recovered are the ones where the two sources spell a version differently
+(`claude-haiku-4-5` against `claude-haiku-4.5`), which skews new.
 
 Everything is layered:
 
@@ -104,7 +104,7 @@ Most of the time the cost gaps between plans are wider than any plausible value
 of the constant can move, and saying so is worth more than another decimal
 place. When they are not, the output says `UNSTABLE`, names the value where the
 winner flips, and tells you to prefer the plan that wins at the pessimistic
-end — because a recommendation that turns on an unmeasured number is a coin
+end, because a recommendation that turns on an unmeasured number is a coin
 flip with a dollar sign on it.
 
 Arena Elo measures human preference on chat and web-dev prompts. It does not
@@ -118,14 +118,14 @@ prose model.
 The arena publishes a 95% interval with every rating, and the first version of
 this code threw it away. At the top of the webdev board the half-width is about
 10 points, so the 17-point gap between the first and second model is two
-overlapping intervals — a difference the source itself does not claim. Deriving
+overlapping intervals, a difference the source itself does not claim. Deriving
 a confident 52% preference loss from it is inventing precision.
 
 Comparisons are now conservative: the candidate is taken at the bottom of its
 interval and the reference at the top of its own, so the estimate never claims
 a substitute is closer to the reference than the evidence supports, and a
 ranking says outright when the arena cannot separate two models. The correction
-is worth about three points of `p_loss` on current data — small, and worth
+is worth about three points of `p_loss` on current data: small, and worth
 stating at its real size rather than dramatising.
 
 One related disclosure: the arena ranks reasoning efforts as separate
@@ -142,14 +142,14 @@ Two gates catch this:
   run inline at any price. It is priced as a subagent or not at all.
 - **Harness.** Under Claude Code the main conversation is a Claude model by
   construction. A GPT or open-weight model can be a subagent, an MCP tool, or an
-  external call — it cannot *be* the session. `adder pick --harness any` relaxes
+  external call, but it cannot *be* the session. `adder pick --harness any` relaxes
   this for harnesses that route natively.
 
 There is a quieter one. Anthropic charges 0.10x input to read a cached
 prefix and 1.25x to write it. Other providers do not, and some publish nothing.
 Since the dominant term in a long session is `cache_read × remaining_turns`, a
 multiplier borrowed from Anthropic and applied to another vendor is not a
-rounding error — it is the whole answer. Where the catalog has absolute cache
+rounding error. It is the whole answer. Where the catalog has absolute cache
 rates it uses them; where it does not, the row says so.
 
 ## Costing, not pricing
@@ -186,7 +186,7 @@ The panel row reports **no** quality number. The obvious formula lifts the
 rating by the best-of-N win rate, which requires the N runs to fail
 independently; runs of one model on one prompt do not, and nobody has published
 the correlation. Any number there would be a constant picked to make the row
-look reasonable, so the column is empty and the cost — which is exact — still
+look reasonable, so the column is empty and the cost, which is exact, still
 gets priced.
 
 A cascade's quality is not the strong model's rating. It is the strong model's
@@ -209,7 +209,7 @@ The standing objection to "just use a cheaper model" is the prompt cache: it is
 model-scoped, so moving a warm session rebuilds the whole prefix, and on this
 machine's history per-turn model downgrades were worth $21 out of $4,818. That
 objection is about the *session*. It does not apply to a subagent, which starts
-cold — no prefix to invalidate, a summary that costs the same to carry no
+cold: no prefix to invalidate, a summary that costs the same to carry no
 matter who produced it, and a failure contained to one run.
 
 So delegation is the one placement where the vendor is genuinely free, and it
@@ -220,7 +220,7 @@ prices the substitute as a cascade rather than a swap:
 expected = subagent_run + p_fail × cost_of_redoing_it_on_the_claude_tier
 ```
 
-and it holds the substitute to the tier's quality tolerance — 120 Elo points at
+and it holds the substitute to the tier's quality tolerance: 120 Elo points at
 T0, 40 at T2, because a lookup can afford a weaker model and a multi-file
 refactor cannot.
 
@@ -234,8 +234,8 @@ about.
 `p_fail` itself is two numbers composed, not one. The outcome log measures how
 often *this tier* escalates on this project; the arena measures how much weaker
 the *substitute* is than the model that tier names. Neither answers the question
-alone, so `select.blend_p_fail` treats them as independent failure modes —
-`measured + (1 - measured) x elo_gap` — and each row says which basis it used.
+alone, so `select.blend_p_fail` treats them as independent failure modes
+(`measured + (1 - measured) x elo_gap`), and each row says which basis it used.
 
 Run it on this repo's own measurements and the answer is usually no:
 
@@ -271,7 +271,7 @@ T1    claude-sonnet-5         claude-sonnet-5        1,541  scoped edits, mechan
 T2    claude-opus-5           claude-opus-5          1,691  multi-file, ambiguous, long-horizon
 ```
 
-Within a price band the rung holds the *strongest* model, not the cheapest —
+Within a price band the rung holds the *strongest* model, not the cheapest:
 the band already bought the saving.
 
 Drift is reported, never applied. A catalog scraped from two public sources is
@@ -283,7 +283,7 @@ only if the new model also holds the context and the change survives
 
 `adder models refresh` is the only command in this tool that opens a socket, it
 only runs when typed, and `ADDER_OFFLINE=1` makes even that refuse. Every
-report, gate, and test stays pure computation over local files — CI parses the
+report, gate, and test stays pure computation over local files. CI parses the
 package and fails the build if any module except `sources.py` imports a
 networking library.
 

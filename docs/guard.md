@@ -2,7 +2,7 @@
 
 Every other command in this repository reports on money that is already gone.
 The PreToolUse hook runs while the decision is still reversible, which makes it
-the one component whose failure is both silent and expensive — a guard that has
+the one component whose failure is both silent and expensive. A guard that has
 stopped guarding still lets every tool call succeed, so nothing looks wrong.
 
 That asymmetry is why the decision moved out of the hook file and into
@@ -53,8 +53,8 @@ sequence every command must be bounded (`git diff --stat; echo done` is not,
 whatever its last word is). A filter is not a limit: `grep -v warning` changes
 the output without capping it.
 
-The parser is quote-aware and hand-written rather than `shlex`, which raises on
-the unterminated quotes real transcripts contain — and a parser that raises
+The parser is quote-aware and hand-written instead of `shlex`, which raises on
+the unterminated quotes real transcripts contain, and a parser that raises
 inside a PreToolUse hook is a guard that has silently stopped guarding.
 
 **Size is measured, not assumed.** `SizeModel` learns result-size quantiles per
@@ -82,7 +82,7 @@ One third the interruptions, and more of the large calls caught.
 
 Quoting cost measurable accuracy on its own. Splitting the command with a
 regex cut `grep -vE "^warning|^\s+-->"` in half at the alternation inside its
-own pattern, producing 12,208 distinct shapes from 27,643 calls — almost all
+own pattern, producing 12,208 distinct shapes from 27,643 calls: almost all
 singletons, all below the evidence floor, so the guard fell back to the prior
 for nearly everything. Quote-aware splitting brings that to 7,027 shapes over
 167 programs, and moves 2,500 decisions per holdout half from the program
@@ -94,7 +94,7 @@ A guard that judges one call at a time cannot see a habit. Measured across the
 same 222 transcripts:
 
 - 32 session-and-shape pairs exceed 20,000 cumulative result tokens.
-- Together they are **19.7% of every Bash result token in the corpus** — 1.38M
+- Together they are **19.7% of every Bash result token in the corpus**, 1.38M
   of 7.0M.
 - The largest is `sed -n 'A,Bp'`: **246 calls, 513 tokens each, 126,222 tokens**
   into a single session.
@@ -107,12 +107,12 @@ Aggregated by shape rather than by session-and-shape, the gap is starker and is
 checked by `adder validate`: the shapes that clear the threshold cumulatively
 hold **47% of all Bash result tokens**, against **4%** in calls large enough
 for a per-call gate to see. A machine that only ever makes a few big calls will
-fail that claim, and should — there the aggregate rule is not earning its
+fail that claim, and should: there the aggregate rule is not earning its
 state.
 
-So the guard counts what each command shape has admitted — bounded calls
-included, since those are the ones that add up — and says so once when the
-total is worth more than saying it. The saving is booked at half the carry:
+So the guard counts what each command shape has admitted, bounded calls
+included, since those are the ones that add up, and says so once when the total
+is worth more than saying it. The saving is booked at half the carry:
 tokens already admitted cannot be un-admitted, and only the calls still to come
 can be avoided. Claiming the whole total would be claiming a refund.
 
@@ -120,34 +120,34 @@ can be avoided. Claiming the whole total would be claiming a refund.
 
 `is_bounded` answers "is this capped by construction", and for a while the
 guard treated a `yes` as a reason to say nothing. That was wrong for every
-bound that carries a number. `sed -n '1,600p'` is bounded — to six hundred
-lines, which is about six thousand tokens — and it was waved through and
+bound that carries a number. `sed -n '1,600p'` is bounded to six hundred
+lines, which is about six thousand tokens, and it was waved through and
 returned 6,079. Across the corpus, **45 supposedly-bounded calls returned over
 3,000 tokens**, and the largest of them were `sed` ranges.
 
 So a numeric bound is now read as an estimate. Measured over 16,727 local calls
 carrying an explicit line bound, output runs **11.4 tokens per line at the
-median and 35.6 at p90** — the spread is the point, because a line of minified
+median and 35.6 at p90**. The spread is the point, because a line of minified
 JSON and a line of Python are not the same object, and the guard is deciding
 about a tail. `lines × 11.4` predicts the real result to a median absolute
 error of 83 tokens, which is the accuracy the shape model reaches.
 
-A bound also **caps** a learned estimate rather than merely standing in for
+A bound also **caps** a learned estimate instead of merely standing in for
 one. `cat huge.log | head -50` inherits `cat`'s history through the program
-backoff, and `cat` may well have returned 40K tokens before — but fifty lines
+backoff, and `cat` may well have returned 40K tokens before, but fifty lines
 is fifty lines. Capping is one-directional: a generous bound is not evidence
 that this call will be large.
 
-What is left of the structural rule is the bounds with no number in them —
-`wc -l`, `grep -c`, a redirect to a file — which are small whatever the input.
+What is left of the structural rule is the bounds with no number in them
+(`wc -l`, `grep -c`, a redirect to a file), which are small whatever the input.
 
 ## The prior
 
 `PRIOR` in `adder/core/shapes.py` is the fallback when nothing local is known.
-It is a measurement, not a guess — but it is a measurement of one machine's
+It is a measurement, not a guess, but it is a measurement of one machine's
 workload, which is why `adder guard --learn` exists and why every estimate
 reports whether it came from local evidence or from the prior. The report
-prints both side by side so the gap is visible rather than assumed away.
+prints both side by side so the gap is visible, not assumed away.
 
 ## The guard now charges for its own advice
 
@@ -161,7 +161,7 @@ remaining turn. The old guard fired 903 times and never counted it.
 saving x P(advice is taken)  >  cost of carrying the message
 ```
 
-`P(advice is taken)` is an assumption, not a measurement — nothing in a
+`P(advice is taken)` is an assumption, not a measurement: nothing in a
 transcript says whether a model changed course because of an injected sentence.
 It defaults to 0.5, so the guard needs a 2x margin over its own overhead, and it
 is `guard_advice_taken` in `.adder.json` for anyone who wants to test a
@@ -182,21 +182,21 @@ between calls.
 That number was first quoted as 27.4% over all unbounded reads, and the
 correction is worth keeping visible. 138 of the 182 duplicates in this corpus
 are screenshots, and an image is capped near 1,600 tokens whatever its file
-size — so re-reading one is cents, not dollars. The headline was true and
+size, so re-reading one is cents, not dollars. The headline was true and
 misleading, which for a measurement tool is the same as wrong.
 
 It is the cheapest saving in this project: nothing to delegate, no horizon to
 forecast, no trade-off. The tokens are already in the context, so re-reading
 buys no information at all. `GuardState` remembers each read path with the
-file's mtime, so a re-read after an edit — which is the correct thing to do —
+file's mtime, so a re-read after an edit (which is the correct thing to do)
 is not flagged, and only an unchanged re-read is.
 
 There is a second way for a file's content to already be in the context, and it
 is worth separating: **a file this session wrote**. A `Write` puts the whole
 content in the context as the tool call's own input, so reading it back admits
 every one of those tokens a second time. The guard watches `Write` without ever
-advising on it — admitting a write costs nothing, since the content is the
-input — purely so it can catch the read back later.
+advising on it, since admitting a write costs nothing when the content is the
+input, purely so it can catch the read back later.
 
 `Edit` is deliberately not watched. An edit puts a *hunk* in the context, not a
 file, so re-reading an edited file can be the only way to see the rest of it.
@@ -205,8 +205,8 @@ Counting that as waste would mean advising against the correct move.
 `adder reread` measures the same family after the fact and more thoroughly,
 comparing result digests to separate a genuine duplicate from a refresh. It
 cannot see the read-after-write case, because a write's result is
-`"file written"` rather than the content — which is why the guard, which sees
-the tool *input*, is where that one belongs.
+`"file written"` rather than the content, which is why the guard, seeing the
+tool *input*, is where that one belongs.
 
 ## The step before a delegation
 
@@ -226,8 +226,8 @@ what it should run *on*:
 The number is `policy.right_size`'s: every rung priced as `run(tier) + p_fail *
 (redo on T2 + the turn that catches it)`, with `p_fail` measured from the
 outcome log where there is history and a prior where there is not. The baseline
-is the model this delegation would otherwise have run on — the session model
-under Claude Code — not the top rung, because comparing against a rung nobody
+is the model this delegation would otherwise have run on (the session model
+under Claude Code), not the top rung, because comparing against a rung nobody
 was going to use quotes a saving nobody was going to make.
 
 Five ways it stays quiet, and they matter more than the one way it speaks:
@@ -242,7 +242,7 @@ Five ways it stays quiet, and they matter more than the one way it speaks:
   model-scoped cache to buy nothing.
 - **The sentence costs more than the switch saves.** Priced like every other
   thing the guard says, and discounted by `guard_advice_taken`, because this one
-  is advice rather than a refusal.
+  is advice, not a refusal.
 - **It has already said it this session.** The ladder does not change between
   two `Task` calls.
 
@@ -255,7 +255,7 @@ about size.
 **What is deliberately not in that sentence: a cross-vendor model.**
 `adder pick` ranks ~500 catalogued models by price against LMArena Elo and
 `adder policy` reports the cheaper ones as substitutes, but under Claude Code a
-`Task` cannot be dispatched to Qwen — the harness pins subagents to the vendor.
+`Task` cannot be dispatched to Qwen; the harness pins subagents to the vendor.
 Naming one at the moment somebody cannot act on it is how a router loses trust.
 The arena signal reaches this decision through the ladder instead, which
 `adder models ladder` diffs against the live catalog.
@@ -276,7 +276,7 @@ writing the file from a dotfiles repository.
 
 The hook it points at lives inside the package, at
 `adder/decide/hooks/pretooluse_read_guard.py`. It used to live in `.claude/`,
-which the wheel prunes — so for four releases the install snippet named a path
+which the wheel prunes, so for four releases the install snippet named a path
 that existed only in a git checkout, and activation from a `pip install` wrote
 three hooks pointing at nothing. `.claude/hooks/` still holds forwarding shims
 so a `settings.json` written before the move keeps working.
@@ -286,8 +286,8 @@ can see, because an uninstalled guard, a broken guard and a correctly quiet
 guard are indistinguishable from the outside. `doctor` fails on it for the same
 reason: it is the only finding there about money that has not been spent yet.
 
-`--install` prints the block rather than writing it. `adder config --init` set
-that precedent and it applies with more force here — a hook changes what every
+`--install` prints the block instead of writing it. `adder config --init` set
+that precedent and it applies with more force here: a hook changes what every
 session does, so it should be installed on purpose and not as a side effect of
 running a report.
 
@@ -311,12 +311,12 @@ admitted, and the saving is whole.
 
 | level | what it refuses |
 |---|---|
-| `off` | nothing — the historical behaviour |
+| `off` | nothing (the historical behaviour) |
 | `certain` | a read whose content is already in this context |
 | `full` | also a large read that has a strictly cheaper equal |
 
 `certain` is the level that needs no argument. The file was read earlier in this
-session and has not changed on disk, or this session wrote it — either way the
+session and has not changed on disk, or this session wrote it. Either way the
 content is in the context already, so the read buys no information at any price.
 `full` is a weaker claim: it rests on the horizon estimate and on a subagent
 actually returning a brief, which is why it is a separate opt-in and why its
@@ -325,13 +325,13 @@ message always names the cheaper call rather than only saying no.
 Three properties make refusing safe to ship, and each is a test in
 `tests/decide/test_guard_enforce.py`:
 
-* **It never refuses the same target twice.** A guard cannot be argued with, and
+- **It never refuses the same target twice.** A guard cannot be argued with, and
   the model has no way to tell it something it does not know. If the same call
   is issued again it goes through. The worst case of a wrong refusal is one
   wasted turn.
-* **It always names the way through.** Every refusal carries its reason and
+- **It always names the way through.** Every refusal carries its reason and
   either the content the model already has or the bounded call to make instead.
-* **It forgets what compaction drops.** "Already in this context" stops being
+- **It forgets what compaction drops.** "Already in this context" stops being
   true the moment the context is rebuilt, so the PreCompact hook clears the
   read and write memory before the compaction it is invalidated by. Without
   that, the guard would refuse a read of something the model no longer has,
@@ -340,7 +340,7 @@ Three properties make refusing safe to ship, and each is a test in
 ## Substituting, instead of refusing
 
 A refusal at `full` costs a turn. The guard says "read at most 116 lines of it
-(`limit: 116`)", the model reads that, agrees, and issues the bounded call — so
+(`limit: 116`)", the model reads that, agrees, and issues the bounded call, so
 the outcome is the bounded read plus one round trip spent arriving at advice the
 guard had already priced. At the context sizes where the guard fires, that turn
 is not rounding error.
@@ -360,23 +360,23 @@ turn is spent negotiating.
 
 ### Why it is off by default
 
-The field was verified against the shipped client rather than the documentation,
+The field was verified against the shipped client, not the documentation,
 because the docs do not state the three things that decide whether this is safe.
 In the strings of Claude Code 2.1.238:
 
 - `PreToolUse hook for <tool> returned updatedInput that failed schema
-  validation:` — the field exists on this event and is checked against the tool's
-  own input schema, so a rewrite has to be a complete, valid input.
-- `updatedInput is missing or empty, falling back to original tool input` — an
+  validation:` confirms the field exists on this event and is checked against
+  the tool's own input schema, so a rewrite has to be a complete, valid input.
+- `updatedInput is missing or empty, falling back to original tool input`: an
   absent rewrite is a no-op, which is what makes declining the safe default.
 - `Hook satisfied user interaction for <tool> via updatedInput, bypassing
-  permission prompt` — **a rewrite travels with an approval.**
+  permission prompt`: **a rewrite travels with an approval.**
 
 That last one is the whole reason this is opt-in. A substitution can suppress a
 prompt the user would otherwise have seen, and the result being *smaller* than
 what was asked for does not make it authorised. The harness overrides an
 approval where a `deny` or `ask` rule covers the call, so the exposure is limited
-to calls that would have prompted by default — still a decision belonging to the
+to calls that would have prompted by default, still a decision belonging to the
 person whose files they are.
 
 It is also reachable **only where the guard was going to refuse outright**.
@@ -388,7 +388,7 @@ guard would have been silent about. That is asserted, not asserted-and-hoped:
 ### What may be rewritten, and why so little
 
 `Read` gains a `limit`; `Grep` gains a `head_limit`. Both are read-only, and in
-both cases the substitution is a strict subset of what was asked for — fewer
+both cases the substitution is a strict subset of what was asked for: fewer
 lines of the same file, fewer hits of the same pattern. The near-misses are more
 instructive than the hits:
 
@@ -406,13 +406,13 @@ instructive than the hits:
 
 Four more rules, each an assertion. It never widens a call the caller already
 bounded more tightly than the price floor. It never narrows below a floor of
-usefulness — hand the model four lines of a file it wanted whole and it simply
+usefulness: hand the model four lines of a file it wanted whole and it simply
 asks again, spending the turn this existed to save plus one. It adds only keys
 the tool already accepts, because an invented key fails schema validation and
 the hook then silently does nothing. And anything unexpected makes it decline
 rather than raise: an optional path must not take a tool call down with it.
 
-The saving is booked against **what actually ran** — the bounded read — not
+The saving is booked against **what actually ran**, the bounded read, not
 against the whole read a refusal would have prevented. `Verdict.action` reports
 `narrow` rather than `deny` for the same reason: reporting one as the other would
 overstate what enforcement is worth.
@@ -454,10 +454,11 @@ ceiling was sized for a guard that talks; one that redirects can afford 200,
 which is worth $26 and costs no latency. Past 200 the curve is flat.
 
 The floor is the only real trade in the table, and it trades latency for money
-rather than being a free choice: 300 finds $138 more and takes the share of
+instead of being a free choice: 300 finds $138 more and takes the share of
 tool calls that stop to parse a transcript from 8% to 39%. 800 ships because a
-hook people uninstall saves nothing — the same argument the guard applies to
-its own sentences — and because that ratio is a property of one workload.
+hook people uninstall saves nothing, which is the same argument the guard
+applies to its own sentences, and because that ratio is a property of one
+workload.
 
 Which is the whole reason `adder auto on --full --tune` exists: it re-runs the
 sweep against your transcripts and writes the best point, preferring the
@@ -487,7 +488,7 @@ Writing this replay was worth it before it ever ran on someone else's data. Its
 first output ranked the eight largest findings as duplicate reads of PNG
 screenshots worth $25–$31 each, and put the guard's value at $1,053. All of it
 was one bug: `read_estimate` sized every file as `bytes / 4`, and an image is
-billed by its dimensions — capped near 1,600 tokens however many megabytes it
+billed by its dimensions, capped near 1,600 tokens however many megabytes it
 is on disk. A 1MB screenshot was being priced at 250,000 tokens. The corrected
 number is twelve times smaller and is the one worth having.
 
@@ -504,7 +505,7 @@ interpreter starting:
 | a guarded `Read` | **2,136 ms** | **139 ms** |
 
 The two-second read was `live.analyse` re-fitting the session-length
-distribution over every transcript on the machine, on every call — and the
+distribution over every transcript on the machine, on every call, and the
 prompt-submit advisor had been paying the same thing on every prompt. Fixing it
 turned out to be two defaults: `load_sessions` defaulted its parse cache off
 while the `cache` setting defaulted it on, and the fitted horizon was never
@@ -520,11 +521,11 @@ measured it: no transcript says whether a model changed course because of an
 injected sentence. It can be *estimated*, though, and the estimate uses only
 formats this project writes itself.
 
-Each fire is appended to `~/.claude/adder-guard-fires.jsonl` — a shape, never a
+Each fire is appended to `~/.claude/adder-guard-fires.jsonl`: a shape, never a
 command; a basename, never a path. `adder guard` then asks the transcript what
 happened next. For a command finding: were later calls of that program, in that
 session, bounded more often than earlier ones? For a duplicate read: was the
-file read again? Both are observable, and neither proves causation — the model
+file read again? Both are observable, and neither proves causation; the model
 may have bounded the next call for its own reasons.
 
 One detail cost a rewrite. The first version matched later calls on the full
@@ -544,16 +545,16 @@ failure as a router nobody invokes, and it is the failure this project keeps
 finding in itself.
 
 The gate now reads it. `adder guard --learn` measures and caches the rate to
-`~/.claude/.adder-uptake.json`; the hook reads that cached number rather than
+`~/.claude/.adder-uptake.json`; the hook reads that cached number and not
 re-scanning transcripts before every tool call, which is the same split the size
 model already uses for the same reason. An explicitly configured
-`guard_advice_taken` still wins — somebody who wrote a number into
+`guard_advice_taken` still wins: somebody who wrote a number into
 `.adder.json` has said something the estimator does not know, and overriding it
 silently is how a setting becomes decorative.
 
 **There is a floor at 10%, and it is not caution.** `advice_taken` gates whether
 advice is worth saying at all, so a measured rate near zero stops the guard
-speaking — and a guard that does not speak records no fires, so nothing can ever
+speaking, and a guard that does not speak records no fires, so nothing can ever
 re-measure it. Without a floor the estimator seals itself shut on one bad week,
 with no way back that does not involve editing a config file nobody knows
 exists. The floor is what keeps that loop open, and the report says when it is
@@ -572,7 +573,7 @@ The guard writes one small JSON file under `~/.claude`, and it holds
 identities, never contents: read paths with their mtimes, written paths with a
 timestamp, command *shapes* with running totals. `shape()` drops arguments, so
 a command carrying a token or a password is reduced to `curl` before anything
-reaches disk. `tests/decide/test_guard.py` asserts this rather than trusting
+reaches disk. `tests/decide/test_guard.py` asserts this instead of trusting
 it.
 
 It is pruned in every dimension — 400 paths, 400 shapes, 200 sessions, and

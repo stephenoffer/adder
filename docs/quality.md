@@ -4,9 +4,10 @@ Every lever trades tokens for something, and a degraded agent usually looks
 *cheaper per turn* while needing more turns to finish. Cost numbers alone will
 happily certify a regression.
 
-`adder quality` reads performance proxies straight from the transcripts — tool
-error rate, correction rate, interrupt rate, turns per prompt, rework ratio —
-and `adder verify` refuses to claim a clean saving when any of them regressed:
+`adder quality` reads five performance proxies straight from the transcripts:
+tool error rate, correction rate, interrupt rate, turns per prompt, and rework
+ratio. `adder verify` refuses to claim a clean saving when any of them
+regressed:
 
 ```
   Cost per turn ROSE $0.0029. The intervention did not land.

@@ -33,7 +33,7 @@ That name was wrong in three ways, and each one cost something:
    between your process and the model, seeing traffic, making a call. This
    reads JSONL files off local disk after the fact. It has never held a request,
    never held an API key, and cannot. `docs/cost-model.md` opens with a section
-   titled "Why this is not a model router" — when the README needs a section
+   titled "Why this is not a model router". When the docs need a section
    disclaiming the project's own name, the name is the problem.
 
 3. **It sat in the most crowded shelf on PyPI.** Every LLM-adjacent gateway,
@@ -52,7 +52,7 @@ pip install adder-cli
 The PyPI name `adder` is taken by an unrelated package: a single release, 13KB,
 uploaded 2014-08-28, described as "An AI library", untouched since. It is a
 candidate for a [PEP 541](https://peps.python.org/pep-0541/) name request, and
-one may be filed. Until that resolves — if it ever does — the distribution ships
+one may be filed. Until that resolves (if it ever does), the distribution ships
 as `adder-cli`.
 
 Everything else is plain `adder`:
@@ -71,7 +71,7 @@ codebase to avoid.
 
 ## What did not get renamed
 
-- **`route-t0`, `route-t1`, `route-t2`** — the tier subagents in
+- **`route-t0`, `route-t1`, `route-t2`.** The tier subagents in
   `.claude/agents/`. These are named for what they do, which is routing, and
   they are referenced by name in users' existing project configs. Renaming them
   would break installs to no benefit.

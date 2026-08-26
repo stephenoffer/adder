@@ -49,7 +49,7 @@ wrong, this repo picks too cautious.
 An uncached prefix is billed as ordinary input and the cache happens as a side
 effect. Applying Anthropic's 1.25x to an OpenAI transcript invents a quarter of
 the write side of the bill. It also means "place a cache breakpoint" is not
-advice that applies — there is nothing to place — and `adder` no longer offers
+advice that applies (there is nothing to place), and `adder` no longer offers
 it where it cannot be taken.
 
 **Google bills storage per hour.** Every other cost term in this tool is driven
@@ -61,18 +61,18 @@ carried as its own term rather than folded into the write rate.
 
 Resolution runs in three layers, most authoritative first:
 
-1. **`pricing/prices.py`** — hand-checked first-party Claude rates. Date-aware,
+1. **`pricing/prices.py`**: hand-checked first-party Claude rates. Date-aware,
    so an introductory rate expires on schedule. Wins for Claude, always.
-2. **`pricing/catalog.py`** — ~500 models joined from public sources, each
+2. **`pricing/catalog.py`**: ~500 models joined from public sources, each
    carrying its provenance and its age. Where a provider publishes an absolute
    cache rate, that rate is used verbatim.
-3. **`pricing/providers.py`** — the table above. Fills in the mechanics the
+3. **`pricing/providers.py`**: the table above. Fills in the mechanics the
    catalog does not publish, which is most of them: 273 of the 510 bundled
    entries have no cache read rate at all.
 
 `pricing/registry.py` is the single place that joins them. Every report asks it
 the same question and gets a `ModelSpec` back, with `rate_provenance` saying
-which layer answered — `published`, `derived from <vendor>'s published
+which layer answered: `published`, `derived from <vendor>'s published
 multiplier`, or `MODELLED from a <vendor> default`. A number and the reason to
 believe it travel together.
 
@@ -80,15 +80,15 @@ believe it travel together.
 
 **A published `cache_write` is not always a write rate.** Aggregators put
 storage in the same field. Google's `gemini-3.7-flash` reports `0.0208` against
-an input rate of `0.75` — that is per-million *per hour* of storage, and taking
+an input rate of `0.75`, which is per-million *per hour* of storage; taking
 it for a write rate prices a cache write at 2.8% of input, a 36x
 understatement. The tell is an ordering that cannot be true: you cannot pay less
 to create a cache entry than to read one back.
 
 **A short catalog key is a greedy prefix.** The bundled snapshot contains
 `~openai/gpt-latest`, a floating alias that normalizes to the bare key `gpt`.
-Under a plain prefix match every unrecognised OpenAI id — anything newer than
-the snapshot — matched it and was silently priced at that alias's $5/$30, *with
+Under a plain prefix match every unrecognised OpenAI id (anything newer than
+the snapshot) matched it and was silently priced at that alias's $5/$30, *with
 no warning*, because resolution had succeeded. An unknown model reported as
 unknown is a caveat in the output; an unknown model priced off a wildcard is a
 wrong number presented as a measurement. Prefix matching now refuses floating
@@ -122,16 +122,16 @@ Providers disagree about whether the cached prefix is *inside* the input count.
 - Google: same as OpenAI.
 
 Read an OpenAI record with Anthropic's semantics and every cached token is
-counted twice — once at full rate inside `prompt_tokens`, once more at the cache
+counted twice: once at full rate inside `prompt_tokens`, once more at the cache
 read rate. A turn with `prompt_tokens: 50000` and `cached_tokens: 48000` becomes
 a 98,000-token context that never existed, priced about double. Every adapter
 states which convention it converts *from*, and the overlapping ones subtract.
 
 The OpenTelemetry convention does not say which it is, and instrumentations
 differ because each mirrors the SDK underneath it. So the provider decides, and
-anything unrecognised is treated as disjoint — subtracting a cache read that was
-never included would understate spend, which is the failure this repo is least
-willing to ship.
+anything unrecognised is treated as disjoint, because subtracting a cache read
+that was never included would understate spend, which is the failure this repo
+is least willing to ship.
 
 ## Telling adder what you run
 
@@ -145,7 +145,7 @@ export ADDER_LADDER="T0=gpt-5-mini,T1=gpt-5,T2=gpt-5-pro"  # dispatch tiers
 ```
 
 **`harness`** is which agent runtime is driving, and it decides what placements
-exist. Some harnesses pin the main conversation to one vendor by construction —
+exist. Some harnesses pin the main conversation to one vendor by construction:
 Claude Code to Anthropic, Codex to OpenAI, Gemini CLI to Google. Under those, a
 model from another vendor can be a subagent, an MCP tool, or an external call,
 but it cannot *be* the session, and quoting an inline price for one is quoting a
@@ -155,8 +155,8 @@ no pin. See `core/harness.py`; add your own with `ADDER_HARNESSES=<path>`.
 **`ladder`** repoints the dispatch tiers. The default is Claude because that is
 what the measurements were taken on, and the catalog deliberately *reports*
 drift rather than silently repointing dispatch. Unnamed rungs keep their
-default, so a partial override cannot leave a tier pointing at nothing — but a
-partial override can leave the ladder non-monotone, and
+default, so a partial override cannot leave a tier pointing at nothing. It can,
+though, leave the ladder non-monotone, and
 `classify.ladder_warnings()` says so:
 
 ```
@@ -185,7 +185,7 @@ export ADDER_HARNESSES=~/.claude/adder-harnesses.json
 ```
 
 A file that mentions one field amends that field and leaves the rest of the
-record alone — pinning a negotiated cache read rate must not silently reset the
+record alone: pinning a negotiated cache read rate must not silently reset the
 TTL table. A corrupt override degrades to the built-in table rather than taking
 down every report, and a field that cannot be a number becomes `None`, which
 every gate already reads as *unknown* and never as *free*.
@@ -208,7 +208,7 @@ own caveats:
   integer thinking budget. `adder` refuses a level a model does not accept
   rather than mapping it to a neighbour, because asking for a level the model
   rejects is a 400, not a cheaper turn.
-- **The carry model is fitted to Claude Code transcripts.** The *shape* —
-  context growth per turn, survival across compaction — is a property of how an
+- **The carry model is fitted to Claude Code transcripts.** The *shape* of it
+  (context growth per turn, survival across compaction) is a property of how an
   agent works, not of who serves it, but it has only been measured on one
   harness. `adder carry` refits it from whatever transcripts you point it at.

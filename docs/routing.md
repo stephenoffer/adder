@@ -17,7 +17,7 @@ one sentence:
 Claim 1 is usually true. Claim 3 is testable and `adder ab` tests it. Claim 2 is
 the one that gets asserted and never measured, and it is the one that decides
 whether the whole thing works. A router that cannot separate easy from hard is
-not a cheap router, it is a coin flip with extra steps — and it will still show
+not a cheap router, it is a coin flip with extra steps, and it will still show
 a saving, because sending 40% of work to a cheaper model always shows a saving.
 The saving is not the question. The question is what it cost in quality, and
 whether a router did better than picking at random.
@@ -34,7 +34,7 @@ CPT(x) = smallest share of strong calls that reaches PGR = x
 ```
 
 PGR on its own is gameable: send everything to the strong model and PGR is 1.0
-at no saving. So the summary number is APGR — the area under the
+at no saving. So the summary number is APGR, the area under the
 call-performance curve, which prices the whole trade-off rather than one point
 on it.
 
@@ -51,7 +51,7 @@ Three things `adder routereval` prints that the bare metric does not:
   rather than printing "+10% over random".
 - **The oracle ceiling.** APGR does not top out at 1.0. If half the tasks
   genuinely need the strong model, a router with perfect foresight scores 0.75.
-  Reading 0.75 as "75% of the way to perfect" is wrong — on that task mix it
+  Reading 0.75 as "75% of the way to perfect" is wrong: on that task mix it
   *is* perfect. The report prints the ceiling and the regret against it.
 - **A dollar axis.** See below.
 
@@ -79,24 +79,24 @@ gap is a property of the workload, and on agent sessions it is usually large.
 ## The comparison PGR structurally cannot make
 
 PGR is 0 at the all-weak endpoint and 1 at the all-strong one, by construction.
-The all-strong endpoint *is* a single model — so no PGR-derived number, APGR
+The all-strong endpoint *is* a single model, so no PGR-derived number, APGR
 included, can answer the question a sceptical reader asks first: **would picking
 one model and never routing at all have done just as well?**
 
 The published benchmarks ask it, and it is the question that embarrasses the
-field. Several well-known routers — a binary-classifier one, a cascade, and a
-commercial auto-router — fail to beat the best single model in at least one
+field. Several well-known routers (a binary-classifier one, a cascade, and a
+commercial auto-router) fail to beat the best single model in at least one
 regime. A metric family anchored at the weak arm cannot show that, which is
 presumably part of why it went unreported for so long.
 
 So two more numbers are printed, named as the benchmarks name them so they can
 be quoted next to a published figure without translation:
 
-- **gain vs best single** — the quality the best threshold on the curve adds over
+- **gain vs best single**: the quality the best threshold on the curve adds over
   the better of the two fixed choices. Zero is the common answer and it is a
   finding, not a measurement failure: it means no mix beat just picking one.
   It is positive only where the two models are genuinely complementary.
-- **cost saved at equal quality** — the cheapest threshold whose quality still
+- **cost saved at equal quality**: the cheapest threshold whose quality still
   matches that better fixed choice, read as a share of the all-strong budget.
   This is the figure a reader actually wants: not "how much of the gap did it
   recover" but "how much cheaper can this get before it starts costing me
@@ -108,7 +108,7 @@ arm as the baseline would flatter every router scored against it.
 
 The one benchmark metric not adopted is ParetoDist, distance to the Pareto
 frontier. Here the frontier is two fixed points and an oracle, so the distance to
-it collapses into the oracle regret already reported — adding it would be the
+it collapses into the oracle regret already reported. Adding it would be the
 same number under a second name.
 
 ## Where the episodes come from
@@ -117,11 +117,11 @@ An episode is one task scored and priced under both arms. That is a
 counterfactual, and counterfactuals are where cost tools lie. Three sources, in
 descending order of how much they should be trusted:
 
-1. **An A/B log** (`adder ab`) — both arms actually ran. Nothing is modelled.
-2. **The outcome log** — one arm ran; the other is a recorded fact about what
+1. **An A/B log** (`adder ab`). Both arms actually ran. Nothing is modelled.
+2. **The outcome log.** One arm ran; the other is a recorded fact about what
    happened next (the task escalated, and the escalation resolved it). One side
    measured, one side inferred.
-3. **A modelled arm** — priced from the catalog, quality inferred from arena
+3. **A modelled arm.** Priced from the catalog, quality inferred from arena
    ratings. Labelled `MODELLED` in the output, and everything computed from it
    inherits the label.
 
@@ -152,7 +152,7 @@ fit reproduces the published ordering.
 the coding board the 95% interval is roughly ±10 points, so a "17-point lead" is
 two overlapping intervals and no lead at all. Anything here that compares two
 models can answer *indistinguishable*, and does so most of the time. When two
-models cannot be told apart on quality, the only remaining difference is price —
+models cannot be told apart on quality, the only remaining difference is price,
 which is a routing decision the data actually supports.
 
 One implementation note worth stating because it changes a number: the
@@ -169,7 +169,7 @@ available as `method="battles"`.
 
 Pairwise data between any two specific models is under 0.1% dense. "Is X better
 than Y" is usually unanswerable; "is X in the top tier" is not. So `bt.tiers`
-partitions models into strength classes by exact dynamic programming — the
+partitions models into strength classes by exact dynamic programming, the
 one-dimensional k-means that has an optimal solution, so there is no
 initialisation to get unlucky with and no seed to report. Everything in adder
 that says "the strong model" means a tier.
@@ -177,7 +177,7 @@ that says "the strong model" means a tier.
 ## Calibrating the other half
 
 Routing has a second predictor in it: `p_fail`, how often a tier fails and
-forces an escalation. Every gate multiplies by it. It had never been scored —
+forces an escalation. Every gate multiplies by it. It had never been scored:
 `outcomes calibration` printed the escalation rate next to the data it was
 fitted on, which is a tautology, not a test.
 
@@ -190,13 +190,13 @@ fit.
 
 It reports Brier, but the number to read is the **skill score against always
 predicting the base rate**. A Brier of 0.18 sounds respectable until a constant
-scores 0.17 — at which point the per-project scoping is decoration. Skill can go
+scores 0.17, at which point the per-project scoping is decoration. Skill can go
 negative, and a report that can only print "here is the rate per tier" would
 never reveal that.
 
 Building this found a real bug. The estimator decayed its recency weights toward
 the wall clock, so replaying any log older than a few half-lives collapsed the
-evidence mass to nothing and returned the 0.5 prior for every row — which looks
+evidence mass to nothing and returned the 0.5 prior for every row, which looks
 like a calibrated coin and is really an admission that no data was used. It also
 made the function untestable to a fixed value. `evidence()` and `p_fail()` now
 take an explicit `now`.

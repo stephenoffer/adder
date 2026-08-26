@@ -22,14 +22,14 @@ is that it has already been argued over by people with better data.
 | Locality-aware cross-region serving: prefix affinity against cheaper capacity elsewhere | Moving a warm session was priced for one named pair, not swept | `adder place` |
 | Spot instances under deadlines: uniform progress as a parameter-free policy | The batch discount was known and never recommended, because nothing knew what a deadline was | `adder deadline` |
 | Agent programs as first-class scheduling units, prioritised by attained service | Every "restart the session" recommendation assumed attained service was predictive; nobody checked | `adder sched` |
-| **Speculative decoding: performance or illusion?** — headline speedups measured at batch size 1, shrinking under realistic load | The `speed` field was recorded on every turn and never audited against its 2x premium | `adder speed` |
+| **Speculative decoding: performance or illusion?** Headline speedups measured at batch size 1, shrinking under realistic load | The `speed` field was recorded on every turn and never audited against its 2x premium | `adder speed` |
 | Online predictor evaluation | `p_fail` was inspected on the data it was fitted to, which is a tautology | `adder calib` |
 | Resource-aware batching for offline inference | Submission order was never treated as a lever, though the prefix cache is billed by the token | `adder blend` |
 | Harvesting preemptible capacity, multi-region spot for batch jobs | Nothing priced what an interruption would destroy, so interruptibility could not be assessed | `adder harvest` |
 | Artifact reproducibility | "It was 6.1x and now it is 4.2x" had four candidate explanations and no record | `adder repro` |
 | **Controlled router benchmarks**: clustering queries and scoring per cluster matches trained matrix-factorization and graph routers; several published routers fail to beat the best single model | `p_fail` was scoped per (project, tier), which averages over task kinds that have nothing in common | `adder similar`, and `p_fail` conditioned on the task |
-| Cold-start routing: a router with no history for a query has to route on something | The classifier abstained and abstention routes up, forfeiting the largest lever in the tool on exactly the tasks it could not read | neighbour-conditioned evidence, which needs no history *at this rung for this project* — only history on tasks like this one |
-| Hook-mediated context trimming: dedup and truncate tool results in flight rather than reporting them afterwards | The guard priced the bounded call and then spent a turn asking the model to make it | `guard_narrow` — the guard substitutes the bounded call via `updatedInput` |
+| Cold-start routing: a router with no history for a query has to route on something | The classifier abstained and abstention routes up, forfeiting the largest lever in the tool on exactly the tasks it could not read | neighbour-conditioned evidence, which needs no history *at this rung for this project*, only history on tasks like this one |
+| Hook-mediated context trimming: dedup and truncate tool results in flight rather than reporting them afterwards | The guard priced the bounded call and then spent a turn asking the model to make it | `guard_narrow`: the guard substitutes the bounded call via `updatedInput` |
 | Subscription metering: a rolling window and a weekly cap, not a per-token bill | Every figure in the package was in dollars, which is the wrong unit for a plan user by a change of kind, not a scale factor | `adder limits` |
 
 ## Three adoptions worth reading closely
@@ -38,8 +38,8 @@ is that it has already been argued over by people with better data.
 
 The result worth taking from the controlled routing benchmarks is not that any
 one router wins. It is that the field's methodological gains are smaller than
-they look: on identical splits, the trained routers are matched — and in the
-cost-first regime sometimes beaten — by embedding the queries, clustering them,
+they look: on identical splits, the trained routers are matched (and in the
+cost-first regime sometimes beaten) by embedding the queries, clustering them,
 and scoring each model per cluster, with no network trained at all. The
 implication is that most of the recoverable signal is *which kind of task is
 this*, and the second finding sharpens it: swapping the embedding backbone
@@ -47,20 +47,20 @@ barely moves any of them.
 
 That second finding is what makes the method portable here. If the choice of
 embedding hardly matters, then the question is how much is lost by having no
-embedding model at all — and for this workload the answer is less than it
+embedding model at all, and for this workload the answer is less than it
 sounds. Task descriptions in a coding transcript are short and written by a
 model to a fixed prompt, so they are unusually lexically consistent. Vocabulary
 overlap is a weak proxy for semantics in general and a decent one here.
 
 So `similar.py` keeps the shape and substitutes the representation: a MinHash
-sketch of terms and adjacent bigrams, Jaccard between sketches, nearest
-neighbours instead of k clusters. Two deviations are deliberate. The benchmarks
-predict *answer quality* from the cluster; this predicts the thing already
-measured — how often that rung escalated — because every other number in this
-repo is a re-priced observation and a router that starts guessing at quality
-would be the first one that is not. And the estimate is not allowed to act
-symmetrically: see [tiers.md](tiers.md) for why a thin neighbour set may raise
-`p_fail` and may not lower it.
+sketch of terms and adjacent bigrams, Jaccard between sketches, nearest neighbours
+instead of k clusters. Two deviations are deliberate. The benchmarks predict
+*answer quality* from the cluster; this predicts the thing already measured,
+meaning how often that rung escalated, because every other number in this repo is
+a re-priced observation and a router that starts guessing at quality would be the
+first one that is not. And the estimate is not allowed to act symmetrically: see
+[tiers.md](tiers.md) for why a thin neighbour set may raise `p_fail` and may not
+lower it.
 
 The limitation is inherited and worth repeating: paraphrase with no shared words
 is invisible to this, and it fails silently. That is why missing has to cost
@@ -68,8 +68,8 @@ nothing, and why the fallback is the tier-wide rate rather than a guess.
 
 ### Style control, and why it matters more here than on a leaderboard
 
-The method adds style features — normalised length difference, markdown headers,
-lists — as covariates in the Bradley-Terry regression, so the strength
+The method adds style features (normalised length difference, markdown headers,
+lists) as covariates in the Bradley-Terry regression, so the strength
 coefficient reflects capability rather than the judge's taste for long,
 well-formatted answers. On a leaderboard that is a fairness correction.
 
@@ -88,8 +88,8 @@ repeated: this is observational, and length may correlate with substance.
 ### Speculative decoding, and the shape of the scepticism
 
 The result worth taking is not about speculative decoding. It is that a widely
-cited speedup was measured in the most favourable configuration — batch size 1,
-a research prototype — and shrinks toward nothing under production load, because
+cited speedup was measured in the most favourable configuration, batch size 1
+on a research prototype, and shrinks toward nothing under production load, because
 the system becomes compute-bound and verification dominates.
 
 `adder` records a `speed` field on every turn, and the fast path bills at **2x**.
@@ -110,7 +110,7 @@ actually run, not the ones that flatter it.
   reason to stop: you do not control the batching, but you do control the
   submission order, and the prefix cache is billed to you by the token.
   Ordering is free and the saving is real. Building it surfaced a result the
-  intuition gets backwards — the saving is **not monotone in the cache TTL**. It
+  intuition gets backwards: the saving is **not monotone in the cache TTL**. It
   peaks where the TTL sits above the grouped gap and below the scattered one,
   and falls to zero at both ends, so the report sweeps rather than quoting.
 - ~~**Harvesting preemptible capacity.**~~ **Built after all, as `adder
@@ -126,14 +126,14 @@ actually run, not the ones that flatter it.
   to the state, and a handoff summary against a 500K context is not.
 - **Universal text-parameter optimisation.** The system prompt, CLAUDE.md and
   skill descriptions are text parameters billed on every turn, which is a real
-  and measurable cost — but optimising them requires running the agent, and this
+  and measurable cost, but optimising them requires running the agent, and this
   package does not run the agent. `adder memory` prices them; improving them is
   out of scope by construction.
 - **A dollar figure for the metering window.** `adder limits` reconstructs the
   five-hour window and reports what each one read, but it asserts no capacity.
   The cap is not published in tokens, differs by model, and drains faster in
   peak hours, so the only capacity statement the data supports is "the heaviest
-  window on this machine's record was served" — a floor, not a limit. A
+  window on this machine's record was served": a floor, not a limit. A
   projection naming the minute you get cut off would be a fabrication with a
   clock face on it, so the report compares against that floor and says what it
   is. The one number quoted without qualification is the within-window slope,
@@ -144,7 +144,7 @@ actually run, not the ones that flatter it.
   sketch would have to be written into rows already on disk, and the log is
   append-only for a reason: `record()` relies on a single atomic `O_APPEND`
   write so concurrent sessions interleave lines instead of corrupting them. A
-  rewrite has no such guarantee — anything appended between the read and the
+  rewrite has no such guarantee: anything appended between the read and the
   rename is lost, and what would be lost is the evidence the router calibrates
   on. The alternative, a `task_hash -> sketch` sidecar consulted for rows
   lacking their own, works and buys a second cache file to keep coherent.

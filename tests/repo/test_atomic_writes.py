@@ -31,7 +31,8 @@ class TestNoFixedTempNames:
     def test_no_module_writes_through_a_fixed_tmp_path(self):
         offenders = []
         for p in _sources():
-            for i, line in enumerate(p.read_text().splitlines(), 1):
+            for i, line in enumerate(
+                    p.read_text(encoding="utf-8").splitlines(), 1):
                 if 'with_suffix(".tmp")' in line or "with_suffix('.tmp')" in line:
                     offenders.append(f"{p.relative_to(ADDER.parent)}:{i}")
         assert not offenders, (
@@ -42,7 +43,8 @@ class TestNoFixedTempNames:
         """The positive form: if a module makes a `.tmp`, it must be its own."""
         bad = []
         for p in _sources():
-            for i, line in enumerate(p.read_text().splitlines(), 1):
+            for i, line in enumerate(
+                    p.read_text(encoding="utf-8").splitlines(), 1):
                 if ".tmp" in line and "with_suffix" in line and "getpid" not in line:
                     bad.append(f"{p.relative_to(ADDER.parent)}:{i}")
         assert not bad, f"temp names not unique per writer: {bad}"
@@ -53,30 +55,44 @@ class TestTheRaceItself:
 
     @staticmethod
     def _hammer(target: Path, name_for, writers=3, rounds=120):
-        lost = []
+        """Returns (lost, blocked).
+
+        The two are counted apart because only one of them is this bug. A write
+        is *lost* when the scratch file is gone by the time we move it -- a
+        FileNotFoundError, which is exactly what a shared scratch path causes
+        and what an `except OSError` swallows. A write is *blocked* when the
+        destination refuses the move: Windows fails a replace while another
+        thread holds the target open, and that happens with per-writer scratch
+        names too. Folding it into `lost` would make the assertion below read
+        as this bug on a platform where it is only a sharing rule.
+        """
+        lost, blocked = [], []
 
         def run(tag):
             for _ in range(rounds):
                 tmp = name_for(target)
                 try:
-                    tmp.write_text(json.dumps({"who": tag, "pad": [tag] * 500}))
+                    tmp.write_text(json.dumps({"who": tag, "pad": [tag] * 500}),
+                                   encoding="utf-8")
                     tmp.replace(target)
-                except OSError:
+                except FileNotFoundError:
                     lost.append(tag)
+                except OSError:
+                    blocked.append(tag)
 
         ts = [threading.Thread(target=run, args=(t,)) for t in "ABC"[:writers]]
         for t in ts:
             t.start()
         for t in ts:
             t.join()
-        return len(lost)
+        return len(lost), len(blocked)
 
     def test_a_shared_scratch_path_loses_writes(self, tmp_path):
-        lost = self._hammer(tmp_path / "s.json", lambda p: p.with_suffix(".tmp"))
+        lost, _ = self._hammer(tmp_path / "s.json", lambda p: p.with_suffix(".tmp"))
         assert lost > 0, "expected the shared-path race to drop writes"
 
     def test_a_per_writer_scratch_path_loses_none(self, tmp_path):
-        lost = self._hammer(
+        lost, _ = self._hammer(
             tmp_path / "s.json",
             lambda p: p.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp"))
         assert lost == 0
@@ -85,7 +101,7 @@ class TestTheRaceItself:
         """`replace` does protect the reader; that was never the bug."""
         t = tmp_path / "s.json"
         self._hammer(t, lambda p: p.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp"))
-        assert json.loads(t.read_text())["pad"]
+        assert json.loads(t.read_text(encoding="utf-8"))["pad"]
 
 
 class TestScratchFilesAreCleanedUp:

@@ -58,7 +58,7 @@ $ adder auto on --full
     PreToolUse        prices, and can refuse, a call before its result lands in context
     PreCompact        forgets what compaction drops, and re-learns result sizes
     UserPromptSubmit  prices compaction against a restart, once a session is expensive
-    agents            what a delegated step runs on — Explore on Haiku, three tiers
+    agents            what a delegated step runs on: Explore on Haiku, three tiers
 
   refusals              full: also a large read with a cheaper equal
 
@@ -92,7 +92,7 @@ adder auto status
 ```
 
 which reports what it has prevented, what it merely argued for, and what its own
-messages cost you — kept apart, because only the first of those needs no
+messages cost you, kept apart, because only the first of those needs no
 assumption about whether anyone listened.
 
 ## Before you have any history
@@ -107,7 +107,7 @@ model it predicts with re-learns from your own transcripts as they accumulate.
 
 | Term | Meaning |
 |---|---|
-| **turn** | one exchange — your message, the agent's reply |
+| **turn** | one exchange: your message, the agent's reply |
 | **context** | everything the model re-reads to take the next turn |
 | **output token** | text the model writes. Billed once at writing, then as context on every later turn |
 | **prompt cache** | a discount on re-reading context you have already sent. Big, but tied to one model |
@@ -193,13 +193,13 @@ Start with `live`. Everything else is there when you have a specific question.
 | Am I actually delegating, and what did I miss? | `adder agents` |
 | Am I going to blow this month's budget? | `adder budget --limit 400` |
 | What does an output token *really* cost here? | `adder debt` |
-| Why is my context so big — what put it there? | `adder context` |
+| Why is my context so big, and what put it there? | `adder context` |
 | Is my prompt cache working, and what is it wasting? | `adder cache` |
 | Am I getting worse output, not just cheaper output? | `adder quality` |
 | What is in my context before I say anything, and what does it cost? | `adder memory` |
 | Did I read the same thing twice? | `adder reread` |
 | Should I compact this session, or is it too late to be worth it? | `adder compact` |
-| If I restart, how much may I carry — and what has to be in it? | `adder handoff` |
+| If I restart, how much may I carry, and what has to be in it? | `adder handoff` |
 | Should I do this task here, or delegate it? | `adder policy "<task>"` |
 | Which model is cheapest for a task that still clears the quality bar? | `adder pick "<task>"` |
 | Of everything I could change, which is worth the most? | `adder savings` |
@@ -239,7 +239,7 @@ and they are listed here rather than left for you to discover:
 
 | File | Written by | Why |
 |---|---|---|
-| `~/.claude/.adder-trace-cache` | any report | memoized parses, keyed by `(mtime, size)` — delete it any time |
+| `~/.claude/.adder-trace-cache` | any report | memoized parses, keyed by `(mtime, size)`; delete it any time |
 | `~/.claude/adder-outcomes.jsonl` | `outcomes record` / `outcomes import --write` | the dispatch history that calibrates `p_fail` |
 | `~/.claude/adder-ledger.jsonl` | `policy --record` | recommendations made, so the tool can be held to them |
 | `~/.claude/adder/catalog.json` | `models refresh` | the cross-vendor model snapshot |
@@ -253,7 +253,7 @@ Everything else is arithmetic over files you already have, printed to stdout.
 
 The three rows marked `auto` are the only writes in the tool that land in a file
 you did not name on the command line, which is why that command prints the whole
-change first, keeps a backup, and has an `off`. No report writes any of them —
+change first, keeps a backup, and has an `off`. No report writes any of them:
 `live`, `trace`, `debt`, `context`, `cache`, `quality` and `horizon` are
 read-only, and a test asserts it.
 
@@ -288,7 +288,7 @@ they ship inside the package, and `adder auto on` installs them:
 - **Skills.** `/adder` routes one task, `/adder-doctor` diagnoses a session,
   `/adder-context` decides whether to compact or restart, and `/adder-init`
   walks the install. These live in this repository's `.claude/skills/` and are a
-  convenience for a checkout, not part of the mechanism — activation does not
+  convenience for a checkout, not part of the mechanism; activation does not
   need them.
 
 If you want the habit without the machinery, `adder policy "<task>"` gives you

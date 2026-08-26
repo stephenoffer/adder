@@ -15,7 +15,7 @@ own.
 ## 1. The floor is not free, it is free *per session*
 
 `adder prefix` measures that a session opening is ~74% cache read, and the
-correct conclusion — restarts are cheap — was over-read into a wrong one: that
+correct conclusion (restarts are cheap) was over-read into a wrong one: that
 the size of the floor does not matter.
 
 A floor token is not read once per session. It is read once per **turn**. On
@@ -38,10 +38,10 @@ from the same file, so the survival term is 1.0 forever.
 
 Two consequences that are not obvious from file sizes:
 
-* **A skill library is nearly free and an instruction file is not.** Only a
+- **A skill library is nearly free and an instruction file is not.** Only a
   skill's `name` and `description` are resident; its body loads when it runs.
   A 40,000-token skill collection costs less than a 3,000-token `CLAUDE.md`.
-* **Most of the floor is not yours.** Of a 30K opening context here, 2.7K is
+- **Most of the floor is not yours.** Of a 30K opening context here, 2.7K is
   files on disk. The other 28K is the system prompt and tool schemas, and
   `adder memory` reports it as `unaccounted` rather than attributing it to a
   file somebody is about to edit.
@@ -55,9 +55,9 @@ purchase of *nothing*, plus its own carry to the end of the session.
 `adder reread` separates two cases that look identical in a transcript and are
 not:
 
-* **redundant** — the result is byte-identical to a copy already resident.
+- **redundant.** The result is byte-identical to a copy already resident.
   Recoverable in full.
-* **refresh** — the result changed. The call was justified; the superseded copy
+- **refresh.** The result changed. The call was justified; the superseded copy
   is still resident and still being re-read, but skipping the call would have
   been wrong.
 
@@ -68,7 +68,7 @@ have avoided.
 
 ### When "write it down" is wrong
 
-An identity read in many different sessions is not a re-read — each session
+An identity read in many different sessions is not a re-read; each session
 started empty. That is the one case where the fix is memory, and it has a
 price, because a resident note is re-read on every turn of *every* session
 while the read is paid only in the sessions that make it.
@@ -76,8 +76,8 @@ while the read is paid only in the sessions that make it.
 `adder reread` prints a **note budget**: the largest resident note that still
 beats re-reading the thing. On this machine it comes out at 4–46 tokens for
 files read in two sessions. Writing a 5,000-token file summary into `CLAUDE.md`
-to avoid reading it twice loses money by two orders of magnitude — which is the
-opposite of the usual advice, and the reason the number is printed.
+to avoid reading it twice loses money by two orders of magnitude, which is the
+opposite of the usual advice and the reason the number is printed.
 
 ## 3. Compaction is a trade, and it has a threshold
 
@@ -95,7 +95,7 @@ remaining_turns  >  kept * write_mult / (freed * read_mult)
 ```
 
 **Compact when more turns remain than that, not when the bar looks full.** The
-threshold is small — a few dozen turns at the measured multipliers — which
+threshold is small (a few dozen turns at the measured multipliers), which
 means the common failure is not compacting too often. It is carrying a full
 context for hundreds of turns because compaction felt destructive.
 
@@ -128,7 +128,7 @@ Context hygiene: restart — worth ~$55 over the ~350 turns expected to remain.
 ```
 
 The objection is always the same: *I would lose the context.* `adder handoff`
-answers it with the crossing point — the brief size at which the restart stops
+answers it with the crossing point, the brief size at which the restart stops
 being ahead:
 
 ```
@@ -138,7 +138,7 @@ being ahead:
 At a 500K context with 300 turns left that is **467,000 tokens**. The budget is
 not binding; it never was. Nobody writes a 467,000-token brief, so the real
 constraint on a handoff is what you can usefully say, not what you can afford
-to carry — and the tool says so in those words rather than printing a budget
+to carry, and the tool says so in those words rather than printing a budget
 someone might try to fill.
 
 The budget goes *negative* near the end of a session. That is not "write a

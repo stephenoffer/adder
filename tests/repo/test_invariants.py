@@ -198,3 +198,50 @@ class TestWhatTheWheelCarries:
             assert len(path.read_text(encoding="utf-8").splitlines()) < 30, (
                 f"{path} is doing real work again; the wheel does not carry it"
             )
+
+
+class TestTheBuildBackendFloor:
+    """The declared `setuptools>=` must be able to build this project.
+
+    `build-system.requires` said `setuptools>=68` while `[project]` declared
+    `license = "MIT"` and `license-files` -- both PEP 639, which setuptools only
+    understood from 77.0.0. Building with 76.1.0 dies on `project.license must
+    be valid exactly by one definition`; 77.0.0 is the first that works.
+
+    Nothing caught it because pip builds in an isolated environment and resolves
+    the newest setuptools there, so the floor is never the version used. It *is*
+    the version used by anyone installing the sdist with `--no-build-isolation`,
+    or by a distro packaging this against a pinned toolchain, and a floor that
+    cannot build the project is a false claim about what the package needs.
+    """
+
+    # The release that added PEP 639 support. Raise this only alongside a
+    # metadata key that genuinely needs a newer setuptools.
+    PEP639 = 77
+
+    def _floor(self) -> tuple[str, int]:
+        specs = [r for r in pyproject()["build-system"]["requires"]
+                 if r.replace("_", "-").lower().startswith("setuptools")]
+        assert len(specs) == 1, f"expected one setuptools requirement, got {specs}"
+        spec = specs[0]
+        assert ">=" in spec, f"{spec!r} declares no minimum; the floor is the claim"
+        return spec, int(spec.split(">=")[1].split(".")[0].strip().rstrip(","))
+
+    def test_the_floor_supports_the_license_metadata_actually_declared(self):
+        project = pyproject()["project"]
+        needs_pep639 = isinstance(project.get("license"), str) or "license-files" in project
+        spec, major = self._floor()
+        if needs_pep639:
+            assert major >= self.PEP639, (
+                f"{spec!r} cannot build this project: `license`/`license-files` are "
+                f"PEP 639 and need setuptools>={self.PEP639}. Either raise the floor "
+                "or go back to the `license = {text = ...}` table."
+            )
+
+    def test_the_floor_is_not_raised_past_what_is_used(self):
+        """A floor set higher than necessary excludes builders for no reason."""
+        _, major = self._floor()
+        assert major <= self.PEP639, (
+            "the floor is above the newest feature this project's metadata uses; "
+            "if a newer setuptools is genuinely required, say which key needs it"
+        )

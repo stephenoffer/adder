@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -183,7 +184,11 @@ class TestArgparseIntegration:
         add_arguments(ap)
         assert ap.parse_args([]).root is None
         assert root_of(ap.parse_args([]))
-        assert str(root_of(ap.parse_args(["/tmp/somewhere"]))) == "/tmp/somewhere"
+        # Compared as a Path, not against the literal: `root_of` returns one,
+        # and `str(Path("/tmp/somewhere"))` is `\tmp\somewhere` on Windows --
+        # a separator mismatch failing a test about argument precedence.
+        given = Path("/tmp/somewhere")
+        assert root_of(ap.parse_args([str(given)])) == given
 
     def test_the_root_setting_is_what_an_absent_argument_resolves_to(
             self, tmp_path, monkeypatch):

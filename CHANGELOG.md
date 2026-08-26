@@ -11,6 +11,54 @@ without a stated reason is a regression, not a change.
 
 ## [Unreleased]
 
+- **The declared build floor could not build the package, and CI never
+  installed what it built.** `build-system.requires` said `setuptools>=68`
+  while `[project]` declared `license = "MIT"` and `license-files`, which are
+  PEP 639 and need setuptools 77. Building with 76.1.0 dies on `project.license
+  must be valid exactly by one definition`; 77.0.0 is the first that works, and
+  the floor is now 77. Nothing caught it because pip builds in an isolated
+  environment and resolves the newest setuptools there -- the floor is only
+  exercised by `--no-build-isolation` or a pinned toolchain, and until then it
+  was a false claim about what the package needs.
+  `tests/repo/test_invariants.py` pins the floor against the metadata actually
+  declared, in both directions.
+
+  The `build` job checked filenames inside the wheel and stopped there. A
+  subpackage missing from `packages.find`, a broken entry point, or a data file
+  the code cannot locate once it is in `site-packages` all pass a name check and
+  fail the user. Both workflows now install the wheel *and* the sdist into clean
+  virtualenvs, run the installed console script from outside the checkout, drive
+  every subcommand's `--help`, and assert the bundled catalog and the activation
+  payload are readable where `pip` put them. Verified against a wheel with those
+  files deliberately stripped: the old check passed it, the new one fails with
+  the list of what is missing. `adder models list` is not that check -- without
+  the snapshot it falls back to nine built-in models and still exits 0.
+
+- **CI was red on two jobs, and one of them was a real bug in the tool.**
+  The `build` job asserted the wheel carried `adder/cli.py`; the layer split
+  turned that into `adder/cli/`, so the check failed on every build after the
+  rename. It now names the package layout, and lists the two data files
+  setuptools only ships because `package-data` says so -- a wheel missing
+  `pricing/data/catalog.json` or `decide/agents/*.md` works from a checkout and
+  fails after `pip install`, which is the failure worth catching here.
+
+  The Windows leg of the matrix was failing on the CLI smoke step for a reason
+  users hit too. Reports print `→`, `⚠` and `█`; a *redirected* stdout on
+  Windows encodes in the ANSI code page, cp1252 has none of the three, and
+  `adder help > out.txt` raised UnicodeEncodeError before printing a line.
+  `run` now widens stdout and stderr to UTF-8 with `errors="replace"`, next to
+  the BrokenPipeError handler and for the same reason: one place, one
+  behaviour, every command. Reproducible off Windows with
+  `PYTHONIOENCODING=cp1252`.
+
+  Three tests were Unix-only rather than wrong. `test_memory_walks` bounded its
+  hang with `signal.alarm`, which does not exist on Windows, so the file
+  asserted nothing there -- the watchdog is a thread now. `test_filters`
+  compared a `Path` against the string `/tmp/somewhere`. And the write-loss
+  race now counts `FileNotFoundError` (the bug: another writer took the scratch
+  path) separately from a blocked replace (Windows refusing a move while the
+  target is held), because only the first one is what that test is about.
+
 - **The measured advice-uptake now reaches the gate that assumed it.**
   `guard.uptake()` has estimated this for a long time and `adder auto status`
   has printed it, but nothing consumed it: every advisory saving in the tool was

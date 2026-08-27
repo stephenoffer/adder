@@ -394,6 +394,10 @@ class Guarantee:
     confidence: float                  # P(saving > overhead) under the marginals
     overhead: float = 0.0              # what emitting the advice costs
     corner: dict[str, float] = field(default_factory=dict)
+    # The point estimate of each uncertain input, so `describe` can tell a
+    # condition apart from a restatement of the inputs. Optional because a
+    # caller building a Guarantee by hand has no bounds to read them off.
+    point: dict[str, float] = field(default_factory=dict)
     alpha: float = DEFAULT_ALPHA
     threshold: float = DEFAULT_CONFIDENCE
 
@@ -411,18 +415,41 @@ class Guarantee:
     def margin(self) -> float:
         return self.worst - self.overhead
 
+    def _conditions(self) -> str:
+        """The corner, minus the axes that had no width to begin with.
+
+        A corner is meant to name the combination of inputs under which the
+        advice stops paying. When an input is known exactly -- `--remaining 0`,
+        say -- its worst value *is* its actual value, and printing it as a
+        condition reads as a hypothetical the reader could hope to avoid. They
+        cannot: it is already true, and it is already inside the expected
+        number. "It would lose money only if p=0.49, remaining=0" was printed
+        against a run whose remaining was 0. Only the axes that still carry
+        uncertainty belong in that sentence.
+        """
+        return ", ".join(
+            f"{k}={v:,.4g}" for k, v in sorted(self.corner.items())
+            if k not in self.point or abs(v - self.point[k]) > 1e-12)
+
     def describe(self) -> str:
         head = (f"saves ${self.expected:,.4f} expected against ${self.overhead:,.4f} "
                 f"of overhead, {self.confidence:.0%} confident")
-        why = ", ".join(f"{k}={v:,.4g}" for k, v in sorted(self.corner.items()))
+        why = self._conditions()
         # `safe` first, and not `dominant` first. A caller can set a threshold
         # above 1.0 to force every recommendation off, and a description that
         # led with dominance would report the good news about a decision that
         # was declined.
         if not self.safe:
+            if not why:
+                # Every uncertain input is pinned, so there is no corner to
+                # blame: it simply does not clear the bar at the inputs given.
+                return f"not confident enough to recommend: {head}"
             return f"not confident enough to recommend: {head}. It loses money when {why}"
         if self.dominant:
             return head + f"; cheaper even at the worst inputs (${self.worst:,.4f})"
+        # Not dominant means the worst vertex is strictly below the point
+        # estimate, so at least one axis differs from its point and `why` is
+        # never empty here.
         return head + f"; it would lose money only if {why}"
 
 
@@ -449,8 +476,9 @@ def guarantee(
     else:
         conf = 1.0 if worst > overhead else 0.0
     return Guarantee(expected=expected, worst=worst, confidence=conf,
-                     overhead=overhead, corner=corner, alpha=alpha,
-                     threshold=threshold)
+                     overhead=overhead, corner=corner,
+                     point={k: v.point for k, v in bounds.items()},
+                     alpha=alpha, threshold=threshold)
 
 
 def shrink(values: Iterable[float], prior: float, weight: float) -> float:

@@ -351,6 +351,45 @@ def emitted_advice_clears_its_own_overhead(sessions) -> Claim:
                  "" if not bad else f"first: {bad[0]}")
 
 
+def a_mutation_never_reaches_the_read_only_rung(sessions) -> Claim:
+    """Claim: nothing that asks for a change is ever dispatched to `route-t0`.
+
+    T0's agent holds Read, Grep, Glob and Bash and no write tool, so this is a
+    feasibility property, not a preference -- and it is the second silent one.
+    Descending below the classifier requires an abstention, and an abstention
+    is exactly the state in which nobody has established that the task is a
+    read. With enough T0 history the expected-cost search was therefore free to
+    send an edit to an agent that cannot edit, and the failure surfaces as a
+    subagent that reports what it would have done.
+
+    Swept rather than unit-tested because the guard sits inside a minimisation:
+    a future change to the cost model can reopen it without touching the line
+    that closed it. Independent of the transcripts, like the claim below it.
+    """
+    from adder.decide.route.classify import Tier, classify
+    from adder.decide.route.policy import decide
+
+    tasks = ("rename the Exception class",
+             "make the ingest step tolerate a partial batch",
+             "add a test for the retry helper in adder/decide/route/select.py",
+             "fix the typo in README.md")
+    bad: list[str] = []
+    n = 0
+    for task in tasks:
+        assert not classify(task).read_only, task
+        for ctx in (10_000, 100_000, 500_000):
+            for rem in (0, 40, 400):
+                for read in (500, 20_000, 200_000):
+                    n += 1
+                    p = decide(task, context_tokens=ctx, remaining_turns=rem,
+                               est_read_tokens=read)
+                    if p.tier is Tier.T0:
+                        bad.append(f"{task[:20]}/{ctx}/{rem}/{read}")
+    return Claim("a mutation never reaches the read-only rung", not bad,
+                 f"{len(bad)}/{n} bad", "0 counterexamples",
+                 "" if not bad else f"first: {bad[0]}")
+
+
 def a_prior_never_buys_a_downgrade(sessions) -> Claim:
     """Claim: the router only routes below the classifier when the log says it may.
 
@@ -970,6 +1009,7 @@ CHECKS = (
     restarting_beats_running_long,
     horizon_mean_exceeds_median,
     emitted_advice_clears_its_own_overhead,
+    a_mutation_never_reaches_the_read_only_rung,
     a_prior_never_buys_a_downgrade,
     the_target_reduction_is_reachable,
     installing_adder_pays_by_itself,

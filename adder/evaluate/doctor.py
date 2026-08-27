@@ -156,7 +156,7 @@ def check_reread(root, sessions, total: float) -> Check:
     from adder.measure.window.reread import (
         _carry,
         _session_shape,
-        price_repeat,
+        recoverable,
         scan,
     )
     from adder.util.render import money
@@ -166,16 +166,39 @@ def check_reread(root, sessions, total: float) -> Check:
         return Check("reread", True, "no tool results on record", skipped=True)
     carry, shape = _carry(sessions), _session_shape(sessions)
     repeats = rep.with_repeats()
-    waste = sum(price_repeat(r, shape, carry) for r in repeats)
-    worst = max(repeats, key=lambda r: r.redundant_tokens, default=None)
+    files = rep.with_path_repeats()
+    if rep.unpriced_shell():
+        # Not `ok`, and not a dollar figure. This corpus reads through the
+        # shell in a shape the parser cannot name, so the lever is unmeasured
+        # rather than clear -- and "0 identities · $0.00" is the sentence that
+        # gets believed, which on one corpus was $13 of $53 of Bash carry
+        # reported as nothing.
+        return Check(
+            "reread", True,
+            f"not measurable here — {rep.shell_results:,} shell results, none "
+            "naming a file this parser could follow",
+            action="`adder reread` — the lever is real; this corpus is what "
+                   "cannot be read, so treat the $0.00 as unknown",
+            dollars=0.0, skipped=True,
+        )
+    waste, n = recoverable(rep, shape, carry)
+    worst = max(files, key=lambda p: p.unchanged_tokens, default=None)
+    detail = []
+    if worst:
+        detail.append(f"worst file: {worst.path[-60:]} "
+                      f"({worst.calls} reads via {'+'.join(worst.tools)})")
+    top_ident = max(repeats, key=lambda r: r.redundant_tokens, default=None)
+    if top_ident:
+        detail.append(f"worst identity: {top_ident.ident[:70]} "
+                      f"({top_ident.calls} calls)")
     return Check(
         "reread", not _material(waste, total),
-        f"{len(repeats)} identities were admitted twice · {money(waste)} spent "
-        "re-reading content the context already held",
+        f"{n} results the context already held · {money(waste)} spent "
+        f"re-reading them · {len(repeats)} repeated by call, {len(files)} by file",
         action="`adder reread` — the second copy of a file buys nothing; the "
                "first one never left",
         dollars=waste,
-        detail=[f"worst: {worst.ident[:70]} ({worst.calls} calls)"] if worst else [],
+        detail=detail,
     )
 
 

@@ -16,12 +16,12 @@ import pytest
 from adder.measure.window import reread
 
 
-def records(pairs, sid="s", model="claude-opus-5"):
+def records(pairs, sid="s", model="claude-opus-5", cwd=None):
     """`pairs` is [(tool, input, result_text), ...] — one tool call per turn."""
     out = []
     for i, (tool, inp, result) in enumerate(pairs):
         out.append({
-            "type": "assistant", "sessionId": sid,
+            "type": "assistant", "sessionId": sid, "cwd": cwd,
             "timestamp": f"2026-08-01T10:{i:02d}:00Z",
             "message": {"id": f"m-{sid}-{i}", "model": model,
                         "usage": {"input_tokens": 1,
@@ -46,9 +46,9 @@ def root(tmp_path):
     return d.parent
 
 
-def write(root, pairs, sid="s"):
+def write(root, pairs, sid="s", cwd=None):
     (root / "proj" / f"{sid}.jsonl").write_text(
-        "\n".join(json.dumps(r) for r in records(pairs, sid=sid)))
+        "\n".join(json.dumps(r) for r in records(pairs, sid=sid, cwd=cwd)))
     return root
 
 
@@ -274,3 +274,180 @@ class TestReadOnly:
         before = {p: p.stat().st_mtime_ns for p in root.rglob("*")}
         reread.scan(root)
         assert {p: p.stat().st_mtime_ns for p in root.rglob("*")} == before
+
+
+class TestTheSameFileReadAnotherWay:
+    """The blind spot a harness decides the size of.
+
+    Under `bypassPermissions` the guidance routes file access to the shell, so
+    one file arrives as `cat f`, then `sed -n` of it, then `grep` of it: three
+    identities, three different results, and the identity view above correctly
+    reports that nothing was admitted twice. It is the right answer to the
+    wrong question, and it prints as $0.00.
+    """
+
+    def test_three_ways_of_reading_one_file_are_one_file(self, root):
+        write(root, [
+            ("Bash", {"command": "cat /a.py"}, BIG),
+            ("Bash", {"command": "sed -n '1,50p' /a.py"}, OTHER),
+            ("Bash", {"command": "grep -n x /a.py"}, OTHER + "z"),
+        ])
+        rep = reread.scan(root)
+        # Nothing repeats as an *identity* -- three distinct commands, three
+        # distinct results.
+        assert not rep.with_repeats(min_tokens=1)
+        p = rep.paths[("s", "/a.py")]
+        assert p.calls == 3
+        assert len(p.unchanged) == 2
+
+    def test_a_read_and_a_cat_are_the_same_file(self, root):
+        write(root, [
+            ("Read", {"file_path": "/a.py"}, BIG),
+            ("Bash", {"command": "cat /a.py"}, BIG),
+        ])
+        p = reread.scan(root).paths[("s", "/a.py")]
+        assert p.calls == 2 and p.tools == ["Bash", "Read"]
+
+    def test_a_relative_path_resolves_against_the_session_cwd(self, root):
+        write(root, [
+            ("Bash", {"command": "cat a.py"}, BIG),
+            ("Bash", {"command": "head -20 a.py"}, OTHER),
+        ], cwd="/repo")
+        assert reread.scan(root).paths[("s", "/repo/a.py")].calls == 2
+
+    def test_a_relative_path_with_no_cwd_is_not_guessed(self, root):
+        write(root, [("Bash", {"command": "cat a.py"}, BIG)] * 2)
+        assert reread.scan(root).paths == {}
+
+    def test_a_command_reading_two_files_is_attributed_to_neither(self, root):
+        # One result, two paths. Splitting its tokens or counting them twice
+        # would both be inventions.
+        write(root, [("Bash", {"command": "grep -n x /a.py /b.py"}, BIG)] * 2)
+        assert reread.scan(root).paths == {}
+
+    def test_a_read_after_an_edit_is_correct_not_waste(self, root):
+        write(root, [
+            ("Bash", {"command": "cat /a.py"}, BIG),
+            ("Edit", {"file_path": "/a.py"}, "ok"),
+            ("Bash", {"command": "cat /a.py"}, OTHER),
+        ])
+        p = reread.scan(root).paths[("s", "/a.py")]
+        assert len(p.repeats) == 1
+        assert p.unchanged == []
+
+    def test_only_the_read_after_the_edit_is_excused(self, root):
+        write(root, [
+            ("Bash", {"command": "cat /a.py"}, BIG),
+            ("Bash", {"command": "cat /a.py"}, BIG),
+            ("Edit", {"file_path": "/a.py"}, "ok"),
+            ("Bash", {"command": "cat /a.py"}, OTHER),
+        ])
+        p = reread.scan(root).paths[("s", "/a.py")]
+        assert len(p.repeats) == 2 and len(p.unchanged) == 1
+
+    def test_an_edit_to_another_file_excuses_nothing(self, root):
+        write(root, [
+            ("Bash", {"command": "cat /a.py"}, BIG),
+            ("Edit", {"file_path": "/b.py"}, "ok"),
+            ("Bash", {"command": "cat /a.py"}, BIG),
+        ])
+        assert len(reread.scan(root).paths[("s", "/a.py")].unchanged) == 1
+
+    def test_two_sessions_reading_one_file_are_not_a_re_read(self, root):
+        write(root, [("Bash", {"command": "cat /a.py"}, BIG)], sid="s")
+        write(root, [("Bash", {"command": "cat /a.py"}, BIG)], sid="t")
+        rep = reread.scan(root)
+        assert rep.paths[("s", "/a.py")].calls == 1
+        assert rep.paths[("t", "/a.py")].calls == 1
+
+
+class TestCountedOnce:
+    def test_a_verbatim_repeat_is_priced_once_not_twice(self, root, make_sessions):
+        # `cat /a.py` twice is a redundant *identity* and a re-read of a path
+        # already held. Both views see it; the total must not.
+        write(root, [("Bash", {"command": "cat /a.py"}, BIG)] * 2)
+        rep = reread.scan(root)
+        carry, shape = reread._carry(make_sessions()), reread._session_shape(make_sessions())
+        identities = sum(reread.price_repeat(r, shape, carry)
+                         for r in rep.with_repeats(min_tokens=1))
+        files = sum(reread.price_path(p, shape, carry)
+                    for p in rep.with_path_repeats(min_tokens=1))
+        total, n = reread.recoverable(rep, shape, carry, min_tokens=1)
+        assert identities > 0 and files > 0
+        assert n == 1
+        assert total == pytest.approx(identities)
+        assert total < identities + files
+
+    def test_a_re_read_the_identity_view_misses_is_still_counted(self, root, make_sessions):
+        write(root, [
+            ("Bash", {"command": "cat /a.py"}, BIG),
+            ("Bash", {"command": "sed -n '1,50p' /a.py"}, OTHER),
+        ])
+        rep = reread.scan(root)
+        carry, shape = reread._carry(make_sessions()), reread._session_shape(make_sessions())
+        total, n = reread.recoverable(rep, shape, carry, min_tokens=1)
+        assert n == 1 and total > 0
+
+    def test_two_results_on_one_line_are_two_admissions(self, root):
+        # `seq` is what makes the union exact. Bumping it per record rather
+        # than per event would collapse these into one.
+        recs = [{
+            "type": "assistant", "sessionId": "s", "cwd": None,
+            "timestamp": "2026-08-01T10:00:00Z",
+            "message": {"id": "m-0", "model": "claude-opus-5",
+                        "usage": {"input_tokens": 1, "cache_read_input_tokens": 1,
+                                  "cache_creation_input_tokens": 0, "output_tokens": 1},
+                        "content": [
+                            {"type": "tool_use", "id": "u-0", "name": "Bash",
+                             "input": {"command": "cat /a.py"}},
+                            {"type": "tool_use", "id": "u-1", "name": "Bash",
+                             "input": {"command": "cat /b.py"}}]}},
+            {"type": "user", "sessionId": "s", "cwd": None,
+             "timestamp": "2026-08-01T10:00:30Z",
+             "message": {"content": [
+                 {"type": "tool_result", "tool_use_id": "u-0", "content": BIG},
+                 {"type": "tool_result", "tool_use_id": "u-1", "content": BIG}]}}]
+        (root / "proj" / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs))
+        rep = reread.scan(root)
+        seqs = {a.seq for g in rep.paths.values() for a in g.admissions}
+        assert len(seqs) == 2
+
+
+class TestSayingItCannotSee:
+    def test_a_shell_corpus_it_cannot_parse_is_not_reported_as_zero(self, root, make_sessions):
+        # Every one of these reads through a shape the parser cannot name. The
+        # honest output is "not observed", and the old one was "$0.00".
+        write(root, [("Bash", {"command": f"python3 dump.py {i}"}, BIG)
+                     for i in range(60)])
+        rep = reread.scan(root)
+        assert rep.unpriced_shell()
+        text = reread.report(rep, make_sessions())
+        assert "not" in text and "$0.00" not in text
+        assert "Nothing to recover here" not in text
+
+    def test_a_quiet_corpus_still_says_nothing_to_recover(self, root, make_sessions):
+        write(root, [("Read", {"file_path": f"/{i}.py"}, BIG) for i in range(4)])
+        rep = reread.scan(root)
+        assert not rep.unpriced_shell()
+        assert "Nothing to recover here" in reread.report(rep, make_sessions())
+
+    def test_a_file_re_read_is_named_even_with_no_repeated_identity(self, root, make_sessions):
+        write(root, [
+            ("Bash", {"command": "cat /pyproject.toml"}, BIG),
+            ("Bash", {"command": "sed -n '1,50p' /pyproject.toml"}, OTHER),
+        ])
+        text = reread.report(reread.scan(root), make_sessions(), min_tokens=1)
+        assert "Read again" in text
+        assert "pyproject.toml" in text
+
+    def test_json_carries_the_file_view_and_the_flag(self, root, capsys):
+        write(root, [
+            ("Bash", {"command": "cat /a.py"}, BIG),
+            ("Bash", {"command": "sed -n '1,50p' /a.py"}, OTHER),
+        ])
+        assert reread.main([str(root), "--json", "--min-tokens", "1"]) == 0
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["shell_reads_unobservable"] is False
+        assert doc["shell_results_naming_a_file"] == 2
+        assert doc["files_read_again"][0]["path"] == "/a.py"
+        assert doc["recoverable"] > 0

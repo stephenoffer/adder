@@ -364,11 +364,20 @@ def placement_cost(
     risk = (f", including a {p_redo:.0%} chance of having to read it inline anyway"
             if p_redo else "")
     if saving > 0:
+        # With no re-reads left the saving is real but it is not carry: it is
+        # the cache *write* the main context pays to admit the read at all,
+        # against the subagent's one-off input rate. The sentence used to claim
+        # the amortization either way and read as nonsense -- "50,000 tok stay
+        # out of a context re-read 0 more times" -- next to a dollar figure it
+        # had not earned that way.
+        why = (f"{tokens_read:,} tok are never written into this context at "
+               f"all; with no turns left to amortize over, the saving is the "
+               f"write rate rather than the carry"
+               if reads < 0.5 else
+               f"{tokens_read:,} tok stay out of a context re-read "
+               f"{reads:,.0f} more times")
         return inline, sub, Decision(
-            True, saving,
-            f"delegate: saves ${saving:.4f} "
-            f"({tokens_read:,} tok stay out of a context re-read "
-            f"{reads:,.0f} more times{risk})",
+            True, saving, f"delegate: saves ${saving:.4f} ({why}{risk})",
         )
     return inline, sub, Decision(
         False, saving,

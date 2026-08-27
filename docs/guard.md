@@ -202,6 +202,44 @@ input, purely so it can catch the read back later.
 file, so re-reading an edited file can be the only way to see the rest of it.
 Counting that as waste would mean advising against the correct move.
 
+### When the harness reads with `cat`
+
+All of the above was keyed on `Read`'s `file_path`, which is a second way for
+the guard to see nothing. Under `bypassPermissions` — how agent harnesses run
+unattended — the guidance routes file access to the shell, so `cat`, `sed -n`
+and `grep` do the reading and `file_path` is never populated. On one 8-session
+corpus (2,313 turns, $369 as run) the rule reported **0 identities, $0.00**
+while 25.8% of every Bash result token in it — 314,771 tokens — was a path the
+session had already read. Apportioning that corpus's $53.07 of measured Bash
+carry by token share puts it near $13.70; that is an apportionment, not an
+independent pricing run, so read it as an order of magnitude.
+
+Zero and "this instrumentation cannot observe the reads on this machine" printed
+identically, and the first is the one that gets believed. `adder/core/reads.py`
+closes it: it names the files a call read, for `Read` and `Bash` alike, so which
+tool the harness picked stops deciding whether the saving exists.
+
+Two rules carry over unchanged, and one is new:
+
+- **A bounded read is a slice, not a file.** `sed -n '1,50p' f`, `head -20 f`
+  and `grep pat f` admit part of `f`, so none of them may record `f` as
+  resident — exactly as a `Read` with a `limit` does not. A slice *of a file
+  already held whole* may still be refused, because those lines are
+  demonstrably already there.
+- **Every ambiguity resolves towards admitting less.** No glob, no variable, no
+  `cd`, no redirect, and a whole-file claim only from a single pipeline stage,
+  because `cat f | grep x` admits matches rather than a file. Missing a path
+  costs a saving; inventing one costs a refusal of a read that was needed.
+- **The harness truncates shell output.** A `cat` of a file larger than
+  `BASH_MAX_OUTPUT_LENGTH` (30,000 characters by default) returns a truncated
+  result, so the file is *not* in the context. Without that check the guard
+  would refuse the read that would have got the rest.
+
+The refusal is written in the language the caller is working in. A model reading
+with `cat` cannot act on advice about `limit:`, and telling it to use `Read`
+instead is advice about how the harness is configured rather than about the
+call in front of it.
+
 `adder reread` measures the same family after the fact and more thoroughly,
 comparing result digests to separate a genuine duplicate from a refresh. It
 cannot see the read-after-write case, because a write's result is
@@ -312,12 +350,15 @@ admitted, and the saving is whole.
 | level | what it refuses |
 |---|---|
 | `off` | nothing (the historical behaviour) |
-| `certain` | a read whose content is already in this context |
+| `certain` | a read whose content is already in this context, by `Read` or by `cat` |
 | `full` | also a large read that has a strictly cheaper equal |
 
 `certain` is the level that needs no argument. The file was read earlier in this
 session and has not changed on disk, or this session wrote it. Either way the
 content is in the context already, so the read buys no information at any price.
+It does not matter which tool did the reading: a `cat` of a file a `Read`
+admitted is the same duplicate, and one file is one entry in the refuse-once
+ledger rather than one per tool.
 `full` is a weaker claim: it rests on the horizon estimate and on a subagent
 actually returning a brief, which is why it is a separate opt-in and why its
 message always names the cheaper call rather than only saying no.

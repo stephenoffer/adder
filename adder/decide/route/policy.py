@@ -442,6 +442,15 @@ def right_size(
         if not feasible:
             allowed = False
             note = f"holds {limit_str(model)}, task needs ~{need_tokens:,}"
+        elif tier is Tier.T0 and not v.read_only:
+            # T0 dispatches to `route-t0`, which holds Read, Grep, Glob and
+            # Bash and no write tool. A task the classifier could not read as
+            # read-only cannot be carried out there whatever it costs, so this
+            # is a feasibility question wearing a permission's clothes -- and
+            # it is the only thing that consumes `Verdict.read_only`.
+            allowed = False
+            note = ("nothing marks this read-only and T0's agent has no write "
+                    "tools; it could not carry out a change there")
         elif tier < floor:
             allowed, note = _may_descend(
                 tier, floor, v, ev, pf, need_tokens,
@@ -450,11 +459,35 @@ def right_size(
                           expected, note))
 
     eligible = [r for r in rungs if r.feasible and r.allowed]
-    if not eligible:                                    # pragma: no cover - T2 always fits
-        eligible = [r for r in rungs if r.feasible] or rungs
+    fell_back = not eligible
+    if fell_back:
+        # This used to carry `# pragma: no cover - T2 always fits`, and the
+        # assumption behind the pragma was wrong: `--read-tokens 5000000` marks
+        # every rung on the ladder infeasible, so the branch is one flag away.
+        # The old fallback then re-admitted the infeasible rungs silently and
+        # named a model that provably could not hold the task. The two ways to
+        # get here are different problems and are answered differently.
+        fits_at_least = [r for r in rungs if r.feasible]
+        if fits_at_least:
+            eligible = fits_at_least
+            reasons.append(
+                "no rung was both feasible and permitted; falling back to the "
+                "cheapest that at least holds the task")
+        else:
+            widest = max(rungs, key=lambda r: context_window(r.model, 0))
+            eligible = [widest]
+            reasons.append(
+                f"nothing on the ladder holds ~{need_tokens:,} tokens: "
+                f"{widest.model} has the largest window ({limit_str(widest.model)}) "
+                f"and will still overflow. Split the read rather than dispatching this")
     best = min(eligible, key=lambda r: r.expected)
 
-    if best.tier < floor:
+    if fell_back:
+        # The fallback already said why this rung was picked. The comparisons
+        # below all claim the ladder chose it on merit, and one of them cites
+        # the outcome log as backing a descent the log had no part in.
+        pass
+    elif best.tier < floor:
         reasons.append(
             f"{best.tier.name} costs ${best.expected:,.4f} expected against "
             f"{floor.name}'s ${next(r.expected for r in rungs if r.tier is floor):,.4f}, "
@@ -578,7 +611,20 @@ def assess_placement(
     `haircut` is the ledger's measured over-promise correction, applied to the
     saving before it meets its gate. It is the one term here that protects
     against the *model* being wrong rather than its inputs being uncertain.
+
+    Turn and token counts are clamped at zero on the way in. None of them has a
+    meaning below it, and a negative one used to build an `Interval` whose
+    point sat under its own lower bound and raise `interval out of order` from
+    four frames down. The CLI rejects negatives at the flag now, but the hook
+    does not take this number from a human -- it computes it from the horizon
+    estimator -- so the arithmetic defends itself too.
     """
+    remaining_turns = max(0, int(remaining_turns))
+    tokens_read = max(0, int(tokens_read))
+    summary_tokens = max(1, int(summary_tokens))
+    context_tokens = max(0, int(context_tokens))
+    turn_index = max(0, int(turn_index))
+
     def saving(remaining: float, p: float, summary: float) -> float:
         _, _, d = placement_cost(
             tokens_read=tokens_read,
@@ -704,6 +750,15 @@ def decide(
     which is the right default for a caller that has nothing to measure.
     """
     session_model = session_model or _settings.session_model()
+    # Same reason as `assess_placement`: these arrive from the horizon
+    # estimator and the size model, not from a human, and every gate below
+    # multiplies by them. A negative turn count is not a pessimistic estimate,
+    # it is a broken one, and it used to surface as a traceback.
+    context_tokens = max(0, int(context_tokens))
+    remaining_turns = max(0, int(remaining_turns))
+    if est_read_tokens is not None:
+        est_read_tokens = max(0, int(est_read_tokens))
+    est_out_tokens = max(1, int(est_out_tokens))
     overhead = routing_overhead(context_tokens, session_model, on, carry=carry)
     warnings: list[str] = []
 
@@ -1208,6 +1263,28 @@ def _record_to_ledger(plan: Plan, *, project: str = "", session: str = "") -> No
         pass
 
 
+def _nonneg(raw: str) -> int:
+    """Argparse type for a turn or token count. Rejects negatives at the flag.
+
+    `adder policy "..." --remaining -5` used to reach `assess_placement` and
+    raise `ValueError: interval out of order` as an unhandled traceback out of
+    the CLI, while `--read-tokens -100` and `--context -1` were accepted
+    silently and produced prices for them. None of the three means anything
+    below zero; the difference in how they failed was an accident of which one
+    happened to be used to build an interval.
+    """
+    import argparse
+
+    try:
+        n = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a whole number, got {raw!r}") from None
+    if n < 0:
+        raise argparse.ArgumentTypeError(
+            f"must be zero or more, got {n}; turns and tokens do not run backwards")
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import json
@@ -1218,9 +1295,9 @@ def main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(prog="adder policy")
     ap.add_argument("task", nargs="*")
-    ap.add_argument("--context", type=int, default=None)
-    ap.add_argument("--remaining", type=int, default=None)
-    ap.add_argument("--read-tokens", type=int, default=None)
+    ap.add_argument("--context", type=_nonneg, default=None)
+    ap.add_argument("--remaining", type=_nonneg, default=None)
+    ap.add_argument("--read-tokens", type=_nonneg, default=None)
     ap.add_argument("--project", default=None)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-cross-vendor", action="store_true",

@@ -10,6 +10,17 @@ work to the escalation loop, which observes actual failure instead of guessing.
 
 Abstaining routes UP: a misrouted hard task costs a full retry, a misrouted easy
 one costs pennies.
+
+Where that argument does not hold
+---------------------------------
+It assumes failure is visible, which is true of coding work and false of
+recall. A weak model asked for every hardcoded credential in a tree returns
+three of the seven, confidently, and nothing fails -- so the cost of the
+misroute is not a retry, it is a wrong audit that reads as a right one. The
+signal that separates the two is not difficulty, it is whether an incomplete
+answer is detectable, and `_QUANTIFIER` plus `_plural_target` is the cheap,
+high-precision version of it. Those tasks abstain regardless of how easy the
+sentence looks.
 """
 
 from __future__ import annotations
@@ -161,12 +172,39 @@ _TRIVIAL = re.compile(
     r"^\s*(what|where|which|who|when|does|is|are|list|show|find|locate|read|"
     r"print|cat|grep|count|how many)\b", re.I)
 
-# High-precision expensive signals: open-ended, cross-cutting, or design work.
+# The subset of `_TRIVIAL` that asks for a *set* rather than a fact. "what does
+# map_batches do" has one right answer and a wrong one is obvious; "find the
+# hardcoded credentials" has an answer whose size nobody knows in advance.
+_ENUMERATE = re.compile(
+    r"^\s*(list|show|find|locate|grep|search|count|enumerate|which|how many)\b", re.I)
+
+# Exhaustiveness, stated. Paired with a plural target this is the one cheap,
+# high-precision way to spot a task whose failure mode is silent.
+_QUANTIFIER = re.compile(
+    r"\b(every|all|each|any|entire|whole|everywhere|anywhere|throughout|"
+    r"exhaustiv\w*|comprehensiv\w*)\b", re.I)
+
+# High-precision expensive signals: the *work* is open-ended, cross-cutting or
+# investigative. Every entry here names something to be done, not something to
+# be done to. See `_HARD_TOPIC` for why that distinction is load-bearing.
 _HARD = re.compile(
     r"\b(architect|design|refactor|redesign|migrat\w+|rewrite|overhaul|"
-    r"debug|root[- ]cause|investigat\w+|why (is|does|are|did)|"
+    r"root[- ]cause|investigat\w+|why (is|does|are|did)|"
     r"across (the )?(codebase|repo|service|system)|end[- ]to[- ]end|"
-    r"performance|concurren\w+|race condition|deadlock|security|threat model)\b", re.I)
+    r"threat model)\b", re.I)
+
+# Domain topics, which used to live in `_HARD` and decide on their own.
+#
+# They are nouns. "where is the security module" is a one-line grep and was
+# priced as a threat model; "add a docstring to the debug helper" is a
+# one-line edit and was priced as a debugging session. On a repository whose
+# subject matter *is* performance, security, concurrency and debugging, a
+# vocabulary match is evidence about the repository, not about the task, and it
+# fired on roughly every request at about five times the cheapest rung's price.
+# So a topic word no longer decides anything; it only explains the abstention.
+_HARD_TOPIC = re.compile(
+    r"\b(performance|concurren\w+|race condition|deadlock|security|"
+    r"debug\w*|profil\w+|scalab\w+)\b", re.I)
 
 _MUTATING = re.compile(
     r"\b(fix|change|update|edit|add|remove|delete|rename|implement|write|"
@@ -174,8 +212,60 @@ _MUTATING = re.compile(
 
 _MULTI_STEP = re.compile(r"\b(then|after that|and also|next,|finally)\b|^\s*\d+[.)]\s", re.I | re.M)
 _CODE_FENCE = re.compile(r"```")
-_STACK_TRACE = re.compile(r"(Traceback \(most recent|^\s+at [\w.$]+\(|Exception|Error:)", re.M)
+
+# A stack trace, not the word "Exception".
+#
+# This matched the bare words `Exception` and `Error:` anywhere in the text, so
+# "rename the Exception class" -- a mechanical edit -- read as a crash report
+# and went to the top rung at 0.80 confidence. A trace has shape: a Python
+# `Traceback` header, an indented `at frame(` line, a `File "x", line n` line,
+# or an exception name followed by a colon and a message.
+_STACK_TRACE = re.compile(
+    r"Traceback \(most recent"
+    r"|^\s+at [\w.$]+\("
+    r'|^\s*File "[^"]+", line \d+'
+    r"|\b[\w.]*(?:Error|Exception)\s*:\s*\S", re.M)
+
 _PATHLIKE = re.compile(r"[\w./-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|rb|md|json|ya?ml|toml|sh)\b")
+
+# Words ending in "s" that are not plural nouns.
+#
+# The plural test below is one regex, and without this list it reads "which
+# function computes the rate" as a set query -- because "computes" ends in s --
+# which is exactly the singular lookup the cheapest rung exists for. Third
+# person verbs are the whole failure mode; these are the ones that actually
+# turn up in task phrasing. Words ending in `ss`, `us` or `is` are excluded
+# arithmetically rather than listed.
+_NOT_PLURAL = frozenset((
+    "does", "goes", "says", "means", "runs", "works", "fails", "breaks",
+    "crashes", "hangs", "spills", "leaks", "computes", "matches", "returns",
+    "takes", "makes", "uses", "needs", "gets", "calls", "handles", "sets",
+    "gives", "keeps", "comes", "looks", "seems", "happens", "causes",
+    "contains", "includes", "requires", "produces", "provides", "parses",
+    "raises", "reads", "writes", "prints", "sends", "loads", "saves",
+    "stores", "emits", "shows", "finds", "lists", "counts", "holds", "knows",
+    "leaves", "lives", "sits", "stands", "starts", "stops",
+    "thus", "yes", "less", "unless", "perhaps", "always", "across", "versus",
+    "its",
+))
+
+_WORD_S = re.compile(r"\b([A-Za-z][\w-]{2,}s)\b")
+
+
+def _plural_target(task: str) -> bool:
+    """Does the text name a set of things rather than a single one?
+
+    Deliberately crude -- a plural noun is a word ending in "s" that is not one
+    of the verb forms in `_NOT_PLURAL` and does not end in `ss`/`us`/`is`. It
+    is a precision filter, not a parser: its only job is to keep a quantifier
+    from firing on "how many times does it retry".
+    """
+    for w in _WORD_S.findall(task):
+        lw = w.lower()
+        if lw in _NOT_PLURAL or lw.endswith(("ss", "us", "is")):
+            continue
+        return True
+    return False
 
 
 @dataclass
@@ -183,6 +273,13 @@ class Verdict:
     tier: Tier
     confidence: float           # 0..1; low means "abstained, routed up"
     reasons: list[str] = field(default_factory=list)
+    # True only when no verb in the text asks for a change and the sentence is
+    # shaped like a question. It is a *permission*, not a description, so it is
+    # claimed conservatively -- and it is consumed: `policy.right_size` refuses
+    # the T0 rung without it, because `route-t0` dispatches to an agent holding
+    # Read, Grep, Glob and Bash and no write tool at all. It was published in
+    # `--json` long before anything in here read it, which left an integrator
+    # free to gate a write permission on a field the tool itself did not use.
     read_only: bool = False
 
     @property
@@ -200,31 +297,68 @@ def classify(task: str) -> Verdict:
     reasons: list[str] = []
 
     hard = bool(_HARD.search(t))
+    topic = bool(_HARD_TOPIC.search(t))
     mutating = bool(_MUTATING.search(t))
     trivial_shape = bool(_TRIVIAL.match(t))
+    enumerating = bool(_ENUMERATE.match(t))
+    quantified = bool(_QUANTIFIER.search(t))
+    plural = _plural_target(t)
     multi = bool(_MULTI_STEP.search(t))
     files = len(set(_PATHLIKE.findall(t)))
     trace = bool(_STACK_TRACE.search(t))
     fenced = bool(_CODE_FENCE.search(t))
 
+    # Conservative: a question-shaped sentence containing no verb that asks for
+    # a change. Anything else -- including every abstention on a bare imperative
+    # like "make it better" -- withholds the claim rather than guessing at it.
+    read_only = trivial_shape and not mutating and not fenced
+
     # --- high-precision expensive signals: decide first, never route these down
     if hard:
-        reasons.append("matches design/debug/cross-cutting vocabulary")
+        reasons.append("matches design/investigation/cross-cutting vocabulary")
         tier = Tier.T3 if (multi or words > 120) else Tier.T2
         if multi:
             reasons.append("multi-step phrasing")
-        return Verdict(tier, 0.85, reasons)
+        return Verdict(tier, 0.85, reasons, read_only=read_only)
 
     if trace:
         reasons.append("contains a stack trace or error output")
-        return Verdict(Tier.T2, 0.8, reasons)
+        return Verdict(Tier.T2, 0.8, reasons, read_only=read_only)
 
     if multi and mutating:
         reasons.append("multi-step mutating request")
         return Verdict(Tier.T2, 0.7, reasons)
 
+    # --- recall-critical: the answer is a set, and a short one looks right
+    #
+    # The justification for routing an easy-looking task down is that a
+    # misrouted easy one costs pennies. That holds when failure is visible,
+    # which it is for coding work: the test fails, you retry. It is false for
+    # recall. A weak model that finds three of seven hardcoded credentials
+    # returns a confident list of three, nothing fails, and nothing retries --
+    # so the cost of being wrong is not a retry, it is the audit being wrong.
+    #
+    # The signal is not difficulty, it is whether an incomplete answer is
+    # detectable. A stated quantifier over a plural target is the cheap,
+    # high-precision version of that, and it forces the abstention rather than
+    # picking a rung: the classifier genuinely cannot tell how much work is
+    # behind "every hardcoded credential across all 3167 python files".
+    if quantified and plural:
+        reasons.append(
+            "quantifier over a plural target: the answer is a set, so an "
+            "incomplete one is not detectable and recall outranks price")
+        return Verdict(Tier.T2, 0.3, reasons, read_only=read_only)
+
     # --- high-precision cheap signal: short, read-only, single-target lookup
     if trivial_shape and not mutating and words <= 30 and not fenced:
+        if enumerating and plural:
+            # No quantifier, so this is weaker than the rule above and gets a
+            # weaker answer rather than an abstention. Completeness is still
+            # part of the answer, which is enough to keep it off the rung whose
+            # under-reporting nothing would catch.
+            reasons.append("enumerates a plural target; completeness is part of "
+                           "the answer, so not the weakest rung")
+            return Verdict(Tier.T1, 0.55, reasons, read_only=True)
         reasons.append("short read-only question")
         if files <= 1:
             return Verdict(Tier.T0, 0.85, reasons, read_only=True)
@@ -238,7 +372,10 @@ def classify(task: str) -> Verdict:
 
     # --- abstain: route up
     reasons.append("no high-precision signal; abstaining and routing up")
-    return Verdict(Tier.T2, 0.3, reasons)
+    if topic:
+        reasons.append("domain vocabulary matched but did not decide: a topic "
+                       "word is evidence about the repository, not the task")
+    return Verdict(Tier.T2, 0.3, reasons, read_only=read_only)
 
 
 def difficulty_of(task: str) -> float:

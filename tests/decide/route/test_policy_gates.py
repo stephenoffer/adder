@@ -384,7 +384,12 @@ class TestRightSizing:
         assert p.tier == Tier.T2
         cheaper = [r for r in p.ladder if r.tier < Tier.T2]
         assert cheaper and all(not r.allowed for r in cheaper)
-        assert all("prior is not evidence" in r.note for r in cheaper)
+        # T0 is refused for the stronger reason -- `route-t0` has no write
+        # tools and nothing marked this task a read -- so only T1 is left to
+        # be refused on the evidence rule this test is about.
+        assert "no write tools" in next(r for r in cheaper if r.tier is Tier.T0).note
+        assert all("prior is not evidence" in r.note
+                   for r in cheaper if r.tier is not Tier.T0)
 
     def test_measured_history_does_buy_one(self, tmp_path, monkeypatch):
         """The escalation loop is supposed to observe failure, not only fear it."""
@@ -421,6 +426,44 @@ class TestRightSizing:
                    context_tokens=300_000, remaining_turns=200, project="proj")
         rates = [r.p_fail for r in sorted(p.ladder, key=lambda r: r.tier)]
         assert rates == sorted(rates, reverse=True)
+
+    def test_a_mutating_task_may_not_descend_to_the_read_only_agent(
+            self, tmp_path, monkeypatch):
+        """`read_only` is a permission, and this is what consumes it.
+
+        `route-t0` holds Read, Grep, Glob and Bash and no write tool, so a task
+        nothing marked read-only cannot be carried out there at any price. With
+        plenty of T0 history the expected-cost search used to be free to pick
+        it: descent needs an abstention, and an abstention is exactly the state
+        in which nobody has established that the task is a read.
+        """
+        self._log(tmp_path, monkeypatch, [("T0", 60, 1), ("T1", 60, 1)])
+        p = decide("make the ingest step tolerate a partial batch",
+                   context_tokens=300_000, remaining_turns=200, project="proj")
+        t0 = next(r for r in p.ladder if r.tier is Tier.T0)
+        assert not t0.allowed and "no write tools" in t0.note
+        assert p.tier > Tier.T0
+
+    def test_a_read_only_task_still_reaches_it(self, tmp_path, monkeypatch):
+        """The gate above must not close the rung it exists to protect."""
+        self._log(tmp_path, monkeypatch, [("T0", 60, 1)])
+        p = decide("what does prices.py do", context_tokens=300_000,
+                   remaining_turns=200, project="proj")
+        t0 = next(r for r in p.ladder if r.tier is Tier.T0)
+        assert t0.allowed and p.tier == Tier.T0
+
+    def test_every_rung_infeasible_does_not_re_admit_one(self):
+        """The branch that carried `# pragma: no cover - T2 always fits`.
+
+        One flag away: a read larger than every window on the ladder. The old
+        fallback re-admitted the infeasible rungs and named a model that
+        provably could not hold the task, without saying so.
+        """
+        p = decide("what is in the log", context_tokens=100_000,
+                   remaining_turns=300, est_read_tokens=5_000_000)
+        assert all(not r.feasible for r in p.ladder)
+        assert any("will still overflow" in r for r in p.reasons)
+        assert not any("outcome log backs it" in r for r in p.reasons)
 
     def test_an_infeasible_rung_is_reported_not_silently_dropped(self):
         p = decide("what is in the log", context_tokens=100_000, remaining_turns=300,

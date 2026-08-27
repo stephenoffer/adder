@@ -301,19 +301,32 @@ def analyse(sess: Session, *, horizon: Horizon | None = None) -> LiveReport:
 
 
 def duplicate_reads(path: Path | None) -> tuple[int, int]:
-    """(identities, tokens) admitted to this session more than once, identically.
+    """(results, tokens) this session admitted while already holding the content.
 
     Scans one file, not the tree: this runs in front of a person waiting for a
     prompt, and the whole point is that the answer is about the conversation
     they are in.
+
+    Counts the union of the two views `reread` keeps -- the same call made
+    twice, and the same *file* read again however it was read. A session whose
+    harness reads with `cat` has none of the first and plenty of the second,
+    and counting only identities reported it as clean.
     """
     if path is None:
         return (0, 0)
     from adder.measure.window.reread import scan
 
     rep = scan(path)
-    dups = rep.with_repeats(min_tokens=1)
-    return (len(dups), sum(r.redundant_tokens for r in dups))
+    seen: set[int] = set()
+    tokens = 0
+    groups = [r.redundant for r in rep.with_repeats(min_tokens=1)]
+    groups += [p.unchanged for p in rep.with_path_repeats(min_tokens=1)]
+    for admissions in groups:
+        for a in admissions:
+            if a.seq not in seen:
+                seen.add(a.seq)
+                tokens += a.tokens
+    return (len(seen), tokens)
 
 
 def render(sess: Session | None, *, sizes: list[int] | None = None,

@@ -210,3 +210,15 @@ router agrees with the model of quality, which is not the same as the router
 being right. The only thing that settles that is running both arms, which is
 what `adder ab` is for and why its sample-size calculation is printed before you
 spend money rather than after.
+
+Nor does any of it transfer between corpora on the strength of session length
+alone. The classifier fires on generic English verbs -- `refactor`,
+`investigate`, `why is`, `across the codebase` -- and a domain workload speaks
+in nouns instead: *this Ray Data pipeline is spilling to disk*, *the NCCL
+collective hangs during allreduce*, *recommend an instance type for
+Llama-3.1-70B*. Twelve phrasings of that shape produce twelve abstentions, and
+an abstention routes up, to where the session already was, having charged a
+routing turn to say so. Whatever multiple gets measured here is a property of
+the corpus's **task vocabulary** as much as its horizon, and a `adder bench`
+run that comes back all-abstention is reporting that the classifier has nothing
+to say about that vocabulary -- not that the work is hard.

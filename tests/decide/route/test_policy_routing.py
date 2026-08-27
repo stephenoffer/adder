@@ -13,12 +13,20 @@ class TestClassifierPrecision:
     @pytest.mark.parametrize("task", [
         "what does cost.py do",
         "where is the retry logic",
-        "list the files in adder/",
         "which function computes the rate",
     ])
     def test_short_read_only_goes_cheap(self, task):
         v = classify(task)
         assert v.tier == Tier.T0 and v.read_only and not v.abstained
+
+    def test_enumerating_a_plural_target_no_longer_goes_to_the_weakest_rung(self):
+        """"list the files in adder/" used to sit alongside the lookups above.
+
+        It is not a lookup: the answer is a set, and a short one is
+        indistinguishable from a right one. See `TestRecallCriticalTasksAbstain` below.
+        """
+        v = classify("list the files in adder/")
+        assert v.tier == Tier.T1 and v.read_only and not v.abstained
 
     @pytest.mark.parametrize("task", [
         "refactor auth across the codebase",
@@ -48,6 +56,48 @@ class TestClassifierPrecision:
     def test_read_only_flag_only_on_nonmutating(self):
         assert not classify("fix the typo in README.md").read_only
 
+    def test_read_only_is_withheld_from_a_bare_imperative(self):
+        """It is a permission, not a description of the words present.
+
+        "make it better" contains no mutating verb and is plainly a mutation,
+        so the absence of one is not enough to claim the task can run on an
+        agent with no write tools.
+        """
+        assert not classify("make it better").read_only
+
+
+class TestCLIRejectsImpossibleInputs:
+    """Turns and tokens do not run backwards.
+
+    `--remaining -5` used to reach the placement gate and raise `ValueError:
+    interval out of order` as an unhandled traceback out of the CLI, while
+    `--read-tokens -100` and `--context -1` were accepted in silence and
+    produced prices for them. The inconsistency was an accident of which flag
+    happened to be used to build an interval.
+    """
+
+    @pytest.mark.parametrize("flag", ["--remaining", "--read-tokens", "--context"])
+    def test_a_negative_count_is_refused_at_the_flag(self, flag, capsys):
+        from adder.decide.route.policy import main
+
+        with pytest.raises(SystemExit) as e:
+            main(["where is X", flag, "-5"])
+        assert e.value.code == 2
+        assert "zero or more" in capsys.readouterr().err
+
+    def test_a_non_integer_is_refused_with_a_readable_message(self, capsys):
+        from adder.decide.route.policy import main
+
+        with pytest.raises(SystemExit):
+            main(["where is X", "--remaining", "lots"])
+        assert "whole number" in capsys.readouterr().err
+
+    def test_the_library_clamps_too_because_the_hook_computes_this(self):
+        """The hook takes remaining turns from the horizon estimator, not a
+        human, so the arithmetic defends itself rather than trusting the flag."""
+        p = decide("what does prices.py do", context_tokens=-1, remaining_turns=-5)
+        assert p.action in {"inline", "delegate", "downgrade"}
+
     def test_is_deterministic(self):
         t = "refactor the auth module"
         assert classify(t).tier == classify(t).tier
@@ -59,6 +109,110 @@ class TestClassifierPrecision:
             classify("refactor the auth module across the service")
         per_call_ms = (time.perf_counter() - start) / 2000 * 1000
         assert per_call_ms < 10.0
+
+
+class TestRecallCriticalTasksAbstain:
+    """A misrouted easy task costs pennies only when the failure is visible.
+
+    It is not visible for recall. A weak model asked for every hardcoded
+    credential in a tree returns three of the seven, confidently; no test
+    fails, nothing retries, and the audit is wrong in a way that reads right.
+    So the signal is not difficulty, it is whether an incomplete answer would
+    be detectable.
+    """
+
+    @pytest.mark.parametrize("task", [
+        "find every hardcoded credential across all 3167 python files",
+        "count all the consent-gate bypasses",
+        "list any workloads that break under the new quota",
+        "which of all the recommendations were promoted without review",
+        "show all the call sites that write to the audit log",
+    ])
+    def test_a_quantifier_over_a_plural_target_abstains(self, task):
+        v = classify(task)
+        assert v.tier == Tier.T2 and v.abstained
+        assert any("not detectable" in r for r in v.reasons)
+
+    def test_the_same_sentence_without_the_quantifier_is_not_forced_up(self):
+        """The rule is narrow on purpose: it fires on stated exhaustiveness."""
+        assert classify("find the hardcoded credential in config.py").tier == Tier.T0
+
+    def test_the_gap_this_rule_does_not_close(self):
+        """Recorded rather than papered over.
+
+        "check the audit log for tampering" is recall-critical -- an incomplete
+        answer is exactly as invisible -- and states neither a quantifier nor a
+        plural target, so nothing here catches it on its wording. It abstains
+        for the ordinary reason instead: nothing in it is a high-precision
+        signal either way. A word list broad enough to catch it would stop
+        being high-precision, which is the property the whole classifier is
+        built on.
+        """
+        v = classify("check the audit log for tampering")
+        assert v.abstained
+        assert not any("not detectable" in r for r in v.reasons)
+
+    def test_an_enumeration_of_a_plural_target_leaves_the_weakest_rung(self):
+        """No quantifier, so a weaker answer rather than an abstention -- but
+        completeness is still part of the answer, so not the rung whose
+        under-reporting nothing would catch."""
+        v = classify("list the workloads that break under a new quota")
+        assert v.tier == Tier.T1 and not v.abstained and v.read_only
+
+    @pytest.mark.parametrize("task", [
+        "what does ray.data.Dataset.map_batches do",
+        "where is the retry logic",
+        "which function computes the rate",
+    ])
+    def test_a_singular_lookup_is_still_cheap(self, task):
+        """The plural test must not read a third-person verb as a set.
+
+        "which function computes the rate" ends in an s and is the exact
+        singular lookup the cheapest rung exists for.
+        """
+        assert classify(task).tier == Tier.T0
+
+
+class TestKeywordCollisionsDoNotEscalate:
+    """`hard` decided before anything looked at the shape of the sentence.
+
+    On a repository whose subject matter is performance, security, concurrency
+    and debugging, a vocabulary match is evidence about the repository, not
+    about the task, and it was firing on one-line greps at roughly five times
+    the cheapest rung's price.
+    """
+
+    def test_a_topic_word_does_not_make_a_lookup_expensive(self):
+        v = classify("where is the security module")
+        assert v.tier == Tier.T0 and v.read_only and not v.abstained
+
+    def test_a_topic_word_in_a_scoped_edit_does_not_reach_the_top_rung_by_signal(self):
+        v = classify("add a docstring to the debug helper")
+        assert v.abstained, "abstaining is honest here; a confident T2 was not"
+        assert any("topic word" in r for r in v.reasons)
+
+    def test_naming_an_exception_class_is_not_a_stack_trace(self):
+        v = classify("rename the Exception class")
+        assert not any("stack trace" in r for r in v.reasons)
+
+    @pytest.mark.parametrize("text", [
+        "this fails:\nTraceback (most recent call last):\n  File x",
+        "ValueError: interval out of order: -1.34 <= -5.0 <= -5.0",
+        'File "adder/util/risk.py", line 155',
+    ])
+    def test_a_real_trace_still_forces_the_strong_model(self, text):
+        assert classify(text).tier >= Tier.T2
+
+    @pytest.mark.parametrize("task", [
+        "refactor auth across the codebase",
+        "why is the cache invalidating",
+        "design a migration plan for the storage layer",
+        "investigate the race condition in the worker pool",
+        "root-cause the performance regression",
+    ])
+    def test_the_work_verbs_still_decide(self, task):
+        v = classify(task)
+        assert v.tier >= Tier.T2 and not v.abstained
 
 
 class TestRoutingDeclines:

@@ -97,6 +97,10 @@ def main() -> int:
 
     tool = payload.get("tool_name") or ""
     inp = payload.get("tool_input") or {}
+    # The directory a relative path in a shell command is relative to. The
+    # hook process usually inherits it, but "usually" is how a `cat
+    # pyproject.toml` gets keyed against the wrong file; the payload says.
+    cwd = str(payload.get("cwd") or "") or None
 
     # Checked against a literal before importing anything. Importing `adder`
     # costs 27ms on top of the interpreter's own 32ms, and a PreToolUse hook
@@ -122,7 +126,7 @@ def main() -> int:
         try:
             session_id = str(payload.get("session_id") or "")
             state = guard.load_state(session_id)
-            guard.observe(tool, inp, state, guard.Verdict(False, "watched only"))
+            guard.observe(tool, inp, state, guard.Verdict(False, "watched only"), cwd=cwd)
             guard.save_state(session_id, state)
         except Exception as e:
             return _swallow(e)
@@ -132,14 +136,14 @@ def main() -> int:
         session_id = str(payload.get("session_id") or "")
         state = guard.load_state(session_id)
         sizes = load_model()
-        if not guard.needs_pricing(tool, inp, sizes=sizes, state=state):
+        if not guard.needs_pricing(tool, inp, sizes=sizes, state=state, cwd=cwd):
             # Remembered even when there is nothing to say. A read has to be
             # recorded for the *second* one to be caught, and a small bounded
             # command has to be counted for the aggregate rule to work at all --
             # those are the calls that add up to most of it.
             if (tool == "Read" and inp.get("file_path")) or tool == "Bash":
                 guard.observe(tool, inp, state, guard.Verdict(False, "below floor"),
-                              sizes=sizes)
+                              sizes=sizes, cwd=cwd)
                 guard.save_state(session_id, state)
             return 0
     except Exception as e:
@@ -149,7 +153,7 @@ def main() -> int:
     try:
         from adder.measure.session.live import analyse, current_session
 
-        sess = current_session(payload.get("cwd"))
+        sess = current_session(cwd)
         if sess is None or sess.n_turns < 5:
             # Too early to price, but NOT too early to remember. Returning here
             # meant every read in a session's first five turns was forgotten --
@@ -159,7 +163,7 @@ def main() -> int:
             # rule is built on: it only works if the small early calls are
             # counted.
             guard.observe(tool, inp, state, guard.Verdict(False, "session too short"),
-                          sizes=sizes)
+                          sizes=sizes, cwd=cwd)
             guard.save_state(session_id, state)
             return 0
         r = analyse(sess)
@@ -179,8 +183,8 @@ def main() -> int:
         verdict = guard.decide(tool, inp, model=r.model,
                            remaining_turns=r.carry_turns,
                            sizes=sizes, state=state, carry=fitted,
-                           context_tokens=getattr(r, "context", 0))
-        guard.observe(tool, inp, state, verdict, sizes=sizes)
+                           context_tokens=getattr(r, "context", 0), cwd=cwd)
+        guard.observe(tool, inp, state, verdict, sizes=sizes, cwd=cwd)
         guard.save_state(session_id, state)
         if verdict.fire:
             # Recorded so `adder guard` can later ask whether saying it changed

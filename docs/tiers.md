@@ -76,6 +76,52 @@ rung always looks best, and that is precisely the reasoning being refused.
 The whole ladder is printed, losers included, with the reason each one lost. A
 router that shows only its answer is indistinguishable from one that guessed.
 
+## Three things the classifier refuses to decide
+
+**A task whose answer is a set.** "Abstaining routes up because a misrouted easy
+task costs pennies" assumes the misroute is visible. For coding work it is: the
+test fails, you retry, and the retry is the whole cost. For recall it is not. A
+weak model asked for every hardcoded credential in a tree hands back three of
+the seven, confidently, and nothing fails -- so the cost is not a retry, it is
+an audit that is wrong and reads right. The signal that matters there is not
+difficulty at all, it is whether an incomplete answer would be detectable, and a
+stated quantifier over a plural target -- `every`, `all`, `any` -- abstains
+however short the sentence is. It is deliberately narrow. "Check the audit log
+for tampering" is just as recall-critical and states neither a quantifier nor a
+plural, and nothing here catches it; a word list wide enough to would stop being
+high-precision, which is the only property the classifier has.
+
+**A domain topic word.** `performance`, `security`, `concurrency` and `debug`
+used to sit alongside `refactor` and `investigate` and decide the tier on their
+own, before anything looked at the shape of the sentence. On a repository whose
+subject matter *is* those words, that fires on nearly everything: "where is the
+security module" is a one-line grep and was being priced as a threat model, at
+roughly five times T0. They are nouns. They are evidence about the repository,
+not about the task, so they now only explain an abstention rather than cause
+one.
+
+**A class named `Exception`.** The stack-trace signal matched the bare words
+`Exception` and `Error:` anywhere in the text, so "rename the Exception class"
+read as a crash report at 0.80 confidence. A trace has shape -- a `Traceback`
+header, an indented frame, a `File "x", line n`, or an exception name followed
+by a colon and a message -- and only the shape counts.
+
+## T0 cannot be handed a write
+
+`Verdict.read_only` was published in `adder classify --json` and `adder policy
+--json` for a long time before anything in the tool read it, which left an
+integrator free to gate a write permission on a field the tool itself did not
+consult. It is now what admits the T0 rung at all: `route-t0` dispatches to an
+agent holding Read, Grep, Glob and Bash and no write tool, so a task nothing
+marked read-only cannot be carried out there at any price.
+
+The descent rule above is exactly the path that could have sent one. Descending
+needs an abstention, and an abstention is the state in which nobody has
+established that the task is a read -- so with enough T0 history the
+expected-cost search was free to route an edit to an agent that cannot edit.
+`adder validate` sweeps it under the name *a mutation never reaches the
+read-only rung*.
+
 ## Two things this fixed
 
 A failed cheap attempt was being charged twice. Writing it as `cheap + p x (cheap

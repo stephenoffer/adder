@@ -40,6 +40,16 @@ The figure was first quoted as 27.4% across all unbounded reads, which counted
 so those are cents rather than dollars -- true and misleading, which for a
 measurement tool is the same as wrong.
 
+That memory was then keyed on `Read`'s `file_path`, which is a second way to
+see nothing. Under `bypassPermissions` -- how harnesses run unattended -- the
+guidance routes file access to the shell, so `cat` and `sed -n` do the reading,
+nothing populates the key, and the rule reports zero. Zero and "this
+instrumentation cannot observe the reads on this machine" printed identically,
+and on one 8-session corpus what printed as $0.00 was 25.8% of every Bash
+result token -- content the session had already read. `core.reads` names what a
+call read for both tools, so which one the harness happened to pick stops
+deciding whether the saving exists.
+
 Everything here fails open. A guard that raises is a guard that has stopped
 guarding, and the failure is invisible because the tool call still succeeds.
 """
@@ -56,7 +66,17 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from adder.core.filters import root_of as _root_of
-from adder.core.shapes import Estimate, SizeModel, bound_lines, empty_model, is_bounded, shape
+from adder.core.reads import ReadTarget, tool_targets, whole_reads
+from adder.core.reads import resolve as _resolve_path
+from adder.core.shapes import (
+    Estimate,
+    SizeModel,
+    bound_lines,
+    empty_model,
+    is_bounded,
+    read_estimate,
+    shape,
+)
 from adder.pricing.cost import admitted_token_cost, placement_cost
 from adder.util.text import est_tokens
 
@@ -537,6 +557,17 @@ def _bounded_hint(tool: str) -> str:
     """The cheaper shape of this exact call, when there is an obvious one."""
     return {'Read': 'read it with offset/limit, or delegate the read', 'Bash': 'pipe it through `head -50`, `wc -l`, or redirect to a file', 'Grep': 'use `-l` or `-c` first, then read only the hits that matter', 'Glob': 'narrow the pattern', 'WebFetch': 'ask for the section you need, not the page', 'WebSearch': 'narrow the query, or fetch the one result you need', 'Task': 'tell the subagent what to return, and how briefly', 'Agent': 'tell the subagent what to return, and how briefly'}.get(tool, 'bound the output')
 
+def _read_key(path, cwd: str | None=None) -> str:
+    """One spelling of a path, so `Read` and `cat` name the same file.
+
+    Without this the two halves of the duplicate rule keep separate books:
+    `Read` records `/repo/pyproject.toml` and `cat pyproject.toml` looks up
+    `pyproject.toml`, and a file read by one tool and re-read by the other is
+    two identities that never meet. Falls back to the string as written, since
+    an unresolvable path is still a usable key -- just a narrower one.
+    """
+    return _resolve_path(str(path), cwd) or str(path)
+
 def _already_known(path: str, state: GuardState, *, now: float | None=None) -> str:
     """Why this file's content is already in the context, or "" if it is not.
 
@@ -557,6 +588,30 @@ def _already_known(path: str, state: GuardState, *, now: float | None=None) -> s
         return 'was written by this session, so its content is already in the context'
     return ''
 
+def _bash_duplicate(command: str, state: GuardState, *, cwd: str | None=None) -> list[tuple[ReadTarget, str]]:
+    """Files this command reads that the context already holds in full, or [].
+
+    Empty unless *every* file it reads is already known. A command that reads
+    one known file and one new one brings something, and refusing it would cost
+    the new half to save the old.
+
+    A slice counts as a hit, which looks asymmetric next to `observe` refusing
+    to *record* one. It is not: `state.reads` only ever holds whole reads, so a
+    hit means the entire file is in the context and `sed -n '40,80p'` of it is
+    asking for lines that are already there. Recording a slice would claim
+    something that is not true; refusing one rests on a claim that is.
+    """
+    targets = tool_targets('Bash', {'command': command}, cwd=cwd)
+    if not targets:
+        return []
+    hits = []
+    for t in targets:
+        why = _already_known(t.path, state)
+        if not why:
+            return []
+        hits.append((t, why))
+    return hits
+
 def _target(tool: str, tool_input: dict) -> str:
     """A stable name for what a call is about, for the refuse-once ledger.
 
@@ -569,9 +624,11 @@ def _target(tool: str, tool_input: dict) -> str:
     tool_input = tool_input or {}
     if tool == 'Read':
         # A path, in the clear, because `state.reads` already holds paths and
-        # the guard cannot match a re-read without them.
+        # the guard cannot match a re-read without them. Normalised, so that a
+        # refusal of `cat f` and a refusal of `Read f` are one entry in the
+        # refuse-once ledger rather than two chances to say no about one file.
         fp = tool_input.get('file_path')
-        return f'Read:{fp}' if fp else ''
+        return f'Read:{_read_key(fp)}' if fp else ''
     if tool == 'Bash':
         return f'Bash:{shape(str(tool_input.get("command") or ""))}'
     # Everything else is identified by a digest rather than by its text. A grep
@@ -602,7 +659,7 @@ def _refused(target: str, state: GuardState, *, now: float | None=None) -> Guard
             state.denied = dict(sorted(state.denied.items(), key=lambda kv: -kv[1])[:keep])
     return state
 
-def needs_pricing(tool: str, tool_input: dict, *, sizes: SizeModel | None=None, state: GuardState | None=None, min_tokens: int=2000) -> bool:
+def needs_pricing(tool: str, tool_input: dict, *, sizes: SizeModel | None=None, state: GuardState | None=None, min_tokens: int=2000, cwd: str | None=None) -> bool:
     """Is this call worth parsing a transcript for?
 
     Split out of `decide` because it is the only part that may run on every
@@ -622,6 +679,12 @@ def needs_pricing(tool: str, tool_input: dict, *, sizes: SizeModel | None=None, 
             return True
     if tool == 'Bash':
         cmd = tool_input.get('command') or ''
+        # Ahead of the `advised` short-circuit on purpose. Having said
+        # something once about a command *shape* is a reason not to say it
+        # again about size; it is not a reason to stop noticing that this
+        # particular file is already in the context.
+        if _bash_duplicate(cmd, state, cwd=cwd):
+            return True
         sh = shape(cmd)
         if sh in state.advised:
             return False
@@ -636,7 +699,7 @@ def needs_pricing(tool: str, tool_input: dict, *, sizes: SizeModel | None=None, 
             return False
     return sizes.predict_tool(tool, tool_input).p90 >= min_tokens
 
-def decide(tool: str, tool_input: dict, *, model: str, remaining_turns: int, cfg: Settings | None=None, sizes: SizeModel | None=None, state: GuardState | None=None, carry=None, context_tokens: int=0, p_redo: float=0.0) -> Verdict:
+def decide(tool: str, tool_input: dict, *, model: str, remaining_turns: int, cfg: Settings | None=None, sizes: SizeModel | None=None, state: GuardState | None=None, carry=None, context_tokens: int=0, p_redo: float=0.0, cwd: str | None=None) -> Verdict:
     """Should the guard speak about this call, and what should it say?
 
     Pure: every input that varies is an argument. The hook supplies the session
@@ -652,7 +715,7 @@ def decide(tool: str, tool_input: dict, *, model: str, remaining_turns: int, cfg
     if tool == 'Read':
         fp = tool_input.get('file_path')
         if fp and (not tool_input.get('limit')):
-            why = _already_known(str(fp), state)
+            why = _already_known(_read_key(fp, cwd), state)
             if why:
                 est = sizes.predict_tool('Read', tool_input)
                 # The size floor exists to stop the guard interrupting about
@@ -674,6 +737,11 @@ def decide(tool: str, tool_input: dict, *, model: str, remaining_turns: int, cfg
                     return _ledger_gate(Verdict(True, 'duplicate read of an unchanged file', kind='duplicate', message=msg, tokens=est.p90, inline=saving, saving=saving, overhead=over, advice_taken=cfg.advice_taken, estimate=est, deny=refusing, certain=True, target=dup_target), state, cfg)
     if tool == 'Bash':
         cmd = tool_input.get('command') or ''
+        hits = _bash_duplicate(cmd, state, cwd=cwd)
+        if hits:
+            v = _duplicate_gate(tool_input, hits, model, remaining_turns, cfg, state, sizes, carry, context_tokens)
+            if v is not None:
+                return v
         sh = shape(cmd)
         running = state.admitted.get(sh, 0)
         if running >= AGGREGATE_TOKENS and sh not in state.advised:
@@ -823,6 +891,45 @@ def _tier_only(tier, state: GuardState, cfg: Settings) -> Verdict | None:
         return None
     return _ledger_gate(Verdict(True, 'a cheaper tier for this delegated step', kind='tier', message=tier.message, saving=tier.saving, overhead=tier.overhead, advice_taken=cfg.advice_taken, tier_target=tier.target), state, cfg)
 
+def _duplicate_gate(tool_input: dict, hits: list[tuple[ReadTarget, str]], model: str, remaining_turns: int, cfg: Settings, state: GuardState, sizes: SizeModel, carry, context_tokens: int) -> Verdict | None:
+    """The shell half of the duplicate-read rule: `cat` of a file already held.
+
+    Same claim as the `Read` branch and the same refusal, but the way through
+    is written in the language the caller is working in. A model reading with
+    `cat` cannot act on advice about `limit:`, and telling it to use `Read`
+    instead is advice about how the harness is configured rather than about
+    this call.
+
+    `None` rather than a non-firing `Verdict`, because this runs *before* the
+    aggregate rule. Returning a verdict that says nothing would also stop the
+    aggregate rule looking, and a session whose every `cat` is a duplicate is
+    exactly the session whose running total is worth reporting.
+    """
+    if all(t.whole for t, _ in hits):
+        # Every file is on disk and can be measured, which beats a distribution
+        # over other commands that happened to have the same shape.
+        p90 = sum(read_estimate({'file_path': t.path}).p90 for t, _ in hits)
+        est = Estimate(p90, p90, 0, 'stat')
+    else:
+        # A slice. What this admits is bounded by how the command was written,
+        # not by how big the file it names is.
+        est = sizes.predict_tool('Bash', tool_input)
+    target = _target('Read', {'file_path': hits[0][0].path})
+    why = hits[0][1]
+    refusing = cfg.enforcing and _refusable(target, state)
+    if est.p90 < cfg.min_tokens and not refusing:
+        return None
+    saving = admitted_token_cost(est.p90, model, remaining_turns, carry=carry, context_tokens=context_tokens)
+    name = Path(hits[0][0].path).name
+    more = f', as are the {len(hits) - 1} other files it reads' if len(hits) > 1 else ''
+    if refusing:
+        msg = f'[adder] Not run: {name} {why}{more}. The copy this context already holds is the same bytes — use it. Re-issue this exact call if you need it anyway.'
+    else:
+        msg = f'[read guard] {name} {why}{more}. Running this admits ~{est.p90:,} tokens again for ~${saving:,.2f} and no new information.'
+    over = _advice_cost(msg, model, remaining_turns, carry, context_tokens)
+    v = _ledger_gate(Verdict(True, 'shell re-read of a file the context already holds', kind='duplicate', message=msg, tokens=est.p90, inline=saving, saving=saving, overhead=over, advice_taken=cfg.advice_taken, estimate=est, deny=refusing, certain=True, target=target), state, cfg)
+    return v if v.fire else None
+
 def _aggregate_gate(sh: str, running: int, calls: int, model: str, remaining_turns: int, cfg: Settings, state: GuardState, carry, context_tokens: int) -> Verdict:
     """Price what one command shape has admitted across the whole session.
 
@@ -871,14 +978,32 @@ def _ledger_gate(v: Verdict, state: GuardState, cfg: Settings) -> Verdict:
         return Verdict(False, f'saying so costs ${v.overhead:,.4f} to carry and is worth ${v.saving * cfg.advice_taken:,.4f}', kind=v.kind, tokens=v.tokens, inline=v.inline, delegated=v.delegated, saving=v.saving, overhead=v.overhead, advice_taken=cfg.advice_taken, estimate=v.estimate)
     return v
 
-def observe(tool: str, tool_input: dict, state: GuardState, verdict: Verdict, *, now: float | None=None, sizes: SizeModel | None=None) -> GuardState:
+def _remember_read(state: GuardState, path: str, mtime: float) -> None:
+    """Record that `path` is in the context, keeping `reads` bounded."""
+    state.reads[path] = mtime
+    if len(state.reads) > MAX_REMEMBERED_READS:
+        keep = MAX_REMEMBERED_READS // 2
+        state.reads = dict(list(state.reads.items())[-keep:])
+
+def observe(tool: str, tool_input: dict, state: GuardState, verdict: Verdict, *, now: float | None=None, sizes: SizeModel | None=None, cwd: str | None=None) -> GuardState:
     """Fold this call into the session's memory. Returns the same state object.
 
     Bash is accumulated whether or not the guard had anything to say about it,
     because the aggregate rule only works if the small bounded calls are
-    counted -- they are the ones that add up to most of it.
+    counted -- they are the ones that add up to most of it. It is also the tool
+    that does the *reading* under a harness told to prefer the shell, so it
+    populates `reads` on exactly the same terms `Read` does: whole files only.
     """
     tool_input = tool_input or {}
+    if tool == 'Bash' and not verdict.deny:
+        # `whole_reads` refuses a slice, a glob, a redirect and a file larger
+        # than the harness truncates at -- each of which would put a path in
+        # here that is not actually in the context, and the guard is the one
+        # component whose confidently wrong sentence changes what happens.
+        for path in whole_reads('Bash', tool_input, cwd=cwd):
+            mtime = _mtime(path)
+            if mtime >= 0:
+                _remember_read(state, path, mtime)
     if tool == 'Bash' and sizes is not None:
         cmd = tool_input.get('command') or ''
         if cmd:
@@ -895,8 +1020,8 @@ def observe(tool: str, tool_input: dict, state: GuardState, verdict: Verdict, *,
         if fp:
             # Recorded at issue time, because a PreToolUse hook runs before the
             # write lands and cannot read the resulting mtime.
-            state.wrote[str(fp)] = time.time() if now is None else now
-            state.reads.pop(str(fp), None)
+            state.wrote[_read_key(fp, cwd)] = time.time() if now is None else now
+            state.reads.pop(_read_key(fp, cwd), None)
             if len(state.wrote) > MAX_REMEMBERED_READS:
                 keep = MAX_REMEMBERED_READS // 2
                 state.wrote = dict(list(state.wrote.items())[-keep:])
@@ -915,10 +1040,8 @@ def observe(tool: str, tool_input: dict, state: GuardState, verdict: Verdict, *,
         # file. The guard is the only component here that changes behaviour,
         # so a confidently wrong sentence from it is the expensive kind.
         if fp and not tool_input.get('limit') and not tool_input.get('offset'):
-            state.reads[str(fp)] = _mtime(str(fp))
-            if len(state.reads) > MAX_REMEMBERED_READS:
-                keep = MAX_REMEMBERED_READS // 2
-                state.reads = dict(list(state.reads.items())[-keep:])
+            key = _read_key(fp, cwd)
+            _remember_read(state, key, _mtime(key))
     if verdict.fire:
         state.fires += 1
         state.saving += verdict.saving

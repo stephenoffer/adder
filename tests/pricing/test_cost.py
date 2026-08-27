@@ -130,6 +130,29 @@ class TestPlacement:
         )
         assert d and inline > sub
 
+    def test_with_nothing_left_to_amortize_the_reason_says_so(self):
+        """It read "50,000 tok stay out of a context re-read 0 more times".
+
+        The saving at zero remaining turns is real and it is not carry: it is
+        the cache write the main context pays to admit the read at all, against
+        the subagent's one-off input rate. Quoting the amortization anyway put
+        a sentence that parses as nonsense next to a dollar figure it had not
+        earned that way.
+        """
+        _, _, d = placement_cost(
+            tokens_read=50_000, summary_tokens=500,
+            remaining_turns=0, main_model=OPUS,
+        )
+        assert d and "re-read 0 more times" not in d.reason
+        assert "write rate rather than the carry" in d.reason
+
+    def test_with_turns_left_it_still_quotes_the_re_reads(self):
+        _, _, d = placement_cost(
+            tokens_read=50_000, summary_tokens=500,
+            remaining_turns=300, main_model=OPUS,
+        )
+        assert d and "re-read 300 more times" in d.reason
+
     def test_delegating_loses_without_compression(self):
         """The real failure mode: a subagent that returns nearly everything it
         read adds a round trip and saves nothing."""

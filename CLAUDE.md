@@ -69,7 +69,8 @@ adder/
   util/       no domain at all: render, stats, risk, text
   pricing/    what a token costs: prices, catalog, providers, registry, cost,
               sources (the only module that opens a socket), data/
-  core/       reading a session off disk: trace, filters, settings, shapes
+  core/       reading a session off disk: trace, filters, settings, shapes,
+              reads (which files a call read; `shapes` sizes the result)
   measure/    read-only reports:  spend/  window/  session/
   decide/     measurement -> choice:  route/  track/  guard.py  handoff.py
               delegate.py (the tier a delegated step should run on)

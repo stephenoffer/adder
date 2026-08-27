@@ -207,6 +207,32 @@ class TestGuarantee:
         g = self._g(overhead=5.0)
         assert "R=50" in g.describe() and "loses money" in g.describe()
 
+    def test_a_pinned_input_is_not_named_as_a_condition(self):
+        """`--remaining 0` produced "it would lose money only if remaining=0".
+
+        The corner is meant to name what would have to go wrong. An input with
+        no width has already gone as wrong as it can, and it is already in the
+        expected number, so naming it reads as a hypothetical the caller could
+        avoid. Only the axes that still carry uncertainty belong there.
+        """
+        g = guarantee(
+            lambda R, p: 1.0 - p - R * 0.0,
+            {"R": Interval.exact(0.0), "p": Interval(0.05, 0.2, 0.6)},
+            marginals={"R": [0.0], "p": beta_quantiles(2, 10)}, overhead=0.5,
+        )
+        assert g.safe and not g.dominant
+        out = g.describe()
+        assert "R=" not in out
+        assert "p=" in out
+
+    def test_a_pinned_decline_still_explains_itself(self):
+        """Every axis pinned and the saving under the bar: no corner to blame."""
+        g = guarantee(lambda R: R * 0.0 + 0.01, {"R": Interval.exact(3.0)},
+                      overhead=1.0, marginals={"R": [3.0]})
+        assert not g.safe
+        assert "not confident enough" in g.describe()
+        assert "loses money when" not in g.describe()
+
 
 class TestInterval:
     def test_rejects_out_of_order(self):

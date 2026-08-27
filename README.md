@@ -118,7 +118,13 @@ Behind that clause, in order:
    words and unbounded work; text cannot predict how deep a coding task goes. So
    the classifier fires on high-precision signals and abstains otherwise.
    **Abstaining routes up**, because a misrouted hard task costs a full retry and
-   a misrouted easy one costs pennies.
+   a misrouted easy one costs pennies — *unless the failure is silent*. That
+   argument holds for coding work, where a wrong answer breaks a test. It does
+   not hold for recall: a weak model asked for every hardcoded credential in a
+   tree hands back three of the seven, confidently, and nothing retries. So a
+   stated quantifier over a plural target — "every", "all", "any" — abstains
+   however easy the sentence looks, because what matters there is not how hard
+   the task is but whether an incomplete answer would be noticed.
 2. **Feasibility before price.** A tier whose context window cannot hold the
    task is not an option at any price.
 3. **Price every rung including the cost of being wrong:**
@@ -140,6 +146,19 @@ Behind that clause, in order:
 It **never refuses a delegation**: refusing a `Task` would refuse the largest
 lever in the tool on the strength of a classifier that is deliberately
 abstention-happy.
+
+**On a repository with its own vocabulary the router mostly says nothing, and
+that is worth knowing before you measure it.** The signals above are generic
+English verbs — `refactor`, `investigate`, `why is`, `across the codebase`. A
+domain workload speaks in nouns the classifier has never seen: *this Ray Data
+pipeline is spilling to disk*, *the NCCL collective hangs during allreduce*,
+*recommend an instance type for Llama-3.1-70B*. Twelve phrasings of that shape
+produce twelve abstentions, and an abstention routes up — to where the session
+already was. The routing turn gets charged to conclude "keep doing what you were
+doing". So the multiple any of these numbers reports is a property of your
+corpus's **task vocabulary** as much as its session lengths, and a `adder bench`
+run that comes back all-abstention is telling you the classifier has nothing to
+say about your work, not that your work is hard.
 
 **Across vendors,** `adder models refresh` builds a catalog of ~500 models from
 LMArena Elo and OpenRouter's index, carrying price, context, cache rates, rating

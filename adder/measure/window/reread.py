@@ -25,6 +25,22 @@ Reporting them together would be dishonest in the expensive direction: it would
 tell someone that re-running their test suite is waste. It is not. Only the
 first bucket is offered as a saving.
 
+The same file, read a different way, is still the same file
+-----------------------------------------------------------
+Both buckets above key on the *call*. That is enough only while a file arrives
+through `Read`. Under `bypassPermissions` -- how agent harnesses run unattended
+-- the guidance routes file access to the shell, so one file arrives as `cat
+f`, then `sed -n '1,80p' f`, then `grep -n x f`: three identities, three
+different results, and a report that says nothing was admitted twice. On an
+8-session corpus that hid 314,771 tokens, 25.8% of every Bash result token in
+it, printed as $0.00.
+
+`PathReads` keys on the file instead and asks the weaker question that survives
+the harness's choice of tool: was this content admitted after the session
+already had it. It overlaps the identity view on purpose -- `recoverable`
+unions the two on `seq` rather than adding them, because the calls both views
+agree about are the ones a total must not count twice.
+
 Recurring reads are a memory problem, not a context problem
 -----------------------------------------------------------
 The same identity read in forty *different* sessions is not a re-read at all --
@@ -57,6 +73,8 @@ from pathlib import Path
 
 from adder.core import settings as _settings
 from adder.core.filters import root_of as _root_of
+from adder.core.reads import resolve as _resolve_path
+from adder.core.reads import tool_targets
 from adder.core.trace import DEFAULT_ROOT, transcripts
 from adder.util.records import mapping
 from adder.util.text import est_tokens, flatten_text
@@ -77,6 +95,11 @@ VOLATILE_PREFIXES = (
 # Sessions in which an identity must appear before it is a memory candidate.
 # Two is coincidence.
 RECURRING_SESSIONS = 3
+
+# Tools that change a file, and therefore make a later read of it correct
+# rather than wasteful. Kept apart from the read tools deliberately: an edit
+# is the one event that justifies admitting the same path twice.
+WRITE_TOOLS: tuple[str, ...] = ("Edit", "MultiEdit", "Write", "NotebookEdit")
 
 
 def digest(text: str) -> str:
@@ -119,6 +142,41 @@ def identity(tool: str, inp) -> str:
         return tool
 
 
+def _safe_targets(tool: str, inp, cwd) -> list:
+    """`reads.tool_targets`, but a transcript may contain anything.
+
+    `records.mapping` exists in this repo because `reread` once ended in a
+    traceback on one malformed line. A tool input is whatever a model emitted,
+    so the parser gets the same treatment as the record reader: it may return
+    nothing, it may not raise.
+    """
+    if not isinstance(inp, dict):
+        return []
+    try:
+        return tool_targets(tool, inp, cwd=str(cwd) if cwd else None)
+    except (TypeError, ValueError, OSError):
+        return []
+
+
+def _written_path(inp, cwd) -> str:
+    """The file an edit tool changed, absolute, or ""."""
+    if not isinstance(inp, dict):
+        return ""
+    fp = inp.get("file_path") or inp.get("notebook_path")
+    try:
+        return _resolve_path(str(fp), str(cwd) if cwd else None) if fp else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _path_group(rep: RereadReport, session: str, project: str, path: str) -> PathReads:
+    key = (session, path)
+    group = rep.paths.get(key)
+    if group is None:
+        group = rep.paths[key] = PathReads(path, session, project)
+    return group
+
+
 def shorten(ident: str, width: int = 52) -> str:
     """Trim an identity to `width`, keeping the end.
 
@@ -152,6 +210,8 @@ class Admission:
     tokens: int
     sha: str
     turn: int           # assistant turns seen in this session before it landed
+    path: str = ""      # the one file this call read, when it read exactly one
+    seq: int = 0        # scan order, so the two views below can be unioned exactly
 
 
 @dataclass
@@ -201,6 +261,72 @@ class Repeat:
 
 
 @dataclass
+class PathReads:
+    """Every admission of one file's content into one session, however it was read.
+
+    `Repeat` above asks whether the same *call* was made twice. That question
+    has a blind spot the harness decides the size of: under `bypassPermissions`
+    the guidance routes file access to the shell, so one file arrives as `cat
+    f`, then `sed -n '1,80p' f`, then `grep -n x f` -- three identities, three
+    different results, no repeat anywhere, and the report says $0.00. On an
+    8-session corpus that hid 314,771 tokens, a quarter of every Bash result
+    token in it.
+
+    So this view keys on the *file* and asks the weaker, honest question: was
+    this file's content admitted again after the session already had it. A
+    slice of a file already held is still content already held.
+
+    Changed or not, and how well we can tell
+    ----------------------------------------
+    A re-read after an edit is the correct call, so the two are never summed.
+    `unchanged` uses the only evidence a transcript carries: an `Edit`, `Write`
+    or `NotebookEdit` of the same path between the two reads. That misses an
+    edit made by a concurrent process and it misses `sed -i`, both of which
+    push admissions into `unchanged` that a live `mtime` check would have let
+    through -- which is why this measures and the guard, which can stat the
+    file, is the thing that refuses.
+    """
+
+    path: str
+    session: str
+    project: str
+    admissions: list[Admission] = field(default_factory=list)
+    writes: list[int] = field(default_factory=list)   # scan positions of edits to it
+
+    @property
+    def calls(self) -> int:
+        return len(self.admissions)
+
+    @property
+    def repeats(self) -> list[Admission]:
+        """Admissions after the first: the file was already in the context."""
+        return self.admissions[1:]
+
+    @property
+    def unchanged(self) -> list[Admission]:
+        """Repeats with no edit of the file recorded since the previous read."""
+        out = []
+        prev = self.admissions[0].seq if self.admissions else 0
+        for a in self.repeats:
+            if not any(prev < w < a.seq for w in self.writes):
+                out.append(a)
+            prev = a.seq
+        return out
+
+    @property
+    def repeat_tokens(self) -> int:
+        return sum(a.tokens for a in self.repeats)
+
+    @property
+    def unchanged_tokens(self) -> int:
+        return sum(a.tokens for a in self.unchanged)
+
+    @property
+    def tools(self) -> list[str]:
+        return sorted({a.tool for a in self.admissions})
+
+
+@dataclass
 class Recurring:
     """One identity, across the sessions that each had to learn it."""
 
@@ -227,10 +353,17 @@ class Recurring:
 @dataclass
 class RereadReport:
     repeats: dict[tuple[str, str], Repeat] = field(default_factory=dict)
+    paths: dict[tuple[str, str], PathReads] = field(default_factory=dict)
     recurring: dict[str, Recurring] = field(default_factory=dict)
     files: int = 0
     admissions: int = 0
     total_tokens: int = 0
+    # Bash results, and the subset whose command named a file. The pair is the
+    # difference between "no shell re-reads happened" and "the shell reads on
+    # this machine are not in a shape this parser can name", and printing the
+    # first when the second is true is what this whole section exists to stop.
+    shell_results: int = 0
+    shell_read_results: int = 0
 
     def with_repeats(self, *, min_tokens: int = MIN_RESULT_TOKENS,
                      include_volatile: bool = False) -> list[Repeat]:
@@ -238,6 +371,20 @@ class RereadReport:
                if r.calls > 1 and r.redundant_tokens >= min_tokens
                and (include_volatile or not is_volatile(r.ident))]
         return sorted(out, key=lambda r: -r.redundant_tokens)
+
+    def with_path_repeats(self, *, min_tokens: int = MIN_RESULT_TOKENS) -> list[PathReads]:
+        out = [p for p in self.paths.values()
+               if p.calls > 1 and p.unchanged_tokens >= min_tokens]
+        return sorted(out, key=lambda p: -p.unchanged_tokens)
+
+    def unpriced_shell(self) -> bool:
+        """True when the shell did the reading and this parser could not follow.
+
+        The state the report must never print as a zero. It is not a claim that
+        nothing was re-read; it is the admission that the question was not
+        asked on this corpus.
+        """
+        return self.shell_results >= 50 and not self.shell_read_results
 
     def memory_candidates(self, *, min_sessions: int = RECURRING_SESSIONS,
                           min_tokens: int = MIN_RESULT_TOKENS,
@@ -261,9 +408,10 @@ def scan(root: Path | str = DEFAULT_ROOT, *, window=None,
     transcript, and dropping those attributes the result to no tool at all.
     """
     rep = RereadReport()
-    pending: dict[str, tuple[str, str]] = {}      # use_id -> (tool, identity)
+    pending: dict[str, tuple[str, str, str]] = {}   # use_id -> (tool, identity, path)
     seen_use: set[str] = set()
     answered: set[str] = set()
+    seq = 0
 
     for path in transcripts(root):
         rep.files += 1
@@ -286,6 +434,10 @@ def scan(root: Path | str = DEFAULT_ROOT, *, window=None,
                 blocks = content if isinstance(content, list) else []
                 session = str(d.get("sessionId") or path.stem)
                 project = path.parent.name
+                # The directory a relative path in a shell command was relative
+                # to. Taken from the record rather than from the process, which
+                # is somewhere else entirely by the time a report runs.
+                cwd = d.get("cwd")
 
                 if d.get("type") == "assistant":
                     mid = str(msg.get("id") or "")
@@ -301,8 +453,25 @@ def scan(root: Path | str = DEFAULT_ROOT, *, window=None,
                                 continue
                             seen_use.add(use_id)
                         name = str(b.get("name") or "?")
+                        inp = b.get("input")
+                        if name in WRITE_TOOLS:
+                            # Noted, not skipped. An edit is what makes the
+                            # next read of the same file correct -- and it is
+                            # still an admission in its own right, which
+                            # `handoff` ranks on.
+                            edited = _written_path(inp, cwd)
+                            if edited:
+                                seq += 1
+                                _path_group(rep, session, project, edited).writes.append(seq)
                         if use_id:
-                            pending[use_id] = (name, identity(name, b.get("input")))
+                            # Only a call that reads exactly one file is
+                            # attributed to that file. `grep pat a.py b.py`
+                            # returns one result for two paths, and splitting
+                            # its tokens between them, or counting them twice,
+                            # would both be inventions.
+                            targets = _safe_targets(name, inp, cwd)
+                            one = targets[0].path if len(targets) == 1 else ""
+                            pending[use_id] = (name, identity(name, inp), one)
 
                 elif d.get("type") == "user":
                     for b in blocks:
@@ -313,22 +482,32 @@ def scan(root: Path | str = DEFAULT_ROOT, *, window=None,
                             continue
                         if use_id:
                             answered.add(use_id)
-                        tool, ident = pending.get(use_id, ("?", "?"))
+                        tool, ident, read = pending.get(use_id, ("?", "?", ""))
                         if ident == "?":
                             continue
                         text = flatten_text(b.get("content"))
                         n = est_tokens(text)
                         rep.admissions += 1
                         rep.total_tokens += n
+                        if tool == "Bash":
+                            rep.shell_results += 1
+                            rep.shell_read_results += 1 if read else 0
                         if n < min_tokens:
                             continue
+                        # One counter over edits and admissions alike, bumped
+                        # per event rather than per record: two tool results
+                        # can share a line, and a shared `seq` would collapse
+                        # them into one when the two views are unioned.
+                        seq += 1
                         a = Admission(session, project, ident, tool, n,
-                                      digest(text), turns[session])
+                                      digest(text), turns[session], read, seq)
                         key = (session, ident)
                         r = rep.repeats.get(key)
                         if r is None:
                             r = rep.repeats[key] = Repeat(ident, tool, session, project)
                         r.admissions.append(a)
+                        if read:
+                            _path_group(rep, session, project, read).admissions.append(a)
                         rc = rep.recurring.get(ident)
                         if rc is None:
                             rc = rep.recurring[ident] = Recurring(ident, tool)
@@ -356,17 +535,54 @@ def _session_shape(sessions) -> dict[str, tuple[str, int]]:
     return out
 
 
-def price_repeat(r: Repeat, shape, carry, *, on: date | None = None) -> float:
-    """USD the redundant copies cost: one write each, plus their carry."""
-    model, n_turns = shape.get(r.session, (_settings.session_model(), 0))
+def price_admissions(session: str, admissions, shape, carry, *,
+                     on: date | None = None) -> float:
+    """USD these copies cost: one write each, plus their carry."""
+    model, n_turns = shape.get(session, (_settings.session_model(), 0))
     total = 0.0
-    for a in r.redundant:
+    for a in admissions:
         remaining = max(0, n_turns - a.turn)
         # `on` was accepted and dropped. A caller pricing a past window got
         # today's rates back with no sign that its argument had been ignored,
         # which is worse than not offering the parameter.
         total += carry.token_cost(a.tokens, model, remaining, on=on)
     return total
+
+
+def price_repeat(r: Repeat, shape, carry, *, on: date | None = None) -> float:
+    """USD the redundant copies cost: one write each, plus their carry."""
+    return price_admissions(r.session, r.redundant, shape, carry, on=on)
+
+
+def price_path(p: PathReads, shape, carry, *, on: date | None = None) -> float:
+    """USD the re-reads of one file cost, edits excluded."""
+    return price_admissions(p.session, p.unchanged, shape, carry, on=on)
+
+
+def recoverable(rep: RereadReport, shape, carry, *,
+                min_tokens: int = MIN_RESULT_TOKENS,
+                on: date | None = None) -> tuple[float, int]:
+    """(USD, admissions) both views agree were avoidable, counted once.
+
+    The two overlap by construction: a `cat f` repeated verbatim is a redundant
+    identity *and* a re-read of a path the session already held. Summing them
+    would double-price exactly the calls the report is most confident about, so
+    the admissions are unioned on `seq` first and priced afterwards.
+    """
+    seen: set[int] = set()
+    rows: dict[str, list[Admission]] = defaultdict(list)
+    for r in rep.with_repeats(min_tokens=min_tokens):
+        for a in r.redundant:
+            if a.seq not in seen:
+                seen.add(a.seq)
+                rows[a.session].append(a)
+    for p in rep.with_path_repeats(min_tokens=min_tokens):
+        for a in p.unchanged:
+            if a.seq not in seen:
+                seen.add(a.seq)
+                rows[a.session].append(a)
+    total = sum(price_admissions(s, aa, shape, carry, on=on) for s, aa in rows.items())
+    return total, len(seen)
 
 
 def price_recurring(rc: Recurring, shape, carry, *, on: date | None = None) -> float:
@@ -421,9 +637,26 @@ def report(rep: RereadReport, sessions, *, top: int = 10,
                     key=lambda kv: -kv[1])
     waste = sum(c for _, c in priced)
 
+    files = rep.with_path_repeats(min_tokens=min_tokens)
+    priced_files = sorted(((p, price_path(p, shape, carry, on=on)) for p in files),
+                          key=lambda kv: -kv[1])
+    file_waste = sum(c for _, c in priced_files)
+
     lines.append("")
-    if not priced:
-        lines.append("  No content was admitted twice. Nothing to recover here.")
+    if not priced and not priced_files:
+        if rep.unpriced_shell():
+            # The state this section exists to stop printing as a zero. On a
+            # corpus that reads through the shell, "0 identities" and "these
+            # reads are not in a shape this parser can name" are the same
+            # sentence, and the first is the one that gets believed.
+            lines.append(f"  {rep.shell_results:,} shell results are on record and "
+                         "none of them named a file this parser could follow — so "
+                         "this is\n  'not observed here', not 'nothing was "
+                         "re-read'. `adder doctor --json` carries the same flag.")
+        else:
+            lines.append("  No content was admitted twice. Nothing to recover here.")
+    elif not priced:
+        lines.append("  No identity was admitted twice — but files were; see below.")
     else:
         lines.append(f"  Re-read: identical content admitted again — "
                      f"{money(waste)} across {len(priced)} identities")
@@ -436,6 +669,32 @@ def report(rep: RereadReport, sessions, *, top: int = 10,
         if len(priced) > top:
             rest = sum(c for _, c in priced[top:])
             lines.append(f"    … {len(priced) - top} more, {money(rest)}")
+
+    if priced_files:
+        lines += ["", f"  Read again: a file the session already held, admitted "
+                      f"once more — {money(file_waste)} across {len(priced_files)} "
+                      f"files", ""]
+        body = [[shorten(f"file:{p.path}"), "+".join(p.tools)[:12], p.calls,
+                 len(p.unchanged), tokens(p.unchanged_tokens), money(c),
+                 p.session[:8]]
+                for p, c in priced_files[:top]]
+        lines += table(body, ["file read again", "how", "reads", "extra",
+                              "extra tok", "cost", "session"], align="<<>>>><")
+        if len(priced_files) > top:
+            rest = sum(c for _, c in priced_files[top:])
+            lines.append(f"    … {len(priced_files) - top} more, {money(rest)}")
+        lines.append("")
+        lines.append("    Reads that followed an `Edit` or `Write` of the same "
+                     "file are excluded — those were correct. An edit made\n"
+                     "    outside the session, or by `sed -i`, is not visible "
+                     "here, so treat this as the upper bound of the two.")
+        if priced:
+            # The two tables overlap wherever one command repeated verbatim.
+            # Printing two figures a reader would naturally add is the kind of
+            # wrong number this project treats as worse than no number.
+            lines.append("    The two tables overlap: a command repeated "
+                         "verbatim is in both. They are unioned, not summed —\n"
+                         "    `--json` reports the union as `recoverable`.")
 
     cands = rep.memory_candidates(min_tokens=min_tokens,
                                   min_sessions=min_sessions)
@@ -460,8 +719,10 @@ def report(rep: RereadReport, sessions, *, top: int = 10,
                       "content a later call replaced but nothing evicted. Not "
                       "recoverable by skipping a call — only by compacting or "
                       "restarting."]
-    if waste > 1.0:
-        lines += ["", warn(f"  {money(waste)} was spent admitting content the "
+    # The union, not the sum: a `cat` repeated verbatim appears in both tables.
+    total, _ = recoverable(rep, shape, carry, min_tokens=min_tokens, on=on)
+    if total > 1.0:
+        lines += ["", warn(f"  {money(total)} was spent admitting content the "
                            "context already held.")]
     return "\n".join(lines)
 
@@ -475,12 +736,31 @@ def _json(rep: RereadReport, sessions, *, top: int, min_tokens: int,
                     key=lambda kv: -kv[1])
     cands = rep.memory_candidates(min_tokens=min_tokens,
                                   min_sessions=min_sessions)
+    files = rep.with_path_repeats(min_tokens=min_tokens)
+    total, n_admissions = recoverable(rep, shape, carry, min_tokens=min_tokens)
     return json.dumps({
         "files": rep.files,
         "admissions": rep.admissions,
         "admitted_tokens": rep.total_tokens,
         "redundant_tokens": rep.redundant_tokens,
-        "recoverable": round(sum(c for _, c in priced), 4),
+        "recoverable": round(total, 4),
+        "recoverable_admissions": n_admissions,
+        # `recoverable` is the union of the two views below, so the two
+        # sections do not sum to it and are not meant to.
+        "recoverable_identities": round(sum(c for _, c in priced), 4),
+        "shell_results": rep.shell_results,
+        "shell_results_naming_a_file": rep.shell_read_results,
+        "shell_reads_unobservable": rep.unpriced_shell(),
+        "files_read_again": [
+            {"path": p.path, "session": p.session, "project": p.project,
+             "tools": p.tools, "reads": p.calls,
+             "repeat_calls": len(p.repeats),
+             "repeat_tokens": p.repeat_tokens,
+             "unchanged_calls": len(p.unchanged),
+             "unchanged_tokens": p.unchanged_tokens,
+             "cost": round(price_path(p, shape, carry), 4)}
+            for p in files[:top]
+        ],
         "repeats": [
             {"identity": r.ident, "tool": r.tool, "session": r.session,
              "project": r.project, "calls": r.calls,

@@ -172,6 +172,73 @@ class TestRecallCriticalTasksAbstain:
         """
         assert classify(task).tier == Tier.T0
 
+    @pytest.mark.parametrize("task", [
+        "read the audit log and tell me if anything was tampered with",
+        "is there anything in the diff that bypasses the consent gate",
+        "is this pattern used anywhere else",
+        "did everything in the queue get acknowledged",
+    ])
+    def test_a_quantifying_pronoun_is_its_own_plural_target(self, task):
+        """`anywhere` was listed and `anything` was not.
+
+        Both quantify over a set by construction, so demanding a separate
+        plural noun beside them asks for evidence the sentence already gave --
+        and "is there anything in the diff that bypasses the consent gate" is a
+        whole-diff search whose short answer reads exactly like a complete one.
+        """
+        v = classify(task)
+        assert v.tier == Tier.T2 and v.abstained
+        assert any("not detectable" in r for r in v.reasons)
+
+    @pytest.mark.parametrize("task", [
+        "locate the race condition",
+        "find the hardcoded credential in this tree",
+        "search for the memory leak",
+        "list the deadlock",
+    ])
+    def test_a_defect_class_is_unbounded_whatever_its_number(self, task):
+        """"find the bug" is not a claim that there is one bug.
+
+        The definite article is a convention of English, not a statement of
+        cardinality, so the plurality gate cannot see this shape: `find every
+        race condition` abstained and `locate the race condition` went to the
+        weakest rung. Same search, same silent failure.
+        """
+        v = classify(task)
+        assert v.tier == Tier.T2 and v.abstained
+        assert any("defect class" in r for r in v.reasons)
+
+    def test_a_named_file_is_what_bounds_a_defect_search(self):
+        """The line is scope, not grammar.
+
+        An incomplete answer about `config.py` is checkable by opening
+        `config.py`. An incomplete answer about a tree is not.
+        """
+        assert classify("find the hardcoded credential in config.py").tier == Tier.T0
+
+    @pytest.mark.parametrize("task", [
+        "verify no credentials are committed in this repo",
+        "check whether any tenant exceeded the cost ceiling",
+        "confirm nothing in the payload leaks the submodule path",
+        "did anything get promoted without human review",
+    ])
+    def test_detection_is_enumeration_with_the_list_left_out(self, task):
+        """None of `_ENUMERATE`'s verbs, all of its exposure.
+
+        A model that checked three of the seven places answers "no", and "no"
+        is also what a complete answer looks like.
+        """
+        v = classify(task)
+        assert v.tier == Tier.T2 and v.abstained
+
+    @pytest.mark.parametrize("task", [
+        "check the schema of the events table",
+        "verify the retry count in config.py",
+    ])
+    def test_a_bounded_check_is_not_a_detection(self, task):
+        """The verb alone is not the signal, or the rule stops being precise."""
+        assert not any("detection" in r for r in classify(task).reasons)
+
 
 class TestKeywordCollisionsDoNotEscalate:
     """`hard` decided before anything looked at the shape of the sentence.

@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.json:
         print(json.dumps({
             n: {"value": r.value, "source": r.source, "env": r.setting.env_var,
-                "default": r.setting.default, "help": r.setting.help}
+                "default": r.setting.initial, "help": r.setting.help}
             for n, r in res.items()
         }, indent=2))
         return 0

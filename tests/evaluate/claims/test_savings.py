@@ -193,3 +193,68 @@ class TestSplittingModelsTheMainChain:
                                 max_turns=300).saving
         plain = splitting(self._session(400), max_turns=300).saving
         assert cheap_first == pytest.approx(plain)
+
+
+class TestTheDuplicateReadLever:
+    """The lever that reached the ranking last, and only because it had been
+    measuring zero.
+
+    `doctor` had ranked re-reads third at stake while `savings` listed no such
+    lever and `bench` had no such rung, so the two commands someone runs to
+    decide whether to install still priced it at nothing.
+    """
+
+    def _corpus(self, tmp_path, results):
+        import json
+
+        d = tmp_path / "proj"
+        d.mkdir(parents=True, exist_ok=True)
+        recs, ctx = [], 20_000
+        for i, (cmd, out) in enumerate(results):
+            ctx += len(out) // 4 + 300
+            recs.append({
+                "type": "assistant", "sessionId": "s", "cwd": "/repo",
+                "timestamp": f"2026-08-01T10:{i:02d}:00Z",
+                "message": {"id": f"m{i}", "model": OPUS,
+                            "usage": {"input_tokens": 1, "cache_read_input_tokens": ctx,
+                                      "cache_creation_input_tokens": 2_000,
+                                      "output_tokens": 300},
+                            "content": [{"type": "tool_use", "id": f"u{i}",
+                                         "name": "Bash", "input": {"command": cmd}}]}})
+            recs.append({
+                "type": "user", "sessionId": "s", "cwd": "/repo",
+                "timestamp": f"2026-08-01T10:{i:02d}:30Z",
+                "message": {"content": [{"type": "tool_result",
+                                         "tool_use_id": f"u{i}", "content": out}]}})
+        (d / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs))
+        return tmp_path
+
+    def test_a_shell_re_read_is_priced(self, tmp_path):
+        from adder.core.trace import load_sessions
+        from adder.evaluate.claims.savings import duplicate_reads
+
+        big = "x" * 40_000
+        root = self._corpus(tmp_path, [("cat /a.py", big)] * 3)
+        sessions = load_sessions(root)
+        e = duplicate_reads(sessions, root)
+        assert e.saving > 0 and 0.0 <= e.pool_fraction <= 1.0
+        assert "already in context" in e.lever
+
+    def test_a_corpus_with_no_repeats_prices_nothing(self, tmp_path):
+        from adder.core.trace import load_sessions
+        from adder.evaluate.claims.savings import duplicate_reads
+
+        root = self._corpus(tmp_path, [(f"cat /{i}.py", "x" * 40_000) for i in range(4)])
+        assert duplicate_reads(load_sessions(root), root).saving == 0
+
+    def test_it_is_in_the_pool_not_beside_it(self, tmp_path):
+        """A substitute for tool-output discipline: piping the same command
+        through `head` removes the duplicate too, so adding them would count
+        one saving twice."""
+        from adder.core.trace import load_sessions
+        from adder.evaluate.claims.savings import levers
+
+        root = self._corpus(tmp_path, [("cat /a.py", "x" * 40_000)] * 3)
+        pool, separate = levers(load_sessions(root), root)
+        assert any("already in context" in e.lever for e in pool)
+        assert not any("already in context" in e.lever for e in separate)

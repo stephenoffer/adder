@@ -1,4 +1,4 @@
-# One pool, six substitutes
+# One pool, seven substitutes
 
 | Lever | Worth | Confidence |
 |---|---|---|
@@ -12,10 +12,32 @@
 | *(separate)* Explore/subagents on Haiku | $22 | **measured** |
 | *(separate)* delete duplicated resident memory | $0 | attributed |
 | *(separate)* recoverable cache rebuilds | $0 | **measured** |
+| Skip re-reads of content already in context | *not in this run* | attributed |
 
-Summing the first six double-counts; they attack the same pool. Composed
+Summing the pool rows double-counts; they attack the same pool. Composed
 multiplicatively on the residual: **~$4,436, or 69% of measured spend**, over
 105 sessions and $6,394 of measured spend.
+
+## The seventh lever, and why the table above does not price it
+
+**Skip re-reads of content the context already held.** It is the only lever
+here that trades nothing. Every other substitute gives something up -- output
+that might have been needed, a grep narrow enough to miss, a subagent that may
+summarise away the point -- and this one declines calls whose results were
+already sitting in the prefix being re-read every turn when the second copy
+landed. It is in the pool because it is a substitute for tool-output
+discipline: piping the same command through `head` removes the duplicate too.
+
+It is blank above because that table predates it, and the reason it predates it
+is worth keeping visible. The measurement keyed on `Read`'s `file_path`, so on
+any workload whose harness reads with `cat` and `sed -n` -- which is what
+`bypassPermissions` instructs -- it reported **$0.00**, and $0.00 printed
+exactly like "there was nothing to find". On one 8-session corpus the reads it
+could not see were 25.8% of every Bash result token. `adder reread` now keys on
+the file rather than the call, so the lever prices on your workload whichever
+tool did the reading; run `adder savings` to place it in your own ranking. The
+figures above stand as measured and are not restated from a corpus they were
+not taken on.
 
 Compaction is in the pool, not beside it, because it is a substitute for
 splitting: a session that was split never reaches the ceiling, so it has no

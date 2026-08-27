@@ -853,13 +853,41 @@ class TestReplay:
 
     def test_most_calls_never_cost_a_transcript_parse(self, write_jsonl, tmp_path,
                                                      isolated_home):
-        """The latency budget, measured rather than asserted."""
+        """The latency budget, measured rather than asserted.
+
+        `isolated_home` is load-bearing and used not to be. Without it this
+        loaded the developer's own learned size model, so the assertion passed
+        or failed on what that machine happened to have read -- and the
+        population it broke was the one that had run `adder auto on`, which
+        learns a model. The companion test below pins what a learned model
+        does, so the two cases are told apart rather than confused.
+        """
         from adder.decide.guard import replay
 
         calls = [("Bash", {"command": "wc -l f"})] * 50
         d = write_jsonl(self._records(calls), into=tmp_path / "proj")
         r = replay(d, cfg=Settings())
         assert r.lookup_rate == 0.0
+
+    def test_a_learned_model_buys_one_parse_for_the_running_total(
+            self, write_jsonl, tmp_path, isolated_home):
+        """Not a regression: the aggregate rule is supposed to cost exactly one.
+
+        Fifty small `cat`s admit more than the aggregate floor between them, and
+        no per-call rule can see that -- which is the whole reason the running
+        total exists. It speaks once per shape per session, so the latency it
+        buys is one parse in fifty, not one in one.
+        """
+        from adder.core.shapes import SizeModel
+        from adder.decide.guard import replay
+
+        sizes = SizeModel(shapes={"cat": (600, 900, 40)},
+                          heads={"cat": (600, 900, 40)}, tools={},
+                          built=1.0, calls=80)
+        calls = [("Bash", {"command": "cat f"})] * 50
+        d = write_jsonl(self._records(calls), into=tmp_path / "proj")
+        r = replay(d, cfg=Settings(), sizes=sizes)
+        assert 0 < r.lookup_rate <= 0.1
 
     def test_uptake_scales_the_saving_and_not_the_cost(self, write_jsonl, tmp_path,
                                                       isolated_home):

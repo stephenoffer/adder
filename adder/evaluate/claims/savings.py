@@ -102,6 +102,43 @@ def tool_output_discipline(sessions, root: Path | str = DEFAULT_ROOT, *,
     )
 
 
+def duplicate_reads(sessions, root: Path | str = DEFAULT_ROOT, *,
+                    on: date | None = None) -> Estimate:
+    """ATTRIBUTED: stop admitting content the context already held.
+
+    The one lever here that trades nothing. Every other substitute gives
+    something up -- output that might have been needed, a grep narrow enough to
+    miss, a subagent that may summarise away the point -- and this one declines
+    calls whose results were already sitting in the prefix, being re-read on
+    every turn, when the second copy landed.
+
+    In the pool rather than beside it because it is a substitute for
+    `tool_output_discipline`: piping the same command through `head` removes
+    the duplicate too, so adding the two would count one saving twice.
+
+    Priced from `reread`, which unions two views: the same call made twice, and
+    the same *file* read again however the harness read it. The second is what
+    was missing, and it is not a rounding error -- keyed on `Read`'s
+    `file_path`, this lever measured $0.00 on any workload whose harness reads
+    with `cat`, which is what `bypassPermissions` tells an agent to do.
+    """
+    from adder.measure.window.reread import _carry, _session_shape, recoverable, scan
+
+    rep = scan(root)
+    saving, n = recoverable(rep, _session_shape(sessions), _carry(sessions), on=on)
+    _, _, acc = decompose_read_cost(sessions, on)
+    return Estimate(
+        f"Skip re-reads of content already in context ({n:,} results)",
+        saving,
+        "ATTRIBUTED",
+        "per admission: identical results, plus files re-read after the "
+        "session already held them, at the measured carry multiplier",
+        "result sizes are estimated from characters, and an edit by a peer "
+        "process or by `sed -i` is invisible, so this is an upper bound",
+        pool_fraction=min(1.0, saving / acc) if acc else 0.0,
+    )
+
+
 def delegation(sessions, *, delegable_turns: float = 0.25,
                summary_ratio: float = 0.10, sub_model: str | None = None,
                on: date | None = None) -> Estimate:
@@ -398,6 +435,7 @@ def levers(sessions, root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
     pool = [
         terseness(sessions, on=on),
         tool_output_discipline(sessions, root, on=on),
+        duplicate_reads(sessions, root, on=on),
         delegation(sessions, on=on),
         splitting(sessions, max_turns=max_turns, on=on),
         effort_reduction(sessions, on=on),

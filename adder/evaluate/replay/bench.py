@@ -124,6 +124,22 @@ def guard_threshold(*, remaining_turns: int, model: str, min_cost: float,
     return max(min_tokens, math.ceil(min_cost / per_token))
 
 
+def duplicate_admissions(root: Path | str = DEFAULT_ROOT,
+                         *, window=None) -> dict[tuple[str, int], int]:
+    """Tokens each turn admitted that its own context already held.
+
+    One transcript scan, handed to `prepare` so every rung of the ladder is
+    replayed against the same measured set. Never raises: a bench that cannot
+    read the tree should report a ladder without this row, not a traceback.
+    """
+    from adder.measure.window.reread import avoidable_by_turn, scan
+
+    try:
+        return avoidable_by_turn(scan(root, window=window))
+    except (OSError, ValueError):
+        return {}
+
+
 def expected_reads(sessions) -> int:
     """Re-reads a token admitted at a cost-typical point will have to pay for.
 
@@ -149,7 +165,8 @@ class Config:
 
 def ladder(sessions, *, min_cost: float, handoff_tokens: int = DEFAULT_HANDOFF,
            min_tokens: int | None = None, on: date | None = None,
-           enforcing: bool | None = None) -> list[Config]:
+           enforcing: bool | None = None, refuses_duplicates: bool | None = None,
+           duplicates: bool = False) -> list[Config]:
     """The four rungs, each adding exactly one thing to the one above it.
 
     Rungs are cumulative because the levers are substitutes: they all attack the
@@ -177,9 +194,32 @@ def ladder(sessions, *, min_cost: float, handoff_tokens: int = DEFAULT_HANDOFF,
     # read it rather than assume it -- the same mistake this module already
     # made once by pinning the guard's floor to its shipped default.
     enforcing = _enforcing() if enforcing is None else enforcing
+    if refuses_duplicates is None:
+        refuses_duplicates = _enforce_level() != "off" or enforcing
     verb = "refuse over" if enforcing else "delegate over"
 
     rungs = [Config("no adder -- as run", Regime(), enforced=True)]
+    if duplicates:
+        # First rung, and it belongs first: it is the only lever in this ladder
+        # that costs nothing to be wrong about. Every other row trades
+        # something -- a summary that may drop what was needed, a restart that
+        # has to re-establish the thread -- and this one declines calls whose
+        # results the context is already carrying. It is also the row that used
+        # to be invisible: keyed on `Read`'s `file_path`, it measured zero on
+        # any workload whose harness reads with `cat`.
+        rungs.append(Config(
+            f"+ the guard's duplicate {'refusal' if refuses_duplicates else 'advice'}",
+            replace(rungs[-1].regime, label="duplicates", refuse_duplicates=True),
+            enforced=True,
+            note=("measured per call by `adder reread`: results whose content "
+                  "the context already held, dropped turn by turn and the rest "
+                  "of the session re-priced"
+                  + (". `guard_enforce=certain` refuses these, so no summary "
+                     "ratio and no uptake assumption stands behind this row"
+                     if refuses_duplicates else
+                     "; `guard_enforce` is off here, so the guard only says so "
+                     "and only above its token floor -- `adder auto on` sets "
+                     "`certain`, which refuses them"))))
     # Placement first with the model held fixed: this rung measures what moving
     # a read out of the context is worth on its own, before tier choice gets to
     # claim any of it.
@@ -221,8 +261,8 @@ def ladder(sessions, *, min_cost: float, handoff_tokens: int = DEFAULT_HANDOFF,
     return rungs
 
 
-def _enforcing() -> bool:
-    """Is the guard configured to refuse, rather than to advise?
+def _enforce_level() -> str:
+    """`off`, `certain` or `full` -- what the guard on this machine will refuse.
 
     Read at call time and never cached, for the reason `guard.Settings` gives:
     a constant resolved at import is one no test can change and no `.adder.json`
@@ -230,9 +270,21 @@ def _enforcing() -> bool:
     """
     try:
         from adder.decide.guard import Settings
-        return Settings.resolve().enforce == "full"
+        return Settings.resolve().enforce
     except Exception:
-        return False
+        return "off"
+
+
+def _enforcing() -> bool:
+    """Is the guard configured to refuse a read on *size*?
+
+    `certain` refuses duplicates and nothing else, so it does not move the
+    delegation threshold above the line. That distinction is the whole reason
+    this is not a boolean any more: the duplicate refusal was landing on the
+    unenforced side of a report about what installing the tool gets you, while
+    being the one thing here that needs no uptake assumption at all.
+    """
+    return _enforce_level() == "full"
 
 
 @dataclass
@@ -255,8 +307,19 @@ class Bench:
 
     @property
     def installed(self) -> float:
-        """Multiple from the last rung nothing has to be obeyed to reach."""
-        last = max(i for i, c in enumerate(self.configs) if c.enforced)
+        """Multiple from the last rung nothing has to be obeyed to reach.
+
+        The *first* unenforced rung stops the count, not the last enforced one.
+        Rungs are cumulative, so an unenforced row with an enforced row above
+        it puts the unenforced saving into a number whose whole claim is that
+        nothing has to be obeyed to get it. The ladder happens to be ordered so
+        that cannot arise today; it took one inserted row to make it possible.
+        """
+        last = 0
+        for i, c in enumerate(self.configs):
+            if not c.enforced:
+                break
+            last = i
         return self.multiple(last)
 
     @property
@@ -289,7 +352,9 @@ def corner_sweep(prepared, regime: Regime, baseline: float, *,
 
 def run(sessions, *, min_cost: float = 0.25, handoff_tokens: int = DEFAULT_HANDOFF,
         min_tokens: int | None = None, on: date | None = None,
-        enforcing: bool | None = None, corners: bool = True) -> Bench:
+        enforcing: bool | None = None, corners: bool = True,
+        dups: dict[tuple[str, int], int] | None = None,
+        refuses_duplicates: bool | None = None) -> Bench:
     """Price every rung of the ladder against the recorded turns.
 
     `corners=False` skips the eight-point sweep of the modelled inputs. The
@@ -300,9 +365,11 @@ def run(sessions, *, min_cost: float = 0.25, handoff_tokens: int = DEFAULT_HANDO
     from adder.measure.spend.debt import output_share_of_growth
 
     share = output_share_of_growth(sessions)
-    prepared = prepare(sessions, on)
+    prepared = prepare(sessions, on, dups)
     configs = ladder(sessions, min_cost=min_cost, handoff_tokens=handoff_tokens,
-                     min_tokens=min_tokens, on=on, enforcing=enforcing)
+                     min_tokens=min_tokens, on=on, enforcing=enforcing,
+                     refuses_duplicates=refuses_duplicates,
+                     duplicates=bool(dups))
     results = [replay(prepared, c.regime, output_share=share, on=on) for c in configs]
     measured = sum(s.cost_on(on) for s in sessions.values())
     base = results[0].total
@@ -319,7 +386,7 @@ def report(root: Path | str = DEFAULT_ROOT, *, min_cost: float = 0.25,
         print(f"\n  No transcripts found under {root}\n")
         return 1
     b = run(sessions, min_cost=min_cost, handoff_tokens=handoff_tokens,
-            min_tokens=min_tokens, on=on)
+            min_tokens=min_tokens, on=on, dups=duplicate_admissions(root))
     if not b.measured:
         print(f"\n  No priced turns found under {root}\n")
         return 1

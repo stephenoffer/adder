@@ -398,3 +398,56 @@ class TestCounterfactualsArePricedOnTheTurnsDate:
         d = self._sessions()
         assert replay(d, Regime()).total == pytest.approx(
             replay(d, Regime(), on=date(2026, 8, 10)).total)
+
+
+class TestRefusingDuplicates:
+    """A refusal deletes an admission; it does not compress one.
+
+    `tool_discipline` scales what a turn admits and stands on somebody keeping
+    a habit. This removes a measured set of calls a hook declines, which is why
+    it is subtracted before the delegation gate rather than folded into that
+    fraction.
+    """
+
+    def _sessions(self, n=6, admit=4_000):
+        from adder.core.trace import Session, Turn
+
+        s = Session("s", "p")
+        ctx = 20_000
+        for _ in range(n):
+            ctx += admit
+            s.turns.append(Turn("s", "p", "claude-opus-5", uncached_in=0,
+                                cache_read=ctx, cache_write=admit, out=300,
+                                thinking=0, sidechain=False))
+        return {"s": s}
+
+    def test_a_refused_admission_is_never_carried(self):
+        from adder.evaluate.replay.plan import Regime, prepare, replay
+
+        sess = self._sessions()
+        dups = {("s", i): 2_000 for i in range(1, 6)}
+        prepared = prepare(sess, None, dups)
+        plain = replay(prepared, Regime())
+        refusing = replay(prepared, Regime(refuse_duplicates=True))
+        assert refusing.refused_tokens == 10_000
+        assert refusing.admitted_tokens < plain.admitted_tokens
+        assert refusing.total < plain.total
+
+    def test_it_cannot_subtract_more_than_the_turn_admitted(self):
+        """The two quantities are counted by different methods -- context
+        growth here, estimated result sizes there -- so the subtraction is
+        clamped rather than trusted."""
+        from adder.evaluate.replay.plan import Regime, prepare, replay
+
+        sess = self._sessions(admit=1_000)
+        prepared = prepare(sess, None, {("s", i): 10_000_000 for i in range(6)})
+        r = replay(prepared, Regime(refuse_duplicates=True))
+        assert r.admitted_tokens == 0
+        assert r.refused_tokens == 5_000
+
+    def test_no_map_means_no_change(self):
+        from adder.evaluate.replay.plan import Regime, prepare, replay
+
+        prepared = prepare(self._sessions(), None)
+        assert (replay(prepared, Regime(refuse_duplicates=True)).total
+                == replay(prepared, Regime()).total)

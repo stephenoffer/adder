@@ -50,9 +50,24 @@ def _as_path(v: Any) -> str:
     return str(Path(str(v)).expanduser())
 
 
+def _home(*parts: str) -> Callable[[], str]:
+    """A default naming a path under the user's home, resolved when asked.
+
+    `Path.home()` evaluated at import is a value no test can move: a
+    `monkeypatch.setenv("HOME", ...)` runs after the module is imported and
+    reaches nothing. That is not hypothetical isolation hygiene -- `auto on`
+    learns a size model into `~/.claude`, so activating this tool made its own
+    suite fail, and the only difference between a red run and a green one was a
+    file the fixture believed it had redirected.
+    """
+    return lambda: str(Path.home().joinpath(*parts))
+
+
 @dataclass(frozen=True)
 class Setting:
     name: str
+    # A value, or a zero-argument callable returning one. Callable for anything
+    # under the user's home; see `_home`.
     default: Any
     cast: Callable[[Any], Any]
     help: str
@@ -75,10 +90,15 @@ class Setting:
     def env_var(self) -> str:
         return self.env or f"ADDER_{self.name.upper()}"
 
+    @property
+    def initial(self) -> Any:
+        """The default, computed now rather than when this module imported."""
+        return self.default() if callable(self.default) else self.default
+
 
 # Ordered for display: the ones a person changes first come first.
 SETTINGS: tuple[Setting, ...] = (
-    Setting("root", str(Path.home() / ".claude" / "projects"), _as_path,
+    Setting("root", _home(".claude", "projects"), _as_path,
             "transcript directory every report reads"),
     Setting("model", "claude-opus-5", str,
             "model assumed for the session when a report cannot read one"),
@@ -116,7 +136,7 @@ SETTINGS: tuple[Setting, ...] = (
             "predicted result size below which the guard does not price a call"),
     Setting("guard_hard", 60_000, int,
             "tokens above which the guard asks for confirmation, when blocking"),
-    Setting("uptake_cache", str(Path.home() / ".claude" / ".adder-uptake.json"), _as_path,
+    Setting("uptake_cache", _home(".claude", ".adder-uptake.json"), _as_path,
             "cached measurement of how often guard advice was followed; the "
             "hook reads it, `adder guard --learn` writes it"),
     Setting("guard_advice_taken", 0.5, float,
@@ -132,7 +152,7 @@ SETTINGS: tuple[Setting, ...] = (
             "calls that admit nothing new), full (also refuse a large read that "
             "has a cheaper equal)",
             env="ADDER_GUARD_ENFORCE"),
-    Setting("guard_state", str(Path.home() / ".claude" / ".adder-guard.json"), _as_path,
+    Setting("guard_state", _home(".claude", ".adder-guard.json"), _as_path,
             "per-session guard memory: files read, shapes already advised"),
     Setting("guard_narrow", False, _as_bool,
             "where the guard would refuse a large Read or Grep, substitute the "
@@ -144,7 +164,7 @@ SETTINGS: tuple[Setting, ...] = (
             "on a delegated step, also name the cheapest tier that clears the "
             "task -- advice only, and never a refusal",
             env="ADDER_GUARD_ROUTE"),
-    Setting("size_model", str(Path.home() / ".claude" / ".adder-sizes.json"), _as_path,
+    Setting("size_model", _home(".claude", ".adder-sizes.json"), _as_path,
             "learned result-size quantiles the guard predicts from"),
     Setting("size_max_age", 86_400.0, float,
             "seconds before the learned size model is re-derived"),
@@ -156,13 +176,13 @@ SETTINGS: tuple[Setting, ...] = (
             env="ADDER_WARN_CONTEXT"),
     Setting("catalog_max_age_days", 21.0, float,
             "age past which the model catalog is reported as stale"),
-    Setting("log", str(Path.home() / ".claude" / "adder-outcomes.jsonl"), _as_path,
+    Setting("log", _home(".claude", "adder-outcomes.jsonl"), _as_path,
             "dispatch outcome log that calibrates p_fail", env="ADDER_LOG"),
-    Setting("ledger", str(Path.home() / ".claude" / "adder-ledger.jsonl"), _as_path,
+    Setting("ledger", _home(".claude", "adder-ledger.jsonl"), _as_path,
             "ledger of recommendations made and verified", env="ADDER_LEDGER"),
-    Setting("home", str(Path.home() / ".claude"), _as_path,
+    Setting("home", _home(".claude"), _as_path,
             "base directory for caches and logs", env="ADDER_HOME"),
-    Setting("trace_cache", str(Path.home() / ".claude" / ".adder-trace-cache"), _as_path,
+    Setting("trace_cache", _home(".claude", ".adder-trace-cache"), _as_path,
             "parse cache file", env="ADDER_TRACE_CACHE"),
     Setting("catalog", "", str,
             "pin the whole model catalog to one file", env="ADDER_CATALOG",
@@ -238,7 +258,7 @@ def resolve(*, cwd: Path | str | None = None,
 
     out: dict[str, Resolved] = {}
     for s in SETTINGS:
-        value, source = s.default, "default"
+        value, source = s.initial, "default"
         # An env-only setting skips the file layers rather than reporting a
         # value nothing will read. See `Setting.env_only`.
         if not s.env_only:
@@ -357,5 +377,5 @@ def harness() -> str:
 
 def template() -> str:
     """A commented-by-example config file, with every setting at its default."""
-    body = {s.name: s.default for s in SETTINGS if s.default not in ("", None)}
+    body = {s.name: s.initial for s in SETTINGS if s.initial not in ("", None)}
     return json.dumps(body, indent=2, sort_keys=True)

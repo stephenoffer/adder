@@ -118,6 +118,13 @@ class Regime:
     p_fail: float = 0.15                  # chance a delegated step has to be redone
     session_model: str | None = None      # start the session here, not on Opus
     session_rework: float = 0.20          # share of it redone on the original model
+    # Refuse a read whose content the context already holds -- `guard_enforce`
+    # at `certain`. Separate from `tool_discipline` on purpose: that one is a
+    # fraction somebody has to keep achieving, and this is a measured set of
+    # calls a hook declines with no judgement involved, so pricing them the
+    # same way would put an uptake assumption behind the one saving that has
+    # none.
+    refuse_duplicates: bool = False
 
     @property
     def effort_mult(self) -> float:
@@ -143,6 +150,7 @@ class Result:
     delegated: int = 0
     delegated_tokens: int = 0
     admitted_tokens: int = 0
+    refused_tokens: int = 0       # admitted content the context already held
     reprised: int = 0             # turns a cheaper session model could have held
     by_tier: dict[str, int] = field(default_factory=dict)
 
@@ -217,17 +225,33 @@ class Step:
     # `claude-sonnet-5` as the cheap session model, and that is the one model
     # in the table with an introductory rate about to expire.
     on: date | None = None
+    # Of `adm`, the part `reread` identifies as content the context already
+    # held. Zero unless the caller supplied the map: this is the one quantity
+    # here that cannot be derived from a turn's own accounting, because it is a
+    # statement about a *previous* turn's tool results.
+    dup: int = 0
 
     @property
     def in_cost(self) -> float:
         return self.read_cost + self.write_cost
 
 
-def prepare(sessions, on: date | None = None) -> list[tuple[int, int, list[Step]]]:
-    """Flatten sessions into (start context, restart floor, steps) per session."""
+def prepare(sessions, on: date | None = None,
+            dups: dict[tuple[str, int], int] | None = None
+            ) -> list[tuple[int, int, list[Step]]]:
+    """Flatten sessions into (start context, restart floor, steps) per session.
+
+    `dups` is `reread.avoidable_by_turn`: tokens each turn admitted that the
+    context already held. Optional because a caller replaying a hypothetical
+    workload has no transcript to measure it from, and clamped to the turn's
+    own admission because the two are counted by different methods -- context
+    growth here, estimated result sizes there -- and a subtraction that could
+    exceed its minuend is a negative admission waiting to happen.
+    """
     out = []
     for sess in sessions.values():
         start_ctx, floor_ctx, adm = _admissions(sess)
+        sid = str(getattr(sess, "id", "") or "")
         steps = []
         for i, t in enumerate(sess.turns):
             r = t.rates(on)
@@ -239,9 +263,10 @@ def prepare(sessions, on: date | None = None) -> list[tuple[int, int, list[Step]
             # cheaper than it is. Measured here, cache writes run at 2.1x
             # admitted tokens, so they track admission, not context size.
             w_cost = t.cache_write * t.rates(on).cache_write / M
+            dup = min(adm[i], int((dups or {}).get((str(sid), i), 0)))
             steps.append(Step(t.input_cost(on) - w_cost, w_cost, t.output_cost(on),
                               t.context, adm[i], r.inp, r.out, t.model, t.ttl,
-                              t.pricing_date(on)))
+                              t.pricing_date(on), dup))
         out.append((start_ctx, floor_ctx, steps))
     return out
 
@@ -340,6 +365,14 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
                 res.restarts += 1
 
             raw = st.adm
+            if regime.refuse_duplicates:
+                # A refusal is a deletion, not a compression: the call does not
+                # run, so the tokens are never written and never carried. That
+                # is why it is subtracted before the delegation gate rather
+                # than folded into `tool_discipline`, which scales what is
+                # admitted rather than removing a measured part of it.
+                raw = max(0, raw - st.dup)
+                res.refused_tokens += st.dup
             res.admitted_tokens += raw
 
             if regime.delegate_above is not None and raw >= regime.delegate_above:

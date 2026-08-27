@@ -118,14 +118,26 @@ def max_bash_output_chars() -> int:
     return n if n > 0 else DEFAULT_MAX_BASH_OUTPUT_CHARS
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True)
 class ReadTarget:
-    """One file a call put into the context.
+    """One file a call read.
 
-    `whole` is the only field the guard is allowed to refuse on: it means the
-    entire file reached the context, so a second read of it -- unchanged --
-    buys nothing. A partial target still counts as a read for reporting, which
-    is a weaker and differently-worded claim.
+    `whole` is a statement about the **command**, not about the context: the
+    call asked for the entire file rather than a slice. That is necessary for a
+    refusal and it is not sufficient, because the harness truncates a shell
+    result -- so `cat` of a file above the ceiling asked for all of it and
+    admitted the first 30,000 characters.
+
+    `whole_reads` is the only correct consumer for that purpose: it applies the
+    ceiling and stats the file, and the guard calls it. This docstring
+    previously said `whole` meant "the entire file reached the context", which
+    is a claim `tool_targets` has no way to make -- it does not touch the
+    filesystem, and for `reread`, replaying a transcript written on another
+    day, today's file size would answer a question about the past.
+
+    `order=True` because a caller reaching for the richer API will sort a list
+    of these, and a frozen dataclass without it raises `TypeError` when they
+    do.
     """
 
     path: str
@@ -243,6 +255,10 @@ def tool_targets(tool: str, inp: dict | None, *, cwd: str | None = None) -> list
     re-read by the other is the same identity. That is the whole point: the
     harness picks which of them does the reading, and the saving does not
     depend on its choice.
+
+    Parsing only -- nothing here opens a file. A `whole` target is what the
+    command asked for; `whole_reads` is what a refusal may rest on. See
+    `ReadTarget`.
     """
     inp = inp or {}
     if tool == "Read":

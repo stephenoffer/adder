@@ -86,9 +86,38 @@ the seven, confidently, and nothing fails -- so the cost is not a retry, it is
 an audit that is wrong and reads right. The signal that matters there is not
 difficulty at all, it is whether an incomplete answer would be detectable, and a
 stated quantifier over a plural target -- `every`, `all`, `any` -- abstains
-however short the sentence is. It is deliberately narrow. "Check the audit log
-for tampering" is just as recall-critical and states neither a quantifier nor a
-plural, and nothing here catches it; a word list wide enough to would stop being
+however short the sentence is.
+
+Plurality was the wrong place to stop, and it took a probe set to show it. Three
+shapes are the same task, and only the first was caught:
+
+| written | shape | before |
+|---|---|---|
+| `find every race condition` | quantifier over a plural | T2, abstained |
+| `locate the race condition` | a defect class, singular | **T0 at 0.85** |
+| `is there anything in the diff that bypasses the consent gate` | a quantifying pronoun | **T0 at 0.85** |
+| `verify no credentials are committed in this repo` | a detection, answered "no" | **T0 at 0.85** |
+
+The definite article is a convention of English, not a statement of cardinality:
+"find the bug" is not a claim that there is one bug. So a **defect noun** as the
+object of a search -- `bug`, `leak`, `vulnerability`, `credential`, `race
+condition` -- is unbounded discovery whatever its number, and what bounds it is
+scope rather than grammar. `find the hardcoded credential in config.py` stays on
+T0, because an incomplete answer about one named file is checkable by opening
+it; the same sentence ending `in this tree` is not.
+
+A **quantifying pronoun** is its own plural target. `anywhere` was in the list
+and `anything` was not, which was an oversight rather than a distinction.
+
+A **detection** is an enumeration with the list left out. It has none of
+`list|show|find|locate|grep|search|count`'s verbs and all of their exposure: a
+model that checked three of the seven places answers "no", and "no" is what a
+complete answer looks like too. It is gated on a negation or a quantifier beside
+the verb, because `check the schema of the events table` is a bounded question.
+
+It is still deliberately narrow. "Check the audit log for tampering" is just as
+recall-critical, names no defect noun, states no quantifier and no negation, and
+nothing here catches it; a word list wide enough to would stop being
 high-precision, which is the only property the classifier has.
 
 **A domain topic word.** `performance`, `security`, `concurrency` and `debug`
@@ -98,7 +127,11 @@ subject matter *is* those words, that fires on nearly everything: "where is the
 security module" is a one-line grep and was being priced as a threat model, at
 roughly five times T0. They are nouns. They are evidence about the repository,
 not about the task, so they now only explain an abstention rather than cause
-one.
+one. What that demotion cost, and what the defect-noun rule above puts back, is
+the one place a topic word is strong evidence: as the *object* of a search verb.
+`where is the security module` is a lookup; `locate the race condition` is not,
+and for a while nothing separated them because the noun had stopped deciding
+anything at all. Demoting evidence is not the same as discarding it.
 
 **A class named `Exception`.** The stack-trace signal matched the bare words
 `Exception` and `Error:` anywhere in the text, so "rename the Exception class"

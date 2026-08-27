@@ -130,8 +130,16 @@ owns its own parser.
   basename because pytest runs with `--import-mode=importlib`; leave that flag
   alone.
 - Tests must not read the real `~/.claude` directory. Build fixtures with
-  `tmp_path`. A test that only passes on the author's machine is a broken test;
-  if one genuinely needs local transcripts, mark it `@pytest.mark.transcripts`.
+  `tmp_path`, and use the `isolated_home` fixture for anything that resolves a
+  user-level path. A test that only passes on the author's machine is a broken
+  test; if one genuinely needs local transcripts, mark it
+  `@pytest.mark.transcripts`.
+- **A default derived from `Path.home()` is resolved when it is asked for, not
+  at import.** `monkeypatch.setenv("HOME", ...)` runs after the module is
+  imported and moves nothing that was already computed. `settings._home` and
+  `shapes.default_model_path` are the pattern; a new home-derived setting that
+  does not follow it will read the developer's own files, and the population it
+  breaks is the one that ran `adder auto on`.
 - Deterministic only: no wall-clock dependence, no network, no random seeds left
   unset.
 - New behaviour ships with a test in the same commit.

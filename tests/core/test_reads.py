@@ -124,6 +124,11 @@ class TestResolve:
 
 
 class TestToolTargets:
+    def test_a_list_of_targets_can_be_sorted(self):
+        """`frozen=True` without `order=True` raises on `sorted()`."""
+        ts = reads.tool_targets("Bash", {"command": "cat /b.py /a.py"})
+        assert [t.path for t in sorted(ts)] == ["/a.py", "/b.py"]
+
     def test_read_and_cat_name_the_same_file(self):
         by_tool = reads.tool_targets("Read", {"file_path": "/repo/a.py"})
         by_shell = reads.tool_targets("Bash", {"command": "cat a.py"}, cwd="/repo")
@@ -179,6 +184,19 @@ class TestWholeReads:
     def test_an_unusable_ceiling_falls_back(self, monkeypatch, value):
         monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", value)
         assert reads.max_bash_output_chars() == reads.DEFAULT_MAX_BASH_OUTPUT_CHARS
+
+    def test_whole_is_a_claim_about_the_command_not_the_context(self, tmp_path):
+        """The two APIs answer different questions, and the docstring says so.
+
+        `tool_targets` never opens a file, so it cannot know that the harness
+        truncated the result; `whole_reads` stats it and applies the ceiling.
+        A refusal may rest on the second and never on the first.
+        """
+        big = tmp_path / "big.log"
+        big.write_text("x" * 60_000)
+        cmd = {"command": f"cat {big}"}
+        assert reads.tool_targets("Bash", cmd)[0].whole is True
+        assert reads.whole_reads("Bash", cmd, max_chars=30_000) == []
 
     def test_a_read_tool_is_not_size_checked(self):
         # `Read` reports its own size and the harness paginates it; the ceiling

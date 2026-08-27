@@ -41,8 +41,18 @@ class TestReplayFidelity:
         c = replay_reproduces_measured_spend(_sessions())
         assert c.ok, c.measured
 
-    def test_it_fails_loudly_on_no_data(self):
-        assert not replay_reproduces_measured_spend({}).ok
+    def test_no_data_is_neither_a_pass_nor_a_failure(self):
+        """It used to be a FAIL, which is the one thing it is not.
+
+        A failure from `adder validate` means a number this repo quotes has
+        stopped holding on your data. "Your data contains none of the event"
+        borrows that weight and spends it on nothing -- so the claim reports
+        `untestable`, is excluded from the tally and from the exit code, and
+        the run says how many were.
+        """
+        c = replay_reproduces_measured_spend({})
+        assert c.untestable and c.status == "N/A "
+        assert "FAIL" not in c.line()
 
 
 class TestSessionModelClaim:
@@ -57,8 +67,9 @@ class TestSessionModelClaim:
         assert model_routing_is_marginal(sess).ok
         assert session_model_choice_is_not_marginal(sess).ok
 
-    def test_no_data_is_a_failure_not_a_pass(self):
-        assert not session_model_choice_is_not_marginal({}).ok
+    def test_no_data_is_neither_a_pass_nor_a_failure(self):
+        c = session_model_choice_is_not_marginal({})
+        assert c.untestable and "FAIL" not in c.line()
 
 
 class TestSuite:
@@ -112,12 +123,12 @@ class TestSafetyClaims:
         from adder.evaluate.claims.validate import carry_multiplier_is_above_the_assumption
 
         c = carry_multiplier_is_above_the_assumption({})
-        assert not c.ok and c.measured == "no data"
+        assert c.untestable and c.measured == "no data"
 
     def test_horizon_claim_needs_data(self):
         from adder.evaluate.claims.validate import horizon_mean_exceeds_median
 
-        assert not horizon_mean_exceeds_median({}).ok
+        assert horizon_mean_exceeds_median({}).untestable
 
 
 class TestPriorNeverBuysADowngrade:
@@ -184,10 +195,60 @@ class TestTargetIsReachable:
         c = the_target_reduction_is_reachable(sess)
         assert c.measured == f"{base / edge:.1f}x"
 
-    def test_no_data_is_a_failure_not_a_pass(self):
-        assert not the_target_reduction_is_reachable({}).ok
+    def test_no_data_is_neither_a_pass_nor_a_failure(self):
+        assert the_target_reduction_is_reachable({}).untestable
 
     def test_the_target_is_a_parameter_not_a_constant(self):
         sess = _sessions(n=400, admit=2_000)
         assert the_target_reduction_is_reachable(sess, target=2.0).ok
         assert not the_target_reduction_is_reachable(sess, target=1_000.0).ok
+
+
+class TestTheThirdState:
+    """Absence of evidence is the one thing this suite must never report as
+    evidence against, and it was reporting exactly that."""
+
+    def test_an_untestable_claim_is_not_counted_as_passing(self):
+        from adder.evaluate.claims.validate import untestable
+
+        c = untestable("x", "no events", "<=35% kept")
+        assert c.untestable and c.status == "N/A "
+        # `ok` stays True so that every existing `not c.ok` reader treats it as
+        # non-failing; `untestable` is what stops it being counted as a pass.
+        assert c.ok
+
+    def test_a_vacuous_truth_is_still_a_pass(self, tmp_path, monkeypatch):
+        """The distinction the third state has to keep.
+
+        Spending nothing really does mean the tool paid for itself: the claim
+        is settled, trivially. Recording no compactions does not settle whether
+        a compaction keeps under 35%.
+        """
+        from adder.evaluate.claims.validate import the_tool_has_paid_for_itself
+
+        monkeypatch.setenv("ADDER_LEDGER", str(tmp_path / "none.jsonl"))
+        c = the_tool_has_paid_for_itself({})
+        assert c.ok and not c.untestable
+
+    def test_the_run_reports_how_many_it_could_not_test(self, tmp_path, capsys):
+        from adder.evaluate.claims.validate import main
+
+        (tmp_path / "proj").mkdir()
+        main([str(tmp_path)])
+        out = capsys.readouterr().out
+        assert "nothing here to test against" in out
+        assert "[N/A ] compaction keeps less than assumed" in out
+
+    def test_a_claim_about_this_machine_still_fails(self, tmp_path, capsys):
+        """Not everything with no data is untestable.
+
+        "there is enough local history to estimate a horizon" is *falsified* by
+        an empty corpus, not left open by it -- the tool really does fall back
+        to a prior, and that is a fact about this machine worth a FAIL. The
+        third state is for claims a corpus leaves unsettled, not for every
+        claim a corpus is small enough to disappoint.
+        """
+        from adder.evaluate.claims.validate import horizon_is_calibrated
+
+        c = horizon_is_calibrated({})
+        assert not c.ok and not c.untestable

@@ -451,3 +451,37 @@ class TestSayingItCannotSee:
         assert doc["shell_results_naming_a_file"] == 2
         assert doc["files_read_again"][0]["path"] == "/a.py"
         assert doc["recoverable"] > 0
+
+
+class TestHandingTheSetToAReplay:
+    """`recoverable` answers what they cost. A replay needs which turns.
+
+    Both read the same union, so a number in `savings` and a rung in `bench`
+    cannot drift apart by counting different sets.
+    """
+
+    def test_a_turn_carries_the_tokens_of_the_result_that_landed_in_it(self, root):
+        write(root, [("Bash", {"command": "cat /a.py"}, BIG)] * 3)
+        by_turn = reread.avoidable_by_turn(reread.scan(root), min_tokens=1)
+        # Turn 0 issued the first call, so the first *avoidable* copy is the
+        # one answering turn 1. An off-by-one here carries a token for one turn
+        # more or less than it was carried for.
+        assert set(by_turn) == {("s", 2), ("s", 3)}
+        assert all(v > 0 for v in by_turn.values())
+
+    def test_it_is_the_same_set_recoverable_prices(self, root, make_sessions):
+        write(root, [
+            ("Bash", {"command": "cat /a.py"}, BIG),
+            ("Bash", {"command": "sed -n '1,50p' /a.py"}, OTHER),
+            ("Bash", {"command": "cat /b.py"}, BIG),
+        ])
+        rep = reread.scan(root)
+        carry = reread._carry(make_sessions())
+        shape = reread._session_shape(make_sessions())
+        _, n = reread.recoverable(rep, shape, carry, min_tokens=1)
+        assert n == len(reread.avoidable_admissions(rep, min_tokens=1))
+        assert n == sum(1 for _ in reread.avoidable_by_turn(rep, min_tokens=1))
+
+    def test_nothing_avoidable_is_an_empty_map(self, root):
+        write(root, [("Bash", {"command": f"cat /{i}.py"}, BIG) for i in range(3)])
+        assert reread.avoidable_by_turn(reread.scan(root), min_tokens=1) == {}

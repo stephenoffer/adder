@@ -18,9 +18,21 @@ recall. A weak model asked for every hardcoded credential in a tree returns
 three of the seven, confidently, and nothing fails -- so the cost of the
 misroute is not a retry, it is a wrong audit that reads as a right one. The
 signal that separates the two is not difficulty, it is whether an incomplete
-answer is detectable, and `_QUANTIFIER` plus `_plural_target` is the cheap,
-high-precision version of it. Those tasks abstain regardless of how easy the
-sentence looks.
+answer is detectable. Those tasks abstain regardless of how easy the sentence
+looks, and they arrive in three shapes rather than one:
+
+    stated exhaustiveness   `_QUANTIFIER` over `_plural_target`, or a
+                            `_QUANTIFIER_SET` pronoun, which is its own target
+    a defect class          `_DEFECT` as the object of a search, over no named
+                            file -- "find the bug" is not a claim that there is
+                            one bug
+    detection               `_DETECT` with a negation or a quantifier: the same
+                            search, answered in one word, so a complete answer
+                            and an incomplete one are indistinguishable
+
+Each was found by a probe that reached the cheapest rung on a whole-tree audit.
+The first two are the same task written with and without a plural, and they
+used to land on opposite rungs.
 """
 
 from __future__ import annotations
@@ -181,8 +193,54 @@ _ENUMERATE = re.compile(
 # Exhaustiveness, stated. Paired with a plural target this is the one cheap,
 # high-precision way to spot a task whose failure mode is silent.
 _QUANTIFIER = re.compile(
-    r"\b(every|all|each|any|entire|whole|everywhere|anywhere|throughout|"
+    r"\b(every|all|each|any|entire|whole|throughout|"
     r"exhaustiv\w*|comprehensiv\w*)\b", re.I)
+
+# The same statement made by a pronoun, which *is* its own plural target.
+# "anything" and "nothing" quantify over a set by construction, so asking for a
+# separate plural noun beside them demands evidence the sentence has already
+# given.
+#
+# The `-where` forms were listed above and the `-thing` forms were listed
+# nowhere, which is how "is there anything in the diff that bypasses the
+# consent gate" reached the weakest rung: a whole-diff search whose short
+# answer reads exactly like a complete one. The asymmetry was an oversight, not
+# a distinction.
+_QUANTIFIER_SET = re.compile(
+    r"\b(any|every|no)(thing|where|body|one)\b|\b(none|no one)\b", re.I)
+
+# Detection, which is enumeration with the list left out. "verify no
+# credentials are committed" searches the same tree as "find every hardcoded
+# credential" and answers in one word, so a model that checked three of the
+# seven places answers "no" -- and "no" is also what a complete answer looks
+# like. `_ENUMERATE` cannot see it: none of its verbs are here.
+#
+# Anchored, and never sufficient alone. `check the schema` is not this, which
+# is why the gate below needs a negation, a quantifier or a defect noun beside
+# it.
+_DETECT = re.compile(
+    r"^\s*(verify|confirm|ensure|make sure|check|audit|"
+    r"is there|are there|(did|do|does) any\w*)\b", re.I)
+
+# How a detection states the answer it expects.
+_NEGATION = re.compile(r"\b(no|not|never|without|none|nothing)\b|n't\b", re.I)
+
+# Nouns that name a *class* of defect rather than an instance of one.
+#
+# English uses the definite article for both: "find the bug" is not a claim
+# that exactly one exists. So plurality -- the gate the quantifier rule turns
+# on -- says nothing here, and `locate the race condition` reached the weakest
+# rung on the strength of a singular noun while `find every race condition`
+# abstained. Same search, same silent failure, opposite rungs.
+#
+# This is the rule the topic demotion needs beside it. Demoting `security` and
+# `race condition` from deciding was right for "where is the security module",
+# a one-line grep; it also stopped anything from noticing them as the *object*
+# of a search verb, which is the one place they are strong evidence.
+_DEFECT = re.compile(
+    r"\b(bug|defect|leak|vulnerabilit\w+|regression|credential|secret|"
+    r"race condition|deadlock|injection|overflow|backdoor|exploit|"
+    r"dead code|misconfigurat\w+)\b", re.I)
 
 # High-precision expensive signals: the *work* is open-ended, cross-cutting or
 # investigative. Every entry here names something to be done, not something to
@@ -301,7 +359,11 @@ def classify(task: str) -> Verdict:
     mutating = bool(_MUTATING.search(t))
     trivial_shape = bool(_TRIVIAL.match(t))
     enumerating = bool(_ENUMERATE.match(t))
+    detecting = bool(_DETECT.match(t))
     quantified = bool(_QUANTIFIER.search(t))
+    open_set = bool(_QUANTIFIER_SET.search(t))
+    negated = bool(_NEGATION.search(t))
+    defect = bool(_DEFECT.search(t))
     plural = _plural_target(t)
     multi = bool(_MULTI_STEP.search(t))
     files = len(set(_PATHLIKE.findall(t)))
@@ -343,10 +405,38 @@ def classify(task: str) -> Verdict:
     # high-precision version of that, and it forces the abstention rather than
     # picking a rung: the classifier genuinely cannot tell how much work is
     # behind "every hardcoded credential across all 3167 python files".
-    if quantified and plural:
+    if (quantified and plural) or open_set:
         reasons.append(
+            ("a quantifying pronoun: it is its own plural target, so the "
+             "answer is a set and an incomplete one is not detectable")
+            if open_set and not (quantified and plural) else
             "quantifier over a plural target: the answer is a set, so an "
             "incomplete one is not detectable and recall outranks price")
+        return Verdict(Tier.T2, 0.3, reasons, read_only=read_only)
+
+    # --- recall-critical, second shape: a defect class as the search target
+    #
+    # "find the bug" does not mean there is one bug, so the plurality gate
+    # above cannot see this. What *does* bound such a search is a named file:
+    # an incomplete answer about `config.py` is checkable by opening
+    # `config.py`, and an incomplete answer about a tree is not. That is the
+    # line, rather than the article the sentence happened to use.
+    if defect and (enumerating or detecting) and files == 0:
+        reasons.append(
+            "a defect class as the search target, over no named file: the "
+            "answer is a set, so an incomplete one is not detectable")
+        return Verdict(Tier.T2, 0.3, reasons, read_only=read_only)
+
+    # --- recall-critical, third shape: the same search, answered yes or no
+    #
+    # A detection has none of `_ENUMERATE`'s verbs and all of its exposure. It
+    # is gated on a negation or a quantifier rather than on the verb alone,
+    # because `check the schema` is a bounded question and `verify no
+    # credentials are committed in this repo` is a whole-tree audit.
+    if detecting and (quantified or negated):
+        reasons.append(
+            "a detection over a quantifier or a negation: a complete answer "
+            "and an incomplete one are the same word")
         return Verdict(Tier.T2, 0.3, reasons, read_only=read_only)
 
     # --- high-precision cheap signal: short, read-only, single-target lookup

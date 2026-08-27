@@ -92,12 +92,26 @@ def isolated_home(tmp_path, monkeypatch):
     Without this a test can pick up the developer's real outcome log, ledger,
     parse cache, or config, and then pass or fail for reasons that do not exist
     in CI.
+
+    `HOME` is set rather than only the four named variables, and that is the
+    part this fixture used to get wrong. It named the files it knew about, and
+    the size model was not one of them -- so the guard's latency test ran
+    against the developer's real `~/.claude/.adder-sizes.json`, 40,902 learned
+    tool calls, and passed or failed on what that machine happened to have
+    read. The population it broke is exactly the people running the tool:
+    `adder auto on` learns a model, so activating adder made adder's suite red.
+
+    Setting `HOME` only works because the defaults that derive from it are
+    resolved when asked rather than at import (`settings._home`,
+    `shapes.default_model_path`). The two changes are one fix; neither works
+    alone.
     """
     import adder.core.settings as settings
     import adder.core.trace as trace
 
     home = tmp_path / "home"
-    home.mkdir()
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(trace, "CACHE_PATH", home / ".adder-trace-cache")
     monkeypatch.setattr(settings, "USER_FILE", home / "adder.json")
     monkeypatch.setenv("ADDER_LOG", str(home / "outcomes.jsonl"))

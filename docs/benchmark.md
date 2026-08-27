@@ -82,6 +82,28 @@ same pool (tokens admitted to a context that is then re-read every turn), so
 pricing them independently and adding the results counts the same dollars more
 than once.
 
+### The row this ladder was missing
+
+The tables above have no row for `guard_enforce=certain`, the level
+`adder auto on` installs by default, and the reason is that until recently
+there was nothing to put in one. Two things were wrong at once. `adder reread`
+keyed on `Read`'s `file_path`, so on any workload whose harness reads through
+the shell it measured $0.00 — and this module asked whether the guard was set
+to `full`, so `certain` was reported as unenforced even where it was on.
+
+There is now a first rung: the results a turn admitted that its own context
+already held, dropped turn by turn, with the rest of the session re-priced.
+It is the only row in the ladder with no modelled input behind it — no summary
+ratio, no `p_fail`, no handoff — because the call does not run. `adder reread`
+measures the set and `adder bench` replays it, so the two cannot drift.
+
+Two honest limits. The measurement estimates result sizes from characters and
+cannot see a file edited by a peer process or by `sed -i`, so it is an upper
+bound; and the subtraction is clamped to what each turn actually admitted,
+since context growth and estimated result sizes are counted by different
+methods. The figures in the tables above were taken before the row existed and
+are not restated here — run `adder bench` to place it on your own workload.
+
 ### The guard's threshold is derived, not chosen
 
 The PreToolUse guard fires on a **cost** ($0.25 by default), not a token count,

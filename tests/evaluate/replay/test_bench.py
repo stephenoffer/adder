@@ -202,3 +202,89 @@ class TestRun:
         b = run(_sessions())
         for i in range(len(b.results)):
             assert math.isfinite(b.multiple(i)) and b.multiple(i) >= 1.0 - 1e-9
+
+
+class TestTheDuplicateRung:
+    """What `guard_enforce=certain` is worth, on the report someone reads
+    before installing anything.
+
+    The duplicate refusal is the only rung here with no modelled input behind
+    it: no summary ratio, no p_fail, no handoff. The call does not run.
+    """
+
+    def _corpus(self, tmp_path, results):
+        import json
+
+        d = tmp_path / "proj"
+        d.mkdir(parents=True, exist_ok=True)
+        recs, ctx = [], 20_000
+        for i, (cmd, out) in enumerate(results):
+            ctx += len(out) // 4 + 300
+            recs.append({
+                "type": "assistant", "sessionId": "s", "cwd": "/repo",
+                "timestamp": f"2026-08-01T10:{i:02d}:00Z",
+                "message": {"id": f"m{i}", "model": "claude-opus-5",
+                            "usage": {"input_tokens": 1, "cache_read_input_tokens": ctx,
+                                      "cache_creation_input_tokens": 2_000,
+                                      "output_tokens": 300},
+                            "content": [{"type": "tool_use", "id": f"u{i}",
+                                         "name": "Bash", "input": {"command": cmd}}]}})
+            recs.append({
+                "type": "user", "sessionId": "s", "cwd": "/repo",
+                "timestamp": f"2026-08-01T10:{i:02d}:30Z",
+                "message": {"content": [{"type": "tool_result",
+                                         "tool_use_id": f"u{i}", "content": out}]}})
+        (d / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs))
+        return tmp_path
+
+    def test_the_shell_re_reads_are_dropped_and_the_rest_re_priced(self, tmp_path):
+        from adder.core.trace import load_sessions
+        from adder.evaluate.replay.bench import duplicate_admissions, run
+
+        root = self._corpus(tmp_path, [("cat /a.py", "x" * 40_000)] * 4)
+        sessions = load_sessions(root)
+        dups = duplicate_admissions(root)
+        assert sum(dups.values()) > 0
+
+        b = run(sessions, dups=dups, corners=False)
+        assert b.configs[1].regime.refuse_duplicates
+        assert b.results[1].refused_tokens > 0
+        assert b.results[1].total < b.results[0].total
+
+    def test_without_a_measurement_the_rung_is_absent(self, tmp_path):
+        """No transcript to measure, no row -- rather than a row of zeroes that
+        reads like a lever worth nothing."""
+        from adder.core.trace import load_sessions
+        from adder.evaluate.replay.bench import run
+
+        root = self._corpus(tmp_path, [(f"cat /{i}.py", "x" * 40_000) for i in range(4)])
+        b = run(load_sessions(root), corners=False)
+        assert not any(c.regime.refuse_duplicates for c in b.configs)
+
+    def test_certain_counts_as_enforced_and_full_is_not_required(self, monkeypatch):
+        """`_enforcing` asked whether the level was `full`, so `certain` -- what
+        `adder auto on` installs -- landed on the unenforced side of a report
+        about what installing gets you."""
+        import adder.evaluate.replay.bench as mod
+
+        monkeypatch.setattr(mod, "_enforce_level", lambda: "certain")
+        assert not mod._enforcing()
+
+        monkeypatch.setattr(mod, "_enforce_level", lambda: "full")
+        assert mod._enforcing()
+
+    def test_installed_stops_at_the_first_unenforced_rung(self):
+        """Rungs are cumulative, so `max(enforced)` would let an unenforced row
+        below an enforced one into a number whose whole claim is that nothing
+        has to be obeyed."""
+        from adder.evaluate.replay.bench import Bench, Config
+        from adder.evaluate.replay.plan import Regime, Result
+
+        cfgs = [Config("a", Regime(), enforced=True),
+                Config("b", Regime(), enforced=False),
+                Config("c", Regime(), enforced=True)]
+        results = [Result(regime=Regime(), main_input=100.0),
+                   Result(regime=Regime(), main_input=50.0),
+                   Result(regime=Regime(), main_input=25.0)]
+        b = Bench(cfgs, results, measured=100.0, sessions=1, corners=[])
+        assert b.installed == 1.0

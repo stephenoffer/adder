@@ -518,6 +518,45 @@ def scan(root: Path | str = DEFAULT_ROOT, *, window=None,
     return rep
 
 
+def avoidable_admissions(rep: RereadReport, *,
+                         min_tokens: int = MIN_RESULT_TOKENS) -> list[Admission]:
+    """Every admission both views agree was avoidable, counted once.
+
+    The set `recoverable` prices. Exposed separately because a replay needs the
+    admissions themselves rather than their dollars: `evaluate.replay.plan`
+    subtracts them from what each turn admitted and re-prices the whole
+    session, which is a different question from "what did they cost" and the
+    only one that answers "what would installing the guard have been worth".
+    """
+    seen: set[int] = set()
+    out: list[Admission] = []
+    groups = [r.redundant for r in rep.with_repeats(min_tokens=min_tokens)]
+    groups += [p.unchanged for p in rep.with_path_repeats(min_tokens=min_tokens)]
+    for admissions in groups:
+        for a in admissions:
+            if a.seq not in seen:
+                seen.add(a.seq)
+                out.append(a)
+    return out
+
+
+def avoidable_by_turn(rep: RereadReport, *,
+                      min_tokens: int = MIN_RESULT_TOKENS) -> dict[tuple[str, int], int]:
+    """`(session, turn) -> tokens` a guard refusing duplicates would not admit.
+
+    `Admission.turn` counts assistant turns seen before the result landed, so a
+    result answering turn *k*'s tool call carries `turn == k + 1` -- which is
+    the turn whose context first has to read it, and the index the replay's
+    per-turn admission list uses. The two line up without an adjustment; said
+    out loud because an off-by-one here moves tokens between turns and a token
+    admitted one turn earlier is carried one turn longer.
+    """
+    out: dict[tuple[str, int], int] = defaultdict(int)
+    for a in avoidable_admissions(rep, min_tokens=min_tokens):
+        out[(a.session, a.turn)] += a.tokens
+    return dict(out)
+
+
 def _carry(sessions):
     from adder.measure.window.carry import Carry
 
@@ -569,20 +608,12 @@ def recoverable(rep: RereadReport, shape, carry, *,
     would double-price exactly the calls the report is most confident about, so
     the admissions are unioned on `seq` first and priced afterwards.
     """
-    seen: set[int] = set()
     rows: dict[str, list[Admission]] = defaultdict(list)
-    for r in rep.with_repeats(min_tokens=min_tokens):
-        for a in r.redundant:
-            if a.seq not in seen:
-                seen.add(a.seq)
-                rows[a.session].append(a)
-    for p in rep.with_path_repeats(min_tokens=min_tokens):
-        for a in p.unchanged:
-            if a.seq not in seen:
-                seen.add(a.seq)
-                rows[a.session].append(a)
+    avoidable = avoidable_admissions(rep, min_tokens=min_tokens)
+    for a in avoidable:
+        rows[a.session].append(a)
     total = sum(price_admissions(s, aa, shape, carry, on=on) for s, aa in rows.items())
-    return total, len(seen)
+    return total, len(avoidable)
 
 
 def price_recurring(rc: Recurring, shape, carry, *, on: date | None = None) -> float:

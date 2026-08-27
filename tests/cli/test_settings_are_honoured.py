@@ -73,3 +73,42 @@ class TestTheModuleConstantStillRedirects:
         monkeypatch.delenv("ADDER_LOG", raising=False)
         monkeypatch.setattr(mod, "DEFAULT_LOG", tmp_path / "patched.jsonl")
         assert mod.log_path().name == "patched.jsonl"
+
+
+class TestHomeIsReadWhenAsked:
+    """A default built from `Path.home()` at import is one no test can move.
+
+    This is not fastidiousness about isolation. `adder auto on` learns a size
+    model into `~/.claude`, and the guard's own latency test then ran against
+    the developer's real 40,902-call model -- so the population whose suite
+    went red was exactly the population that had activated the tool. The
+    fixture believed it had redirected the file; the constant had been built
+    before the fixture ran.
+    """
+
+    def test_a_home_derived_default_follows_home(self, tmp_path, monkeypatch):
+        from adder.core.settings import resolve
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        for name in ("size_model", "root", "guard_state", "home", "trace_cache",
+                     "log", "ledger", "uptake_cache"):
+            got = str(resolve(cwd=tmp_path, env={})[name].value)
+            assert got.startswith(str(tmp_path)), f"{name} is pinned to import-time home"
+
+    def test_the_size_model_fallback_follows_home_too(self, tmp_path, monkeypatch):
+        from adder.core.shapes import default_model_path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert default_model_path() == tmp_path / ".claude" / ".adder-sizes.json"
+
+    def test_the_fixture_moves_the_learned_model(self, isolated_home):
+        """The specific leak, asserted where it was missed."""
+        from adder.core.shapes import model_path
+
+        assert isolated_home in model_path().parents
+
+    def test_the_fixture_leaves_no_learned_model_to_find(self, isolated_home):
+        from adder.core.shapes import load_model
+
+        assert load_model().calls == 0

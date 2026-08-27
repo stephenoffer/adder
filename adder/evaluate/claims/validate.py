@@ -35,10 +35,35 @@ class Claim:
     measured: str
     expected: str
     note: str = ""
+    # There was nothing here to test the claim against, which is not the same
+    # thing as the claim failing.
+    #
+    # `compaction keeps less than assumed` printed `[FAIL] ... no events` on a
+    # corpus containing zero compactions. A FAIL from this command means a
+    # number this repo quotes has stopped holding on your data; "your data does
+    # not contain the event" is a different statement and it must not borrow
+    # that weight. The file was already inconsistent about it -- four claims
+    # reported the same situation as a trivial PASS -- so neither the tally nor
+    # the exit code meant what it said.
+    untestable: bool = False
+
+    @property
+    def status(self) -> str:
+        return "N/A " if self.untestable else ("PASS" if self.ok else "FAIL")
 
     def line(self) -> str:
-        return (f"  [{'PASS' if self.ok else 'FAIL'}] {self.name:<44}"
+        return (f"  [{self.status}] {self.name:<44}"
                 f"{self.measured:>14}  expected {self.expected}")
+
+
+def untestable(name: str, measured: str, expected: str, note: str = "") -> Claim:
+    """A claim this corpus cannot settle either way.
+
+    `ok=True` so that every existing `not c.ok` reader treats it as
+    non-failing; `untestable` so the report can say which it is rather than
+    quietly counting it as a pass.
+    """
+    return Claim(name, True, measured, expected, note, untestable=True)
 
 
 def output_drives_context(sessions, min_turns: int = 30) -> Claim:
@@ -64,8 +89,8 @@ def output_drives_context(sessions, min_turns: int = 30) -> Claim:
         out += sum(t.out for t in main[:-1])
         n += 1
     if not growth or n < 5:
-        return Claim("output is the largest growth source", False, "insufficient data",
-                     "0.35-0.75x", f"only {n} non-compacting sessions")
+        return untestable("output is the largest growth source", "insufficient data",
+                          "0.35-0.75x", f"only {n} non-compacting sessions")
     r = out / growth
     # Expected range was 0.85-1.15x while the parser multi-counted every turn
     # with more than one content block, which inflated output ~1.78x without
@@ -85,7 +110,7 @@ def input_side_dominates(sessions) -> Claim:
             outp += t.output_cost()
     tot = inp + outp
     if not tot:
-        return Claim("input-side dominates spend", False, "no data", ">=80%")
+        return untestable("input-side dominates spend", "no data", ">=80%")
     share = inp / tot
     return Claim("input-side dominates spend", share >= 0.80,
                  f"{share:.0%}", ">=80%")
@@ -94,7 +119,7 @@ def input_side_dominates(sessions) -> Claim:
 def debt_pool_is_addressable(sessions) -> Claim:
     total, base, acc = decompose_read_cost(sessions)
     if not total:
-        return Claim("addressable pool >> baseline", False, "no data", ">=3x")
+        return untestable("addressable pool >> baseline", "no data", ">=3x")
     ratio = acc / base if base else float("inf")
     return Claim("addressable pool >> baseline", ratio >= 3.0,
                  f"{ratio:.1f}x", ">=3x", f"${acc:,.0f} addressable / ${base:,.0f} fixed")
@@ -113,8 +138,8 @@ def sessions_are_long(sessions, min_median: int = 200) -> Claim:
 
     rows = [(len(s_.main_turns), s_.cost) for s_ in sessions.values() if s_.turns]
     if not rows:
-        return Claim("spend sits in long sessions", False, "no data",
-                     f">={min_median} turns")
+        return untestable("spend sits in long sessions", "no data",
+                          f">={min_median} turns")
     total = sum(c for _, c in rows)
     if total <= 0:
         return Claim("spend sits in long sessions", False, "no cost",
@@ -137,7 +162,7 @@ def model_routing_is_marginal(sessions) -> Claim:
 
     total = sum(s.cost for s in sessions.values())
     if not total:
-        return Claim("model routing is a minor lever", False, "no data", "<5% of spend")
+        return untestable("model routing is a minor lever", "no data", "<5% of spend")
     share = model_routing(sessions).saving / total
     return Claim("model routing is a minor lever", share < 0.05,
                  f"{share:.1%}", "<5% of spend")
@@ -162,8 +187,8 @@ def session_model_choice_is_not_marginal(sessions, min_share: float = 0.20) -> C
     base = replay(sessions, Regime())
     cheap = replay(sessions, Regime(session_model="claude-sonnet-5", session_rework=0.0))
     if not base.total:
-        return Claim("starting cheap beats switching cheap", False, "no data",
-                     f">={min_share:.0%} of spend")
+        return untestable("starting cheap beats switching cheap", "no data",
+                          f">={min_share:.0%} of spend")
     share = (base.total - cheap.total) / base.total
     return Claim("starting cheap beats switching cheap", share >= min_share,
                  f"{share:.1%}", f">={min_share:.0%} of spend",
@@ -185,8 +210,8 @@ def replay_reproduces_measured_spend(sessions, tol: float = 0.05) -> Claim:
 
     measured = sum(s.cost for s in sessions.values())
     if not measured:
-        return Claim("plan replay reproduces measured spend", False, "no data",
-                     f"within {tol:.0%}")
+        return untestable("plan replay reproduces measured spend", "no data",
+                          f"within {tol:.0%}")
     err = (replay(sessions, Regime()).total - measured) / measured
     return Claim("plan replay reproduces measured spend", abs(err) <= tol,
                  f"{err:+.1%}", f"within +/-{tol:.0%}")
@@ -228,7 +253,7 @@ def countdown_would_underestimate(sessions) -> Claim:
     """Claim: the naive countdown is wrong, and wrong in the expensive direction."""
     h = Horizon.from_sessions(sessions)
     if len(h.lengths) < MIN_SAMPLES:
-        return Claim("countdown estimator is unsafe", False, "no data", "n/a")
+        return untestable("countdown estimator is unsafe", "no data", "n/a")
     worst = 0.0
     for n in (400, 600, 1000):
         cd, emp = h.countdown(n), h.remaining(n)
@@ -291,7 +316,7 @@ def carry_multiplier_is_above_the_assumption(sessions) -> Claim:
     label = f"{base:.2f}x assumption"
     band = f"{base:.2f}-{max(0.60, base * 6):.2f}x"
     if not m:
-        return Claim(f"carry multiplier exceeds the {label}", False, "no data", band)
+        return untestable(f"carry multiplier exceeds the {label}", "no data", band)
     return Claim(f"carry multiplier exceeds the {label}",
                  base <= m <= max(0.60, base * 6), f"{m:.3f}x", band,
                  f"the old model under-prices carry by {m / max(1e-12, base):.2f}x")
@@ -308,7 +333,7 @@ def horizon_mean_exceeds_median(sessions) -> Claim:
     """
     h = Horizon.from_sessions(sessions)
     if len(h.lengths) < MIN_SAMPLES:
-        return Claim("horizon mean exceeds its median", False, "no data", ">=1.0x")
+        return untestable("horizon mean exceeds its median", "no data", ">=1.0x")
     med, mean = h.remaining(0), h.mean_remaining(0)
     if med <= 0:
         return Claim("horizon mean exceeds its median", False, "no median", ">=1.0x")
@@ -454,8 +479,8 @@ def the_target_reduction_is_reachable(sessions, target: float = 10.0) -> Claim:
 
     base = replay(sessions, Regime())
     if not base.total:
-        return Claim(f"a regime exists that reaches {target:.0f}x", False,
-                     "no data", f">={target:.0f}x")
+        return untestable(f"a regime exists that reaches {target:.0f}x",
+                          "no data", f">={target:.0f}x")
     edge = replay(sessions, frontier())
     got = base.total / edge.total if edge.total else float("inf")
     return Claim(f"a regime exists that reaches {target:.0f}x", got >= target,
@@ -505,9 +530,9 @@ def an_opening_is_mostly_a_cache_read(sessions, min_share: float = 0.40) -> Clai
 
     op = measure(sessions)
     if not op.measured:
-        return Claim("a session opening is mostly a cache read", False,
-                     "no openings", f">={min_share:.0%} from cache",
-                     "no session opened within the TTL of another turn")
+        return untestable("a session opening is mostly a cache read",
+                          "no openings", f">={min_share:.0%} from cache",
+                          "no session opened within the TTL of another turn")
     return Claim("a session opening is mostly a cache read",
                  op.warm_share >= min_share, f"{op.warm_share:.0%}",
                  f">={min_share:.0%} from cache",
@@ -531,7 +556,7 @@ def restarting_beats_running_long(sessions) -> Claim:
     op = measure(sessions)
     observed = weighted_median_turns(sessions)
     if not op.measured or not observed:
-        return Claim("restarting beats running long", False, "no data", "k* < as-run")
+        return untestable("restarting beats running long", "no data", "k* < as-run")
     c = Carry.measure(sessions)
     k, at_k, never = cadence(op, model="claude-opus-5", growth=max(1.0, c.growth),
                              read_mult=c.read_mult, observed_turns=observed)
@@ -580,8 +605,8 @@ def installing_adder_pays_by_itself(sessions, min_mult: float = 1.3) -> Claim:
     """
     b = _bench(sessions)
     if not b.baseline:
-        return Claim("installing it pays before you obey it", False, "no data",
-                     f">={min_mult:.1f}x")
+        return untestable("installing it pays before you obey it", "no data",
+                          f">={min_mult:.1f}x")
     return Claim("installing it pays before you obey it", b.installed >= min_mult,
                  f"{b.installed:.1f}x", f">={min_mult:.1f}x",
                  "guard at its shipped defaults plus the agent tiers; no behaviour change")
@@ -601,8 +626,8 @@ def the_benchmark_headline_holds(sessions, min_mult: float = 5.0) -> Claim:
     """
     b = _bench(sessions)
     if not b.baseline:
-        return Claim(f"the advice reaches {min_mult:.0f}x", False, "no data",
-                     f">={min_mult:.0f}x")
+        return untestable(f"the advice reaches {min_mult:.0f}x", "no data",
+                          f">={min_mult:.0f}x")
     return Claim(f"the advice reaches {min_mult:.0f}x", b.followed >= min_mult,
                  f"{b.followed:.1f}x", f">={min_mult:.0f}x",
                  f"nominal; worst corner of the modelled inputs is {b.worst_corner:.1f}x")
@@ -681,8 +706,8 @@ def the_guard_predicts_sizes_it_used_to_assume(sessions, root=None) -> Claim:
             train_heads.setdefault(segs[-1][0], []).append(size)
 
     if len(test) < 200:
-        return Claim("learned sizes beat the assumed constant", ok=True,
-                     measured="n/a", expected="10x lower error",
+        return untestable("learned sizes beat the assumed constant",
+                          measured="n/a", expected="10x lower error",
                      note="too few local Bash calls to hold out; run on a machine "
                           "with transcripts")
 
@@ -729,8 +754,8 @@ def memory_is_carried_not_written(sessions, min_ratio: float = 5.0) -> Claim:
 
     p = Pricing.measure(sessions)
     if not p.measured:
-        return Claim("memory is carried, not written", False, "no sessions",
-                     f">={min_ratio:.0f}x carry", "no local sessions to fit")
+        return untestable("memory is carried, not written", "no sessions",
+                          f">={min_ratio:.0f}x carry", "no local sessions to fit")
     open_cost, carry = p.open_cost(1_000), p.carry_cost(1_000)
     ratio = carry / open_cost if open_cost else 0.0
     return Claim("memory is carried, not written", ratio >= min_ratio,
@@ -753,8 +778,8 @@ def compaction_keeps_less_than_assumed(sessions, assumed: float = 0.35) -> Claim
 
     rep = analyse(sessions)
     if not rep.events:
-        return Claim("compaction keeps less than assumed", False, "no events",
-                     f"<={assumed:.0%} kept", "no compactions on record")
+        return untestable("compaction keeps less than assumed", "no events",
+                          f"<={assumed:.0%} kept", "no compactions on record")
     kept = rep.mean_kept()
     return Claim("compaction keeps less than assumed", kept <= assumed,
                  f"{kept:.0%}", f"<={assumed:.0%} kept",
@@ -780,8 +805,8 @@ def a_brief_can_cross_a_restart(sessions, min_tokens: int = 2_000) -> Claim:
 
     peaks = [s.peak_context for s in sessions.values() if s.turns]
     if not peaks:
-        return Claim("a brief can cross a restart", False, "no sessions",
-                     f">={min_tokens:,} tok", "no local sessions")
+        return untestable("a brief can cross a restart", "no sessions",
+                          f">={min_tokens:,} tok", "no local sessions")
     context = int(median(peaks))
     turns = weighted_median_turns(sessions)
     c = Carry.measure(sessions)
@@ -835,8 +860,8 @@ def the_aggregate_beats_the_tail(sessions, root=None) -> Claim:
             big_single += size
 
     if total < 100_000:
-        return Claim("repeated small commands out-admit the big ones", ok=True,
-                     measured="n/a", expected="aggregate > tail",
+        return untestable("repeated small commands out-admit the big ones",
+                          measured="n/a", expected="aggregate > tail",
                      note="too little local Bash volume to compare")
 
     crossed = sum(v for v in per.values() if v >= AGGREGATE_TOKENS)
@@ -880,8 +905,8 @@ def the_guard_is_worth_more_than_it_costs(sessions, root=None) -> Claim:
     u = guard_uptake(root)
     r = guard_replay(root, advice_taken=u.rate if u.measured else None)
     if not r.calls:
-        return Claim("the guard pays for the advice it gives", ok=True,
-                     measured="n/a", expected="saving > advice cost",
+        return untestable("the guard pays for the advice it gives",
+                          measured="n/a", expected="saving > advice cost",
                      note="no local tool calls to replay")
     if not r.fires:
         return Claim("the guard pays for the advice it gives", ok=True,
@@ -930,8 +955,8 @@ def activating_it_pays_more_than_installing_it(sessions, min_mult: float = 2.5) 
 
     advisory = _bench(sessions)
     if not advisory.baseline:
-        return Claim("activating it beats installing it", False, "no data",
-                     f">={min_mult:.1f}x")
+        return untestable("activating it beats installing it", "no data",
+                          f">={min_mult:.1f}x")
     # No corner sweep: this claim quotes one multiple, and the sweep is eight
     # more full replays than that multiple needs.
     active = bench_run(sessions, enforcing=True, corners=False,
@@ -977,8 +1002,8 @@ def enforcement_removes_the_assumption(sessions, root=None,
                      state_path=base.state_path, enforce='full')
     r = guard_replay(root, cfg=cfg)
     if not r.calls or not r.fires:
-        return Claim("enforcing removes the uptake assumption", ok=True,
-                     measured="n/a", expected=f">={min_prevented_share:.0%} prevented",
+        return untestable("enforcing removes the uptake assumption",
+                          measured="n/a", expected=f">={min_prevented_share:.0%} prevented",
                      note="no local tool calls to replay")
     share = 1.0 - r.assumed_share
     return Claim(
@@ -1064,12 +1089,15 @@ def main(argv: list[str] | None = None) -> int:
         import json
 
         failed = [c for c in claims if not c.ok]
+        skipped = [c for c in claims if c.untestable]
         print(json.dumps({
             "ok": not failed,
-            "passed": len(claims) - len(failed),
+            "passed": len(claims) - len(failed) - len(skipped),
             "failed": len(failed),
+            "untestable": len(skipped),
             "claims": [{"name": c.name, "ok": c.ok, "measured": c.measured,
-                        "expected": c.expected, "note": c.note} for c in claims],
+                        "expected": c.expected, "note": c.note,
+                        "untestable": c.untestable} for c in claims],
         }))
         return 1 if failed else 0
     print("\n  Foundational claims, re-measured against local transcripts\n")
@@ -1078,12 +1106,21 @@ def main(argv: list[str] | None = None) -> int:
         if c.note:
             print(f"         {c.note}")
     failed = [c for c in claims if not c.ok]
+    skipped = [c for c in claims if c.untestable]
     print()
+    if skipped:
+        # Said before the verdict, because it is the qualifier on it: a run
+        # with half its claims unmeasurable is not the same evidence as a run
+        # with none, and neither is a failure.
+        print(f"  {len(skipped)} claim(s) had nothing here to test against. "
+              "That is absence of")
+        print("  evidence, not evidence against; they are excluded from the "
+              "verdict below.")
     if failed:
         print(f"  {len(failed)} claim(s) no longer hold. The savings estimates in this")
         print("  repo are calibrated to this workload and may not apply here.\n")
         return 1
-    print("  All claims hold on this data.\n")
+    print(f"  All {len(claims) - len(skipped)} testable claims hold on this data.\n")
     return 0
 
 

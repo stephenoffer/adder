@@ -55,13 +55,24 @@ from adder.util.text import CHARS_PER_TOKEN, est_tokens, flatten_text
 # on every call, so it is a flat JSON file and never a scan.
 MODEL_VERSION = 1
 
-# The defaults. Both are resolved through `model_path()` and `max_age_s()`
-# rather than read here, because a constant captured at import time is one no
-# test can redirect and no `.adder.json` can override -- and this one names a
-# file under the user's home directory, so an import-time capture means the
-# suite reads and writes the developer's own model. `render.color_enabled` and
+# Both are resolved through `model_path()` and `max_age_s()` rather than read
+# here, because a constant captured at import time is one no test can redirect
+# and no `.adder.json` can override -- and this one names a file under the
+# user's home directory, so an import-time capture means the suite reads and
+# writes the developer's own model. `render.color_enabled` and
 # `guard.Settings` made the same correction for the same reason.
-DEFAULT_MODEL_PATH = Path.home() / ".claude" / ".adder-sizes.json"
+#
+# It was still captured at import, one layer down: the fallback below read a
+# module constant, and `core.settings` held the same path in a `Setting`
+# default built at import. `monkeypatch.setenv("HOME", ...)` moves neither, so
+# a machine that had run `adder auto on` -- which learns a model into
+# `~/.claude` -- ran its own suite against 40,902 of the developer's real tool
+# calls. A function, so `Path.home()` is read when it is asked for.
+
+
+def default_model_path() -> Path:
+    """Where a learned model lives when nothing has been configured."""
+    return Path.home() / ".claude" / ".adder-sizes.json"
 
 # Re-learn if the cached model is older than this. A day is chosen so that a
 # machine whose habits changed converges within a working week, without any
@@ -76,7 +87,7 @@ def model_path() -> Path:
 
         return Path(str(_setting("size_model")))
     except Exception:
-        return Path(os.environ.get("ADDER_SIZE_MODEL", DEFAULT_MODEL_PATH))
+        return Path(os.environ.get("ADDER_SIZE_MODEL") or default_model_path())
 
 
 def max_age_s() -> float:

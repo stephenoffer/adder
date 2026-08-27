@@ -71,7 +71,7 @@ Check that a lever is real before trusting it.
 |---|---|
 | `adder savings [root] [--max-turns N]` | what each lever is worth ([levers.md](levers.md)) |
 | `adder verify --since DATE [root]` | did a change actually land? |
-| `adder validate [root]` | re-test the claims everything rests on ([measurement.md](measurement.md)) |
+| `adder validate [root]` | re-test the claims everything rests on; each is `PASS`, `FAIL`, or `N/A` when this corpus has nothing to test it against, and only a `FAIL` sets the exit code ([measurement.md](measurement.md)) |
 | `adder regret [root]` | dollar regret of the horizon estimator |
 | `adder simulate [root]` | replay sessions under interventions; test lever composition |
 | `adder plan [root] [--target N] [--delegate-above TOK] [--split-turns N] [--effort E] [--session-model M] [--session-rework F]` | price the whole workload under one followable regime, and solve for the mildest one that hits a target reduction |

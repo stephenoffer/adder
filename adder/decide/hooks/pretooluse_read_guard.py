@@ -136,7 +136,8 @@ def main() -> int:
         session_id = str(payload.get("session_id") or "")
         state = guard.load_state(session_id)
         sizes = load_model()
-        if not guard.needs_pricing(tool, inp, sizes=sizes, state=state, cwd=cwd):
+        if not guard.needs_pricing(tool, inp, sizes=sizes, state=state,
+                                   cfg=guard.Settings.resolve(cwd=cwd), cwd=cwd):
             # Remembered even when there is nothing to say. A read has to be
             # recorded for the *second* one to be caught, and a small bounded
             # command has to be counted for the aggregate rule to work at all --

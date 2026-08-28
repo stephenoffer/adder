@@ -106,6 +106,15 @@ SETTINGS: tuple[Setting, ...] = (
             "agent runtime driving the session: claude-code, codex, gemini-cli, "
             "aider, openhands, custom, or any. Harnesses that pin the main "
             "session to one vendor make other vendors subagent-only"),
+    Setting("classify_terms", "", str,
+            "vocabulary this project has that the shipped classifier does not, "
+            "as `cheap=map_batches,placement group; hard=autoscaler,preemption`. "
+            "A `cheap` term names one findable thing here, so a search for it is "
+            "bounded and can route down; a `hard` term names open-ended work. "
+            "Belongs in the project's `.adder.json`, because it is a fact about "
+            "this repository and not about the machine. Empty means the shipped "
+            "vocabulary alone, which on a domain codebase abstains on nearly "
+            "everything and spends routing overhead to say `no change`"),
     Setting("ladder", "", str,
             "dispatch ladder as `T0=model,T1=model,...`, overriding the pinned "
             "Claude default. Empty keeps the built-in; the catalog reports "
@@ -147,10 +156,26 @@ SETTINGS: tuple[Setting, ...] = (
             "explicitly, in which case what you set wins"),
     Setting("guard_max_fires", 15, int,
             "most times the guard may speak in one session"),
+    Setting("guard_min_tokens_by_tool", "", str,
+            "per-tool overrides for guard_min_tokens, as `Bash=800,Read=6000`. "
+            "One floor cannot serve two distributions: on the machine this was "
+            "written for, Bash returns a p90 of 1.2K over 2,490 calls and Read "
+            "5.9K over 58, so the shipped 2,000 is almost never reached by one "
+            "and routinely by the other. `adder guard --floors` prints the "
+            "distributions and the floor each implies. Empty keeps the global "
+            "value for every tool, which is the previous behaviour exactly"),
+    Setting("guard_max_fires_by_tool", "", str,
+            "per-tool overrides for guard_max_fires, as `Bash=8,Read=8`. The "
+            "global ceiling is shared, so the tool called two thousand times a "
+            "session can spend all of it before the tool called fifty times "
+            "says anything. Both ceilings apply; neither raises the other"),
     Setting("guard_enforce", "off", str,
-            "how far the guard may go: off (advise only), certain (refuse the "
-            "calls that admit nothing new), full (also refuse a large read that "
-            "has a cheaper equal)",
+            "how far the guard may go: off (advise only), shadow (compute the "
+            "refusals, record them, refuse nothing), certain (refuse the calls "
+            "that admit nothing new), full (also refuse a large read that has a "
+            "cheaper equal). `shadow` is where to start: it turns the assumed "
+            "uptake term into a measurement on this machine before anything is "
+            "denied",
             env="ADDER_GUARD_ENFORCE"),
     Setting("guard_state", _home(".claude", ".adder-guard.json"), _as_path,
             "per-session guard memory: files read, shapes already advised"),

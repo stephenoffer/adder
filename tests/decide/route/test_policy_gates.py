@@ -42,6 +42,23 @@ class TestFeasibilityGate:
                                      est_out_tokens=500, p_fail=0.0)
         assert not d and "exceeds" in d.reason
 
+    def test_the_overflow_note_names_the_stronger_of_two_equal_windows(self):
+        """Sonnet and Opus both hold 1M tokens. `max` returns the first maximum,
+        so a plain argmax over the window named Sonnet -- and this sentence is
+        the one a reader follows when they go and split the read by hand, so
+        naming the weaker of two equals is a recommendation that is wrong for
+        nothing."""
+        from adder.pricing.registry import context_window
+
+        p = decide("what is in the log", context_tokens=100_000,
+                   remaining_turns=300, est_read_tokens=5_000_000, p_fail=0.0)
+        note = next(r for r in p.reasons if "largest window" in r)
+        widest = max(context_window(t.model, 0) for t in Tier)
+        named = next(t.model for t in Tier if t.model in note)
+        assert context_window(named, 0) == widest
+        assert named == Tier.T2.model, \
+            "with the windows tied, the note must name the more capable rung"
+
     def test_a_huge_read_escalates_the_tier_for_feasibility(self):
         p = decide("what is in the log", context_tokens=100_000, remaining_turns=300,
                    est_read_tokens=400_000, p_fail=0.0)

@@ -143,6 +143,68 @@ def ladder_warnings(on=None) -> list[str]:
     return out
 
 
+def project_terms() -> dict[str, tuple[str, ...]]:
+    """The vocabulary this project has and the shipped classifier does not.
+
+    Why this exists, in one measurement: on a real domain codebase the
+    classifier abstained on twelve out of twelve task phrasings taken from the
+    repository's own issue tracker. Every one of them went to the top rung with
+    confidence 0.3, which means the routing decision cost its own overhead to
+    arrive at "no change" -- twelve times. A classifier that always abstains is
+    not conservative, it is a tax.
+
+    The reason is not subtle. The shipped vocabulary is English about software
+    in general: `refactor`, `investigate`, `race condition`. A repository whose
+    subject matter is scheduling has fifty nouns that decide what a task is, and
+    the classifier has never seen one of them.
+
+    So the project gets to say. `cheap` names things that are *findable here* --
+    a symbol, a component, a file everybody knows by name -- which bounds a
+    search over them the way a path does. `hard` names work that is open-ended
+    here, which is the `_HARD` list extended by somebody who knows the domain.
+
+    Declared rather than learned, and that is a constraint rather than a
+    preference. The obvious way to learn it is from the task descriptions in
+    the outcome log, and `outcomes.Outcome` deliberately stores `task_hash` and
+    never the text -- the log lives in the user's home directory and a task
+    description contains their code and their prompts. `track/similar.py` says
+    so in as many words and builds a MinHash sketch precisely so the terms
+    cannot be recovered. Learning a vocabulary out of that would undo it, so
+    this reads a setting instead and prints what it read.
+
+    Never raises: a malformed entry is dropped, because a typo in a config file
+    must not be what decides where work is dispatched.
+    """
+    from adder.core.settings import get as _setting
+
+    out: dict[str, list[str]] = {"cheap": [], "hard": []}
+    try:
+        raw = str(_setting("classify_terms") or "").strip()
+    except (KeyError, OSError, ValueError):
+        return dict.fromkeys(out, ())
+    for group in raw.split(";"):
+        kind, _, terms = group.partition("=")
+        kind = kind.strip().lower()
+        if kind not in out:
+            continue
+        for term in terms.split(","):
+            term = " ".join(term.split()).lower()
+            if term:
+                out[kind].append(term)
+    return {k: tuple(v) for k, v in out.items()}
+
+
+def _matches(task: str, terms: tuple[str, ...]) -> str:
+    """The first project term this task contains, or "".
+
+    Substring rather than a word boundary, because the terms are phrases as
+    often as words -- `placement group`, `object store` -- and a boundary regex
+    built from user text is a regex somebody can break with a bracket.
+    """
+    low = (task or "").lower()
+    return next((t for t in terms if t in low), "")
+
+
 class Tier(IntEnum):
     T0 = 0   # haiku,  read-only
     T1 = 1   # sonnet, scoped edits
@@ -242,6 +304,58 @@ _DEFECT = re.compile(
     r"race condition|deadlock|injection|overflow|backdoor|exploit|"
     r"dead code|misconfigurat\w+)\b", re.I)
 
+# The article that says the writer has a particular thing in mind, on a search
+# verb. `find the X`, `locate the Y`.
+#
+# This is the gate that stopped `_DEFECT` being the whole rule. A wordlist
+# leaks: "find the security flaw", "find the data corruption", "locate the
+# privilege escalation", "find the auth bypass" and "locate the crash" name
+# five defect classes and matched none of the nouns above, so all five reached
+# the weakest rung at 0.85 confidence -- a whole-tree audit priced as a lookup,
+# with the same silent failure the defect rule exists to prevent. Adding those
+# five words buys five probes and leaves the next five.
+#
+# So the wordlist is demoted to an accelerator and the default inverts. An
+# enumeration over a definite noun phrase abstains unless the sentence bounds
+# what is being searched: a path, a symbol, a quoted string, or a noun from
+# `_LOCATABLE` that names one findable artifact. That is this module's own
+# stated asymmetry -- abstaining routes up, and a misrouted easy task costs
+# pennies -- applied one level up, to the vocabulary itself rather than to the
+# tasks it happens to cover.
+_DEFINITE = re.compile(
+    r"^\s*(?:list|show|find|locate|grep|search|count|enumerate)\s+"
+    r"(?:for\s+|out\s+|me\s+)?(?:the|this|that)\s+(?P<np>[^,.;:?!]*)", re.I)
+
+# Nouns that bound a search to one findable thing, so a short answer is
+# checkable rather than merely short. "find the config file" names an artifact
+# somebody can open; "find the auth bypass" names a conclusion.
+#
+# An allowlist rather than a denylist, and that is the whole point: an unknown
+# noun fails expensive. The cost of a wrong entry here is one task priced a rung
+# too high; the cost of a missing one is an audit that reads as complete.
+_LOCATABLE = frozenset((
+    "file", "files", "path", "paths", "directory", "dir", "folder", "module",
+    "package", "script", "function", "method", "class", "constant", "variable",
+    "field", "attribute", "parameter", "argument", "flag", "option", "setting",
+    "config", "default", "value", "line", "lines", "definition", "declaration",
+    "signature", "docstring", "comment", "import", "export", "test", "tests",
+    "fixture", "readme", "changelog", "license", "makefile", "dockerfile",
+    "version", "commit", "branch", "tag", "diff", "log", "logs", "output",
+    "error", "message", "string", "name", "url", "endpoint", "route", "table",
+    "column", "schema", "type", "enum", "entry", "record", "row", "key",
+    "id", "number", "count", "size", "date", "time", "timestamp", "rule",
+))
+
+# Something in the sentence that names a particular thing: a dotted or
+# underscored identifier, a call, a CamelCase symbol, or anything quoted or
+# backticked. `_PATHLIKE` covers the file case separately.
+_NAMED = re.compile(
+    r"`[^`]+`|\"[^\"]+\"|'[^']+'"
+    r"|\b[A-Za-z_][\w]*\s*\("
+    r"|\b[a-z][\w]*_[\w]+\b"
+    r"|\b[a-z]+\.[a-z][\w]*\b"
+    r"|\b[A-Z][a-z]+[A-Z][A-Za-z]*\b")
+
 # High-precision expensive signals: the *work* is open-ended, cross-cutting or
 # investigative. Every entry here names something to be done, not something to
 # be done to. See `_HARD_TOPIC` for why that distinction is load-bearing.
@@ -310,6 +424,34 @@ _NOT_PLURAL = frozenset((
 _WORD_S = re.compile(r"\b([A-Za-z][\w-]{2,}s)\b")
 
 
+def _unbounded_target(task: str) -> str:
+    """The definite noun phrase an enumeration is searching for, if it is unbounded.
+
+    Returns the phrase when the sentence says "find the X" and nothing in it
+    bounds what X is -- no path, no symbol, no quoted string, and no noun from
+    `_LOCATABLE`. Returns "" when the search is bounded, which is the case the
+    cheapest rung exists for.
+
+    The asymmetry is deliberate and it is the module's own: an unknown noun
+    fails expensive. "find the config file" is a lookup and stays one; "find the
+    auth bypass" is a whole-tree audit whose incomplete answer is indistinguish-
+    able from a complete one, and no wordlist of defect nouns will ever be
+    finished.
+    """
+    m = _DEFINITE.match(task or "")
+    if m is None:
+        return ""
+    phrase = (m.group("np") or "").strip()
+    if not phrase:
+        return ""
+    # A path or a named symbol anywhere in the sentence bounds it: an
+    # incomplete answer about `config.py` is checkable by opening `config.py`.
+    if _PATHLIKE.search(task) or _NAMED.search(task):
+        return ""
+    words = {w.lower().strip("`'\"") for w in re.findall(r"[\w-]+", phrase)}
+    return "" if words & _LOCATABLE else phrase
+
+
 def _plural_target(task: str) -> bool:
     """Does the text name a set of things rather than a single one?
 
@@ -354,7 +496,10 @@ def classify(task: str) -> Verdict:
     words = len(t.split())
     reasons: list[str] = []
 
-    hard = bool(_HARD.search(t))
+    terms = project_terms()
+    named_here = _matches(t, terms["cheap"])
+    hard_here = _matches(t, terms["hard"])
+    hard = bool(_HARD.search(t)) or bool(hard_here)
     topic = bool(_HARD_TOPIC.search(t))
     mutating = bool(_MUTATING.search(t))
     trivial_shape = bool(_TRIVIAL.match(t))
@@ -377,7 +522,10 @@ def classify(task: str) -> Verdict:
 
     # --- high-precision expensive signals: decide first, never route these down
     if hard:
-        reasons.append("matches design/investigation/cross-cutting vocabulary")
+        reasons.append(
+            f"{hard_here!r} is open-ended work in this project (`classify_terms`)"
+            if hard_here else
+            "matches design/investigation/cross-cutting vocabulary")
         tier = Tier.T3 if (multi or words > 120) else Tier.T2
         if multi:
             reasons.append("multi-step phrasing")
@@ -425,6 +573,37 @@ def classify(task: str) -> Verdict:
         reasons.append(
             "a defect class as the search target, over no named file: the "
             "answer is a set, so an incomplete one is not detectable")
+        return Verdict(Tier.T2, 0.3, reasons, read_only=read_only)
+
+    # --- recall-critical, fourth shape: a search for a thing nothing bounds
+    #
+    # The rule above needs the noun to be on a list, and the list leaks. This
+    # is the same judgement made from the other side: an enumeration over a
+    # definite noun phrase abstains *unless* the sentence says what would make
+    # a short answer checkable. `_DEFECT` stays above it as an accelerator --
+    # it also catches the detection verbs, which this does not -- but it is no
+    # longer what stands between a whole-tree audit and the weakest rung.
+    #
+    # Singular only. A plural target already has a rule below it -- "list the
+    # workloads that break under a new quota" is deliberately T1 rather than an
+    # abstention, because completeness is part of that answer without the whole
+    # sentence being a set query -- and the gap this closes was the *singular*
+    # definite noun phrase, which the plurality gate is blind to by
+    # construction: "find the bug" is not a claim that there is one bug.
+    if named_here and (unbounded := _unbounded_target(t)):
+        # A project term bounds a search the same way a path does: it names one
+        # findable thing *here*, so an incomplete answer about it is checkable.
+        # Reported rather than silent, because the whole risk of a configured
+        # vocabulary is a downgrade nobody can trace.
+        reasons.append(f"{named_here!r} names one findable thing in this project "
+                       f"(`classify_terms`), so {unbounded!r} is bounded after all")
+        unbounded = ""
+    elif not plural and (unbounded := _unbounded_target(t)):
+        reasons.append(
+            f"searching for {unbounded!r}, and nothing in the sentence bounds "
+            "it: no path, no symbol, and no noun that names one findable "
+            "thing. An incomplete answer to this is not detectable, so the "
+            "unknown noun fails expensive")
         return Verdict(Tier.T2, 0.3, reasons, read_only=read_only)
 
     # --- recall-critical, third shape: the same search, answered yes or no
@@ -481,7 +660,34 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="adder classify")
     ap.add_argument("task", nargs="*", help="task text (or stdin)")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--terms", action="store_true",
+                    help="the project vocabulary in effect, and how to set it")
     a = ap.parse_args(argv)
+
+    if a.terms:
+        terms = project_terms()
+        if a.json:
+            print(json.dumps({k: list(v) for k, v in terms.items()}))
+            return 0
+        if not any(terms.values()):
+            print("\n  No project vocabulary set.\n")
+            print("  The shipped vocabulary is English about software in general.")
+            print("  On a domain codebase it abstains on nearly every task, which")
+            print("  means the routing decision costs its own overhead to arrive")
+            print("  at `no change`. Teach it this repository's nouns in")
+            print("  `.adder.json`:\n")
+            print('    {"classify_terms": "cheap=map_batches,placement group; '
+                  'hard=autoscaler,preemption"}\n')
+            print("  `cheap` names things that are findable here, so a search")
+            print("  over one of them is bounded and may route down. `hard` names")
+            print("  work that is open-ended here.\n")
+            return 0
+        print()
+        for kind in ("cheap", "hard"):
+            print(f"  {kind:<8}{', '.join(terms[kind]) or '—'}")
+        print()
+        return 0
+
     text = " ".join(a.task) if a.task else sys.stdin.read()
 
     v = classify(text)

@@ -31,6 +31,7 @@ Confidence tiers:
 
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -446,6 +447,43 @@ def levers(sessions, root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
     return pool, separate
 
 
+def _duplicate_reconciliation(pool: list[Estimate]) -> None:
+    """Say, inline, why `adder bench` prices this lever at a fraction of it.
+
+    The two numbers were about 4x apart on the corpus this was written against
+    -- $23 here, about $6 there -- and both were correct. This one is the pool:
+    every token admitted to a context that already held it. `bench` prices the
+    guard, which is a hook with a memory, a budget and a rule against refusing
+    twice. Two correct numbers in two reports with nothing between them leave
+    the reader to assume they are the same quantity, and for a measurement tool
+    that is the same failure as one wrong number.
+    """
+    from adder.decide.guard import Settings, capture_gap
+
+    dup = next((e for e in pool if e.lever.startswith("Skip re-reads")), None)
+    if dup is None or dup.saving <= 0:
+        return
+    cfg = Settings.resolve()
+    def block(text: str, bullet: bool = False) -> None:
+        print(textwrap.fill(
+            text, width=78,
+            initial_indent="    - " if bullet else "  ",
+            subsequent_indent="      " if bullet else "  "))
+
+    print()
+    block(f"The ${dup.saving:,.0f} above is the whole pool of duplicate "
+          f"admissions. `adder bench` prices a fraction of it, because it "
+          f"prices the guard rather than the pool — and the guard is a hook, "
+          f"at `guard_enforce={cfg.enforce}`, with:")
+    print()
+    for reason in capture_gap(cfg):
+        block(reason, bullet=True)
+    print()
+    block("Neither number is the other's error bar. This one is what the "
+          "lever is worth; bench's is what installing the tool and changing "
+          "nothing collects of it.")
+
+
 def report(root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
            on: date | None = None) -> None:
     sessions = load_sessions(root, use_cache=True)
@@ -472,6 +510,8 @@ def report(root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
         print("  " + e.line(total))
     print(f"  {'':>10} {'':>6}  joint ceiling = the pool itself: ${accumulated:,.0f} "
           f"({100*accumulated/total:.0f}%)")
+
+    _duplicate_reconciliation(pool)
 
     print("\n  SEPARATE LEVERS (additive with the above)")
     for e in sorted(separate, key=lambda e: -e.saving):

@@ -350,6 +350,7 @@ admitted, and the saving is whole.
 | level | what it refuses |
 |---|---|
 | `off` | nothing (the historical behaviour) |
+| `shadow` | nothing — it computes what `certain` would refuse, and records it |
 | `certain` | a read whose content is already in this context, by `Read` or by `cat` |
 | `full` | also a large read that has a strictly cheaper equal |
 
@@ -457,6 +458,49 @@ The saving is booked against **what actually ran**, the bounded read, not
 against the whole read a refusal would have prevented. `Verdict.action` reports
 `narrow` rather than `deny` for the same reason: reporting one as the other would
 overstate what enforcement is worth.
+
+### Shadow: measuring the trade before making it
+
+The argument above has a hole in the middle of it, and the hole is the 0.5.
+Everything advisory rests on it, and the case for enforcement is that
+enforcement removes it — which is a good argument that still asks somebody to
+hand a hook the authority to refuse a tool call on the strength of a number this
+project calls its own weakest.
+
+`adder auto on --shadow` closes that. It runs the entire `certain` decision,
+records the refusal it would have made, and refuses nothing. There is no
+message, so nothing is admitted to the context, nothing is discounted, and the
+fire ceiling does not apply — a ceiling here would truncate the measurement at
+`guard_max_fires` findings a session and still read as complete.
+
+What makes it a measurement rather than a brochure is the second half. A shadow
+refusal the session went round is recorded as a **contradiction**: the same
+target asked for again, or a duplicate `Read` refusal followed by the file
+arriving through the shell instead. Under real enforcement that is the
+refuse-once escape hatch firing, which happens when the model had a reason the
+guard could not see, and it costs a turn. So:
+
+```
+$ adder guard --shadow
+
+  Shadow — what it would have refused, and did not
+  ================================================
+  sessions              14
+  would have refused    91 calls
+  worth                 $38.20   no uptake assumption: a refused call does not happen
+  contradicted          6 of them (7%), 9 times
+  realised, worst case  $35.62   every contradicted refusal written off whole
+```
+
+`realised` writes off every contradicted refusal whole rather than partially,
+which is deliberately the harsh reading: a contradicted refusal did not merely
+fail to save its tokens, it would have cost a turn. It is a lower bound, and a
+lower bound is the only honest number to put next to an install command.
+
+Compaction clears the shadow record along with the rest of the context memory.
+After compaction the tokens a refusal called redundant are gone, so a later read
+is the session recovering them rather than the guard having been wrong, and
+counting it would libel the measurement.
 
 ### What the levels are worth
 
@@ -620,6 +664,58 @@ it.
 It is pruned in every dimension — 400 paths, 400 shapes, 200 sessions, and
 anything untouched for a fortnight — and deleting it mid-session costs nothing
 but the memory: the guard degrades to the stateless behaviour it had before.
+
+## Per-tool floors, and why one number was two
+
+`guard_min_tokens` is an I/O gate rather than a judgement: below it the guard
+returns before parsing anything, so a call below it is invisible to every rule
+that needs a price. `guard_max_fires` is an interruption budget. Both were
+single numbers shared by every tool the guard watches, and the tools are not
+alike. Measured on one machine:
+
+| tool | calls in a session | p90 result | against a 2,000 floor |
+|---|---|---|---|
+| `Bash` | 2,490 | 1.2K tok | almost never priced |
+| `Read` | 58 | 5.9K tok | routinely priced |
+
+The ceiling has the same shape: `Bash` can spend all fifteen fires before `Read`
+has said anything. `guard_min_tokens_by_tool` and `guard_max_fires_by_tool`
+override per tool, written `Bash=800,Read=6000`. Both ship empty, so nothing
+changes until something is set, and a per-tool ceiling can only lower the global
+one — it exists to stop one loud tool starving the others, not to raise the
+total.
+
+Nothing per-tool is shipped, because a table would be one machine's workload
+asserted as everyone's, which is the mistake the size prior already made here
+once. `adder guard --floors` derives it instead: each tool's own distribution,
+what the current floor prices, and the floor that would price its top decile —
+which is that tool's p90, by the definition of p90.
+
+## Several agents in one tree
+
+The duplicate rule asks whether a file is the same bytes the context already
+holds, and it asks by mtime. In a tree where several agents are working at once
+the mtime moves for reasons this session had no part in: another agent formats
+the file, a build writes it back, a sibling worktree touches it. The guard sees
+a changed file, correctly declines to call the read a duplicate, and the lever
+silently reports less than it is worth.
+
+It fails towards saying nothing, never towards a wrong refusal, which is exactly
+why nothing would ever have surfaced it. `adder guard` counts how many sessions
+have written the shared state file in the last fifteen minutes and, when more
+than one has, says that the figure below it is a floor rather than a total.
+
+## Looking at what it did
+
+`adder guard --last` lists every finding and refusal from the most recent
+recorded session — action, tool, kind, what it was about, size, worth.
+
+It exists because of how a refusal actually gets turned off. Someone suspects
+the guard blocked something they needed, has no way to look, and
+`guard_enforce=off` is one line. Every other report here is an aggregate over
+weeks; this one answers "what did it just do to me", which is the question being
+asked at that moment. Identities only: a shape, never a command; a basename,
+never a path — the same promise the fires log makes on the way in.
 
 ## Diagnosing silence
 

@@ -47,7 +47,9 @@ NO_ROOT = {"policy", "classify", "pick", "models", "config", "outcomes", "ledger
            "handoff", "design", "deadline", "place", "verbosity", "blend",
            # `auto` reads settings files and the guard's own ledger, not a
            # transcript root. Its first positional is on/off/status.
-           "auto"}
+           "auto",
+           # `hook` takes a hook name and reads the event off stdin.
+           "hook"}
 
 # `export` offers JSON through `--format json` rather than `--json`, so the
 # discovery below does not see it; `TestExportSurface` covers it directly.
@@ -167,9 +169,12 @@ class TestTextSurface:
 
     # `ab` runs a live A/B against the API; `plan` runs a regime solver that
     # takes twenty seconds on real data and is covered by its own tests;
-    # `bench` belongs to a different change in flight.
+    # `bench` belongs to a different change in flight. `hook` is not a report at
+    # all -- it reads a harness event off stdin and writes a decision to stdout,
+    # so "prints something when handed a transcript root" is not a promise it
+    # makes. `tests/decide/hooks/test_run.py` covers it.
     RUNNABLE: ClassVar[list[str]] = [
-        c.name for c in COMMANDS if c.name not in {"ab", "bench", "plan"}]
+        c.name for c in COMMANDS if c.name not in {"ab", "bench", "plan", "hook"}]
 
     def test_the_list_covers_most_of_the_table(self):
         assert len(self.RUNNABLE) > 20

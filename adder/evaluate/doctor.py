@@ -308,6 +308,121 @@ def check_quality(root, sessions, total: float) -> Check:
     )
 
 
+# How much recorded history the machine-fitted parts of this tool need before
+# they are describing this workload rather than the author's. Not a
+# statistical threshold -- it is the point below which a week's work is one
+# project and a fitted number is a fact about that project.
+MIN_HISTORY_DAYS = 14
+# How far a local p90 may be from the shipped prior before the prior is a
+# fiction on this machine. Two-fold either way, the same band `adder guard`
+# already draws its `Nx out` verdict at.
+PRIOR_BAND = 2.0
+
+
+def check_history(root, sessions) -> Check:
+    """How much of what this tool tells you is fitted to you, and how much is shipped.
+
+    Every number here that adapts -- the size model behind the guard, `p_fail`
+    behind every escalation gate, the uptake term behind every advisory dollar,
+    the trend `savings` reads as a trend -- needs weeks of transcripts to mean
+    anything. On a fresh machine each of them silently falls back to a prior
+    measured on one workload, and the report reads identically either way.
+    That is the same failure this project calls its worst everywhere else: a
+    confident number with nothing behind it.
+
+    So this check says the quiet part. It does not fail the build for being new
+    -- being new is not a defect -- but it names which features are currently
+    describing somebody else's machine.
+    """
+    from adder.core.filters import span
+    from adder.core.shapes import load_model
+    from adder.decide.guard import Settings
+    from adder.decide.guard import uptake as guard_uptake
+
+    lo, hi = span(sessions)
+    days = (hi - lo).days if (lo and hi) else 0
+    shipped: list[str] = []
+
+    sizes = load_model()
+    if not sizes.calls:
+        shipped.append("the guard's result-size model (`adder guard --learn`)")
+    try:
+        u = guard_uptake(root)
+    except Exception:
+        u = None
+    cfg = Settings.resolve()
+    if u is not None and not u.measured and not cfg.shadowing:
+        shipped.append(f"the {cfg.advice_taken:.0%} uptake every advisory dollar "
+                       "is multiplied by (`adder auto on --shadow` measures it)")
+    try:
+        from adder.decide.track.outcomes import load as load_outcomes
+
+        if len(load_outcomes()) < 12:
+            shipped.append("`p_fail`, behind every escalation gate "
+                           "(`adder outcomes import --write`)")
+    except Exception:
+        pass
+
+    if days >= MIN_HISTORY_DAYS and not shipped:
+        return Check("history", True,
+                     f"{days} days of transcripts; every fitted number is your own")
+    if not shipped:
+        return Check("history", True,
+                     f"{days} days of transcripts — thin, but everything fitted "
+                     "here is fitted to it", skipped=True)
+    return Check(
+        "history", False,
+        f"{days} day{'s' if days != 1 else ''} of transcripts; "
+        f"{len(shipped)} number{'s' if len(shipped) > 1 else ''} here "
+        "come from the shipped prior, not from you",
+        action="`adder guard --learn` and `adder outcomes import --write` fit "
+               "what can be fitted today; the rest needs elapsed time",
+        detail=shipped,
+    )
+
+
+def check_prior(root) -> Check:
+    """Where the shipped prior is wrong about this machine, tool by tool.
+
+    `adder guard` already prints this table, and printing it there was the
+    right instinct in the wrong place: it is a finding, not a column. On the
+    machine this was written for it showed `Agent` at 13.5x out -- a tool whose
+    every prediction was off by more than an order of magnitude, in a report
+    nobody opens unless they already suspect the guard.
+    """
+    from adder.core.shapes import PRIOR, load_model
+    from adder.util.render import tokens
+
+    sizes = load_model()
+    if not sizes.calls:
+        return Check("prior", True, "no local size model to compare against",
+                     skipped=True)
+    out = []
+    for tool in sorted(sizes.tools):
+        local = sizes.tools[tool]
+        if local[2] < 3 or tool not in PRIOR:
+            continue
+        shipped, mine = PRIOR[tool][1], local[1]
+        if not mine:
+            continue
+        ratio = shipped / mine
+        if ratio > PRIOR_BAND or ratio < 1 / PRIOR_BAND:
+            out.append(f"{tool}: prior {tokens(shipped)} p90, yours "
+                       f"{tokens(mine)} over {local[2]:,} calls — {ratio:,.1f}x out")
+    if not out:
+        return Check("prior", True,
+                     f"the shipped size prior is within {PRIOR_BAND:.0f}x of this "
+                     "machine on every tool it covers")
+    return Check(
+        "prior", False,
+        f"the shipped size prior is more than {PRIOR_BAND:.0f}x out on "
+        f"{len(out)} tool{'s' if len(out) > 1 else ''}",
+        action="`adder guard --learn` — until it runs, the guard is predicting "
+               "these from one machine's workload, and it is not this one",
+        detail=out,
+    )
+
+
 def check_horizon(sessions) -> Check:
     from adder.measure.session.horizon import Horizon
 
@@ -529,6 +644,8 @@ def run(root: Path | str, sessions=None, *, on: date | None = None) -> list[Chec
         check_prices(on),
         check_catalog(),
         check_guard(root),
+        check_history(root, sessions),
+        check_prior(root),
         check_ledger(),
         check_evidence(),
         check_horizon(sessions),

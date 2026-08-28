@@ -12,9 +12,17 @@ costing you. Turned on, it also **refuses the calls that waste the money, and
 routes the work that is left to the cheapest model that can do it.**
 
 ```bash
-pip install adder-cli
-adder auto on --full
+pip install adder-cli        # the distribution is `adder-cli`; bare `adder`
+adder auto on --full         # on PyPI is an unrelated 2014 package
 ```
+
+`auto on` writes to `~/.claude`. Pass `--project` to put the hooks in a
+repository instead, and read what it prints first: a tracked `.claude/settings.json`
+makes them everyone's. If handing a hook the authority to refuse a tool call is
+a bigger step than you want to take on one machine's numbers, `adder auto on
+--shadow` runs the whole decision, records what it would have refused and how
+often the session went round it, and refuses nothing — then `adder guard
+--shadow` reads it back. ([guard.md](docs/guard.md))
 
 Replaying 33,192 recorded turns across 118 real sessions, those two lines took a
 **$7,888 bill to $2,567**.

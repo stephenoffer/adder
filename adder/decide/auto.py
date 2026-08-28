@@ -32,8 +32,8 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
-from dataclasses import dataclass, field
+import shutil
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from adder.core.settings import PROJECT_FILE, USER_FILE, project_file
@@ -47,15 +47,29 @@ from adder.decide import guard
 # that still ends in a human deciding, so the least the tool can do is put the
 # price in front of them at the moment it applies.
 HOOKS: tuple[dict, ...] = (
-    {'script': 'pretooluse_read_guard.py', 'event': 'PreToolUse',
+    {'script': 'pretooluse_read_guard.py', 'name': 'read-guard',
+     'module': 'adder.decide.hooks.pretooluse_read_guard', 'event': 'PreToolUse',
      'matcher': '|'.join(guard.OBSERVED),
      'does': 'prices, and can refuse, a call before its result lands in context'},
-    {'script': 'precompact_learn.py', 'event': 'PreCompact', 'matcher': '',
+    {'script': 'precompact_learn.py', 'name': 'compact-learn',
+     'module': 'adder.decide.hooks.precompact_learn', 'event': 'PreCompact',
+     'matcher': '',
      'does': 'forgets what compaction drops, and re-learns result sizes'},
-    {'script': 'session_cost_advisor.py', 'event': 'UserPromptSubmit', 'matcher': '',
+    {'script': 'session_cost_advisor.py', 'name': 'cost-advisor',
+     'module': 'adder.decide.hooks.session_cost_advisor', 'event': 'UserPromptSubmit',
+     'matcher': '',
      'does': 'prices compaction against a restart, once a session is expensive'},
 )
 BACKUP_SUFFIX = '.adder.bak'
+# Seconds each hook entry is given. Written explicitly rather than inherited,
+# and the number is not a guess: the read guard is the slow one, it matches
+# `Bash`, and it measures 159ms flat here even on the path that parses a
+# transcript. Claude Code's default is 60s, so without this a hook that hangs
+# -- a stalled NFS mount under `~/.claude`, a state file on a dead volume --
+# stalls every tool call in the session for a minute before the harness gives
+# up. At 5s the same hang costs five seconds once and then skips, which is what
+# a component that fails open should do with time as well as with errors.
+HOOK_TIMEOUT_S = 5
 # The agent definitions, which are the other half of "installed and changed
 # nothing". `adder bench` prices the hooks and these together and the pair is
 # what its headline multiple means -- on the author's history the hooks alone
@@ -152,20 +166,58 @@ def agent_plan(target: Path, *, repo: Path | None = None) -> tuple[list[str], li
     return write, skip
 
 
-def _command(script: str, repo: Path | None = None) -> str:
-    """The shell command that runs one hook. See `guard.interpreter`."""
-    return f'{guard.interpreter()} {shlex.quote(str(hooks_dir(repo) / script))}'
+ADDER_EXE = 'adder'
+
+
+def console_script() -> str | None:
+    """Path to an `adder` executable on PATH, or None.
+
+    Only used to decide whether a project-scope install can honestly write the
+    portable command form. A `.claude/settings.json` that names `adder` and is
+    committed only works for contributors who have `adder-cli` installed, and
+    the one machine we can check that on is this one.
+    """
+    return shutil.which(ADDER_EXE)
+
+
+def hook_command(h: dict, repo: Path | None = None, *, portable: bool = False) -> str:
+    """The shell command that runs one hook.
+
+    Two forms, and the choice is the difference between a file that stays on
+    this machine and a file that gets committed.
+
+    A **user-scope** install writes `<sys.executable> -m adder.decide.hooks.X`.
+    The interpreter is absolute on purpose -- `guard.interpreter` explains why
+    a bare `python3` is wrong, and on macOS it is routinely a 3.9 that cannot
+    import this package at all -- and `~/.claude/settings.json` never leaves
+    the machine that interpreter is correct for. What it no longer carries is
+    the absolute path of the *script*, so a checkout that moves, or a
+    reinstall, does not leave three hooks pointing at nothing.
+
+    A **project-scope** install writes `adder hook X`, which resolves through
+    PATH to each contributor's own console script -- and a console script
+    carries its own interpreter in its shebang, so the portable form is the
+    correct-interpreter form too. It costs an `adder.cli` import per tool call,
+    which is why it is not what user scope gets.
+    """
+    if portable:
+        return f"{ADDER_EXE} hook {h['name']}"
+    return f"{guard.interpreter()} -m {h['module']}"
 
 
 def _is_ours(command: str) -> bool:
-    """Does this hook command point at one of our scripts?
+    """Does this hook command run one of our hooks, in any form we have written?
 
-    Matched on the script basename rather than the whole path, so a checkout
-    that has moved is still recognised as installed -- and, more importantly,
-    so `off` removes an entry `on` wrote from a different directory instead of
+    Three forms have shipped: an absolute script path, `-m <module>`, and
+    `adder hook <name>`. All three are matched, and matched on the *name* part
+    rather than on the whole command, so a checkout that has moved is still
+    recognised as installed -- and, more importantly, so `off` removes an entry
+    `on` wrote from a different directory or an older version instead of
     leaving a stale hook that fails on every tool call.
     """
-    return any(h['script'] in str(command) for h in HOOKS)
+    text = str(command)
+    return any(h['script'] in text or h['module'] in text
+               or f"hook {h['name']}" in text for h in HOOKS)
 
 
 def _read_json(path: Path) -> dict:
@@ -192,7 +244,8 @@ def _parses(path: Path) -> bool:
         return False
 
 
-def merge(settings: dict, *, repo: Path | None = None) -> tuple[dict, list[str]]:
+def merge(settings: dict, *, repo: Path | None = None,
+          portable: bool = False) -> tuple[dict, list[str]]:
     """Settings with our hooks added. Returns the new dict and what changed.
 
     Pure, and it never reorders or drops anything it did not add: the file
@@ -215,7 +268,8 @@ def merge(settings: dict, *, repo: Path | None = None) -> tuple[dict, list[str]]
                for entry in (g.get('hooks') or []) if isinstance(entry, dict)):
             continue
         group: dict = {'hooks': [{'type': 'command',
-                                  'command': _command(str(h['script']), repo)}]}
+                                  'command': hook_command(h, repo, portable=portable),
+                                  'timeout': HOOK_TIMEOUT_S}]}
         if h['matcher']:
             group = {'matcher': h['matcher'], **group}
         groups.append(group)
@@ -289,12 +343,14 @@ def tune(root=None, *, level: str = 'full', grid=TUNE_GRID) -> list[Tuning]:
     """
     out = []
     for min_tokens, min_cost in grid:
-        cfg = guard.Settings.resolve()
-        cfg = type(cfg)(min_tokens=min_tokens, min_cost=min_cost,
-                        hard_tokens=cfg.hard_tokens, block=cfg.block,
-                        advice_taken=cfg.advice_taken,
-                        max_fires=int(ENFORCING_THRESHOLDS['guard_max_fires']),
-                        state_path=cfg.state_path, enforce=level)
+        # `replace`, not a re-construction from a hand-listed set of fields.
+        # The hand-listed version dropped every field added after it was
+        # written -- `guard_narrow`, `guard_route`, and now the per-tool floors
+        # -- so the sweep silently priced a guard configured differently from
+        # the one being tuned.
+        cfg = replace(guard.Settings.resolve(), min_tokens=min_tokens,
+                      min_cost=min_cost, enforce=level,
+                      max_fires=int(ENFORCING_THRESHOLDS['guard_max_fires']))
         r = guard.replay(root, cfg=cfg)
         out.append(Tuning(min_tokens=min_tokens, min_cost=min_cost,
                           refusals=r.refusals, prevented=r.prevented,
@@ -335,6 +391,7 @@ class Plan:
     agent_writes: list[str] = field(default_factory=list)
     agent_skips: list[str] = field(default_factory=list)
     repo: Path | None = None
+    user: bool = True
     level: str = 'certain'
     was_level: str = 'off'
     settings_after: dict = field(default_factory=dict)
@@ -376,16 +433,101 @@ def _override_warnings(env: dict[str, str] | None = None) -> list[str]:
     return out
 
 
-def plan(*, cwd: Path | str | None = None, level: str = 'certain', user: bool = False,
+def _tracked(base: Path, path: Path) -> bool:
+    """Is this path inside a git working tree? Cheap, and never raises.
+
+    Not `git ls-files`: the interesting case is a file that does not exist yet,
+    so what matters is whether the directory it lands in is under version
+    control, not whether it is already tracked.
+    """
+    try:
+        path = path.resolve()
+    except (OSError, ValueError):
+        return False
+    for parent in (base, *base.parents):
+        if (parent / '.git').exists():
+            try:
+                path.relative_to(parent)
+            except ValueError:
+                return False
+            return True
+    return False
+
+
+def _ignored(base: Path, name: str) -> bool:
+    """Does some `.gitignore` at or above `base` name this file? Text match only.
+
+    Deliberately crude, and the failure direction is a warning nobody needed
+    rather than a warning nobody got.
+    """
+    for parent in (base, *base.parents):
+        gi = parent / '.gitignore'
+        try:
+            if name in gi.read_text(encoding='utf-8', errors='replace'):
+                return True
+        except OSError:
+            continue
+        if (parent / '.git').exists():
+            break
+    return False
+
+
+def _scope_warnings(base: Path, settings_path: Path, config_path: Path, *,
+                    user: bool) -> list[str]:
+    """What a project-scope install is about to put in somebody's repository.
+
+    Silence here was the actual problem. The write was announced -- `plan`
+    prints every path -- but not what those paths *are*: a hooks block inside a
+    tracked settings file is configuration every other contributor inherits
+    without asking for it, and two of the three files have no `.gitignore`
+    entry anywhere.
+    """
+    if user:
+        return []
+    out: list[str] = []
+    if _tracked(base, settings_path):
+        out.append(f'{settings_path} is inside a git working tree. Hooks '
+                   'declared there run for every contributor who checks this '
+                   'branch out, and under `bypassPermissions` the hooks are '
+                   'the only guardrail. `adder auto on` without `--project` '
+                   'writes to ~/.claude instead.')
+    untracked = [p.name for p in (config_path, settings_path.with_name(
+        settings_path.name + BACKUP_SUFFIX)) if _tracked(base, p)
+        and not _ignored(base, p.name)]
+    if untracked:
+        out.append('nothing ignores ' + ', '.join(untracked) + ' — add them to '
+                   '.gitignore, or they land in the next commit.')
+    if not console_script():
+        out.append(f'no `{ADDER_EXE}` on PATH here, and a project-scope install '
+                   'writes `adder hook ...` so that it works on machines other '
+                   'than this one. Install with `pip install adder-cli` (or add '
+                   'the console script to PATH) before committing this.')
+    return out
+
+
+def plan(*, cwd: Path | str | None = None, level: str = 'certain', user: bool = True,
          repo: Path | None = None, env: dict[str, str] | None = None,
          thresholds: dict | None = None) -> Plan:
-    """What `on` would do. Pure with respect to disk: it reads, never writes."""
+    """What `on` would do. Pure with respect to disk: it reads, never writes.
+
+    `user` defaults to True, and the default moved. Project scope wrote three
+    hooks and four agent definitions into `.claude/`, which is commonly tracked
+    in git -- so the default install put a third-party hook inside somebody's
+    committed security perimeter, and on a repository running
+    `bypassPermissions` the hooks *are* the perimeter. It also dropped
+    `.adder.json` and a `settings.json.adder.bak` into the tree, neither of
+    which any `.gitignore` knows about.
+
+    None of that is wrong to do deliberately; it is wrong to do by default, for
+    a tool whose entire argument is that the cheapest work is the work that does
+    not happen. `--project` still does it, and now says what it is touching.
+    """
     base = Path(cwd or os.getcwd()).resolve()
     settings_path = ((Path.home() / '.claude' / 'settings.json') if user
                      else base / '.claude' / 'settings.json')
     config_path = USER_FILE if user else (project_file(base) or base / PROJECT_FILE)
     current = _read_json(settings_path)
-    after, changes = merge(current, repo=repo)
+    after, changes = merge(current, repo=repo, portable=not user)
     config = _read_json(config_path)
     was = str(config.get('guard_enforce', 'off'))
     # `full` moves the thresholds as well as the level. `certain` deliberately
@@ -401,7 +543,8 @@ def plan(*, cwd: Path | str | None = None, level: str = 'certain', user: bool = 
              agents_path=agents_path, agent_writes=writes, agent_skips=skips, repo=repo,
              level=level, was_level=was, settings_after=after,
              config_after={**tuned, 'guard_enforce': level}, config_before=config,
-             warnings=_override_warnings(env))
+             user=user, warnings=_override_warnings(env) + _scope_warnings(
+                 base, settings_path, config_path, user=user))
     if not _parses(settings_path):
         p.blocked = f'{settings_path} exists but is not valid JSON; fix it first'
     elif not _parses(config_path):
@@ -409,7 +552,7 @@ def plan(*, cwd: Path | str | None = None, level: str = 'certain', user: bool = 
     return p
 
 
-def plan_off(*, cwd: Path | str | None = None, user: bool = False) -> Plan:
+def plan_off(*, cwd: Path | str | None = None, user: bool = True) -> Plan:
     """What `off` would do."""
     base = Path(cwd or os.getcwd()).resolve()
     settings_path = ((Path.home() / '.claude' / 'settings.json') if user
@@ -430,7 +573,7 @@ def plan_off(*, cwd: Path | str | None = None, user: bool = False) -> Plan:
                 hook_changes=changes, agents_path=agents_path, level='off',
                 was_level=str(config.get('guard_enforce', 'off')),
                 settings_after=after, config_after={**config, 'guard_enforce': 'off'},
-                config_before=config)
+                config_before=config, user=user)
 
 
 def _write(path: Path, blob: dict) -> None:
@@ -526,7 +669,13 @@ def status(*, cwd: Path | str | None = None) -> Status:
         except (TypeError, ValueError):
             continue
     for h in HOOKS:
-        (present if str(h['script']) in declared else missing).append(str(h['script']))
+        # Matched through `_is_ours`, not on the script name: the command form
+        # changed twice, and a status that only knows the oldest one reports a
+        # working install as absent -- which reads as "nothing is preventing
+        # spend" while something is.
+        (present if (h['script'] in declared or h['module'] in declared
+                     or f"hook {h['name']}" in declared)
+         else missing).append(str(h['script']))
     try:
         up = guard.uptake()
         rate, measured = up.rate, up.measured
@@ -552,7 +701,8 @@ def status(*, cwd: Path | str | None = None) -> Status:
 def _render_plan(p: Plan, *, off: bool = False) -> list[str]:
     from adder.util.render import kv
     verb = 'remove' if off else 'add'
-    out = ['', f'  This will {verb}:', '']
+    scope = 'user-wide (~/.claude)' if p.user else 'this project only (--project)'
+    out = ['', f'  Scope: {scope}', '', f'  This will {verb}:', '']
     if p.hook_changes:
         for c in p.hook_changes:
             out.append(f'    {verb:<6} {c}')
@@ -583,9 +733,16 @@ def _render_plan(p: Plan, *, off: bool = False) -> list[str]:
             out.append(f"    {h['event']:<18}{h['does']}")
         out.append(f"    {'agents':<18}what a delegated step runs on — Explore on "
                    "Haiku, three tiers")
-        out += ['', kv('refusals', 'certain: only calls that admit nothing new'
-                       if p.level == 'certain'
-                       else 'full: also a large read with a cheaper equal')]
+        out += ['', kv('refusals', {
+            'shadow': 'shadow: none. It records what it would have refused, '
+                      'and what the session then did anyway',
+            'certain': 'certain: only calls that admit nothing new',
+        }.get(p.level, 'full: also a large read with a cheaper equal'))]
+        if p.level == 'shadow':
+            out += ['', '  Nothing is refused and nothing is injected, so this '
+                    'costs no', '  context and changes no behaviour. Read it '
+                    'back with `adder guard', '  --shadow` once a few sessions '
+                    'have run, then decide.']
     for w in p.warnings:
         out += ['', f'  ! {w}']
     return out
@@ -645,8 +802,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument('--full', action='store_true',
                     help='also refuse a large read that has a cheaper equal '
                          '(default: refuse only calls that admit nothing new)')
-    ap.add_argument('--user', action='store_true',
-                    help='write to ~/.claude rather than this project')
+    ap.add_argument('--shadow', action='store_true',
+                    help='refuse nothing: run the whole decision, record what '
+                         'it would have refused and how often the session went '
+                         'round it. `adder guard --shadow` reads it back')
+    ap.add_argument('--user', action='store_true', default=True,
+                    help='write to ~/.claude (the default)')
+    ap.add_argument('--project', dest='user', action='store_false',
+                    help='write to this repository\'s .claude/ instead. Opt-in: '
+                         'a tracked settings.json makes these hooks everyone\'s')
     ap.add_argument('--yes', '-y', action='store_true', help='do not ask')
     ap.add_argument('--dry-run', action='store_true', help='print the change and stop')
     ap.add_argument('--tune', action='store_true',
@@ -698,9 +862,13 @@ def main(argv: list[str] | None = None) -> int:
                           'guard_min_cost': pick.min_cost}
             print(f'\n  Best on your data: floor {pick.min_tokens:,} tok, gate '
                   f'${pick.min_cost:.2f}.')
-    p = (plan_off() if off else
-         plan(level='full' if a.full else 'certain', user=a.user,
-              thresholds=thresholds))
+    if a.shadow and a.full:
+        print('  --shadow and --full are different answers to the same '
+              'question. --shadow refuses nothing.', file=sys.stderr)
+        return 2
+    level = 'shadow' if a.shadow else ('full' if a.full else 'certain')
+    p = (plan_off(user=a.user) if off else
+         plan(level=level, user=a.user, thresholds=thresholds))
     print('\n'.join(_render_plan(p, off=off)))
     if p.blocked:
         print(f'\n  ! {p.blocked}\n', file=sys.stderr)

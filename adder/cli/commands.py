@@ -158,8 +158,10 @@ COMMANDS: tuple[Command, ...] = (
     # Setup — inspect the machine's own configuration, and the one command
     # that changes it.
     Command("auto", "adder.decide.auto", "Setup",
-            "[on|off|status] [--full] [--user] [--yes]",
+            "[on|off|status] [--full] [--project] [--yes]",
             "run adder between your turns: install the hooks, enforce the levers"),
+    Command("hook", "adder.decide.hooks.run", "Setup", "NAME",
+            "run one harness hook; Claude Code calls this, you do not"),
     Command("config", "adder.cli.config", "Setup", "[name] [--json] [--init]",
             "settings in effect, and which layer set each one"),
     Command("completion", "adder.cli.completion", "Setup", "[bash|zsh|fish]",

@@ -64,6 +64,78 @@ class TestTheGuardCheck:
         assert 'advisory' not in got.headline
 
 
+class TestHonestDegradation:
+    """What `doctor` says on a machine that has not been running long.
+
+    Everything in this tool that adapts -- the size model, `p_fail`, the uptake
+    term, savings read as a trend -- needs weeks of transcripts. Below that
+    each one silently falls back to a prior measured on one workload, and the
+    report reads exactly the same either way. That is the failure mode this
+    project names as its worst: a confident number with nothing behind it.
+    """
+
+    def test_a_fresh_machine_is_told_which_numbers_are_not_its_own(
+            self, tmp_path, make_sessions, isolated_home):
+        from adder.evaluate import doctor
+
+        got = doctor.check_history(tmp_path, make_sessions(3))
+        assert not got.ok
+        assert got.detail, "a finding with no list is an accusation, not a report"
+
+    def test_it_is_not_priced(self, tmp_path, make_sessions, isolated_home):
+        """Being new is not a defect and costs nothing. Putting a dollar figure
+        on it would push it up the ranking over findings that are real money."""
+        from adder.evaluate import doctor
+
+        assert doctor.check_history(tmp_path, make_sessions(3)).dollars == 0.0
+
+    def test_a_prior_within_the_band_is_not_a_finding(self, monkeypatch):
+        from adder.core.shapes import PRIOR, SizeModel
+        from adder.evaluate import doctor
+
+        tool = next(iter(PRIOR))
+        model = SizeModel(shapes={}, heads={},
+                          tools={tool: (0, PRIOR[tool][1], 50)},
+                          built=1.0, calls=50)
+        monkeypatch.setattr("adder.core.shapes.load_model", lambda *a, **k: model)
+        assert doctor.check_prior(None).ok
+
+    def test_a_prior_that_is_orders_out_becomes_a_finding(self, monkeypatch):
+        """On the machine this was written for, `Agent` was 13.5x out -- and it
+        was a column in a report nobody opens unless they already suspect the
+        guard."""
+        from adder.core.shapes import PRIOR, SizeModel
+        from adder.evaluate import doctor
+
+        tool = next(iter(PRIOR))
+        model = SizeModel(shapes={}, heads={},
+                          tools={tool: (0, max(1, PRIOR[tool][1] // 14), 50)},
+                          built=1.0, calls=50)
+        monkeypatch.setattr("adder.core.shapes.load_model", lambda *a, **k: model)
+        got = doctor.check_prior(None)
+        assert not got.ok and tool in got.detail[0] and "--learn" in got.action
+
+    def test_too_few_calls_on_a_tool_is_not_evidence_about_it(self, monkeypatch):
+        from adder.core.shapes import PRIOR, SizeModel
+        from adder.evaluate import doctor
+
+        tool = next(iter(PRIOR))
+        model = SizeModel(shapes={}, heads={},
+                          tools={tool: (0, max(1, PRIOR[tool][1] // 14), 2)},
+                          built=1.0, calls=2)
+        monkeypatch.setattr("adder.core.shapes.load_model", lambda *a, **k: model)
+        assert doctor.check_prior(None).ok
+
+    def test_no_local_model_at_all_is_a_skip_not_a_pass(self, monkeypatch):
+        from adder.core.shapes import SizeModel
+        from adder.evaluate import doctor
+
+        monkeypatch.setattr("adder.core.shapes.load_model",
+                            lambda *a, **k: SizeModel(shapes={}, heads={}, tools={},
+                                                      built=0.0, calls=0))
+        assert doctor.check_prior(None).skipped
+
+
 class TestChecks:
     def test_price_expiry_is_flagged_inside_the_window(self):
         from datetime import date

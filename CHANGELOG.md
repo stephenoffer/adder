@@ -11,6 +11,162 @@ without a stated reason is a regression, not a change.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-27
+
+- **Activation wrote a third-party hook into a repository by default, with a
+  path from the machine that ran it.** `adder auto on` defaulted to project
+  scope and wrote absolute paths for both the interpreter and the script:
+  `/home/ray/anaconda3/bin/python3 /mnt/cluster_storage/.../pretooluse_read_guard.py`.
+  `.claude/settings.json` is commonly tracked in git and under
+  `bypassPermissions` the hooks *are* the guardrail, so the default put a
+  third-party hook inside somebody's committed security perimeter -- and the
+  command it wrote worked on exactly one machine. It also dropped `.adder.json`
+  and a `settings.json.adder.bak` into the tree with no `.gitignore` entry
+  anywhere.
+
+  The default is now `--user`; `--project` is opt-in and prints what it is
+  putting inside a tracked tree, including which of the files nothing ignores.
+  The command form changed with it: a user-scope install writes
+  `<sys.executable> -m adder.decide.hooks.<module>`, which drops the absolute
+  *script* path so a moved checkout no longer strands the hooks, and a
+  project-scope one writes `adder hook <name>` -- a new subcommand that resolves
+  through PATH to each contributor's own console script, which carries its own
+  interpreter in its shebang. Every entry now carries an explicit `"timeout": 5`
+  instead of inheriting the 60s default on a hook that matches `Bash`: measured
+  latency is 159ms flat, so the bound costs nothing and turns a hang into a
+  skip. `guard.installed_in` matches all three command forms, because after the
+  change it would otherwise have reported a working install as absent -- which
+  reads as "nothing is preventing spend" while something is.
+
+- **`guard_enforce=shadow`: the refusal decision, run in full, carried out on
+  nothing.** Every advisory dollar in this tool is multiplied by
+  `guard_advice_taken`, which is 0.5 and assumed on any machine that has not
+  measured it, and enforcement then asks a user to hand refusal authority to the
+  guard on the strength of that assumption. Shadow mode computes exactly the
+  refusal `certain` would make, records it, and refuses nothing, so the trade is
+  measured on this machine before anything is denied. It injects no message, so
+  its overhead is zero and it does not spend the fire budget -- a ceiling
+  applied here would truncate the measurement at `guard_max_fires` findings a
+  session and still print as complete.
+
+  It also records the evidence *against*: a shadow refusal the session went
+  round -- the same target asked for again, or a duplicate `Read` refusal
+  followed by the file arriving through the shell -- is the closest thing to
+  proof that the refusal was wrong, since under enforcement that is the escape
+  hatch firing and it costs a turn. `adder guard --shadow` prints the
+  counterfactual saving, the contradiction rate, and a realised figure that
+  writes off every contradicted refusal whole. `adder auto on --shadow` turns it
+  on.
+
+- **`adder guard --last`: what the guard actually did in this session.** A
+  refusal the user cannot inspect is a refusal they will turn off the first time
+  they suspect it, and `guard_enforce=off` is one line. Every other report here
+  is an aggregate over weeks; this one lists the findings and refusals of the
+  most recent recorded session, identities only.
+
+- **The classifier's defect wordlist leaked, so the failure direction
+  inverted.** `_DEFECT` is a list of nouns, and six probes phrased as ordinary
+  defect hunts named classes that were not on it: `find the security flaw`,
+  `find the data corruption`, `locate the privilege escalation`, `find the auth
+  bypass` and `locate the crash` all reached T0 at 0.85 confidence -- a
+  whole-tree audit priced as a lookup, with exactly the silent failure the
+  defect rule exists to prevent. Adding six words would have bought six probes.
+
+  So the default inverted instead: an enumeration over a *singular* definite
+  noun phrase abstains unless the sentence bounds it -- a path, a named symbol,
+  a quoted string, or a noun that names one findable thing. The wordlist stays
+  as an accelerator. Ordinary lookups are unaffected (`find the config file`,
+  `locate the definition of process_batch`), and a plural target keeps the T1
+  rule it already had.
+
+- **`classify_terms`: the vocabulary a project has and the classifier does
+  not.** On a real domain codebase the classifier abstained on twelve of twelve
+  task phrasings from the repository's own tracker, every one at confidence 0.3
+  -- so the routing decision cost its own overhead, twelve times, to arrive at
+  "no change". A `cheap` term names something findable in this repository, which
+  bounds a search over it; a `hard` term names work that is open-ended here.
+  Declared in the project's `.adder.json` rather than learned, because
+  `outcomes.Outcome` stores `task_hash` and never the task text and
+  `track/similar.py` builds a MinHash sketch specifically so the terms cannot be
+  recovered -- learning a vocabulary out of that would undo it. Every term that
+  decides names itself in the verdict's reasons. `adder classify --terms`.
+
+- **`adder ab --recall`: a quality signal that shares no code with the cost
+  model.** `adder quality` and `adder verify` read the same transcripts, through
+  the same parser, priced by the same cost model as the saving they are
+  checking; if that model is wrong they are wrong in the same direction and
+  agree with themselves. Cost is measured five ways here and quality -- the
+  thing routing to a cheaper tier would actually lose -- was measured by the
+  cost machinery. `adder/evaluate/replay/seeded.py` ships a source file with
+  nine planted defects and scores a reply against them by string match;
+  `tests/evaluate/replay/test_seeded.py` asserts the module never imports from
+  `pricing`, `core.trace`, `core.shapes` or `measure`. The prompt does not say
+  how many defects there are, because a model told to find nine reports nine.
+  The misses are named, not summarised: "Haiku found 6 of 9" is a number, and
+  "Haiku missed the unbounded retry" is a decision about what to route to it.
+
+- **Per-tool floors and ceilings.** One `guard_min_tokens` and one
+  `guard_max_fires` served every tool the guard watches, and the tools are not
+  alike: measured here, `Bash` returns a p90 of 1.2K tokens over 2,490 calls in
+  a session and `Read` 5.9K over 58. Against a shared 2,000-token floor the
+  first is almost never priced and the second usually is; against a shared
+  15-fire ceiling the first can spend the whole budget before the second has
+  said anything. `guard_min_tokens_by_tool` and `guard_max_fires_by_tool`
+  override per tool, both default to empty -- so behaviour is unchanged until
+  something is set -- and a per-tool ceiling can only lower the global one, not
+  raise it. `adder guard --floors` prints each tool's own distribution and the
+  floor it implies, derived rather than shipped: a floor at a tool's p90 prices
+  its top decile by construction.
+
+- **`adder doctor` says which numbers are not yours.** Everything here that
+  adapts -- the size model, `p_fail`, the uptake term, savings read as a trend
+  -- needs weeks of transcripts, and below that each silently falls back to a
+  prior measured on one workload while the report reads identically. Two new
+  checks: `history` names the days of transcripts and lists the features
+  currently running on the shipped prior, and `prior` promotes the
+  prior-vs-yours table out of `adder guard` into a finding, naming every tool
+  the shipped size prior is more than 2x out on. On the machine this was written
+  for that table showed `Agent` 13.5x out, in a report nobody opens unless they
+  already suspect the guard.
+
+- **`adder savings` and `adder bench` disagreed 4x on one lever with nothing
+  between them.** Both were right: `savings` measures the pool -- every token
+  admitted to a context that already held it -- and `bench` prices the guard,
+  which is a hook with a memory, a budget and a rule against refusing twice.
+  Two correct numbers in two reports read as one wrong number. `guard.capture_gap`
+  states the difference item by item with this machine's own settings in it, and
+  both reports print it. `bench` also names the `guard_enforce` level it priced
+  against, and says so when that is not the level `adder auto on` installs --
+  which was the whole gap: the report described the advisory guard while the
+  install command writes `certain`.
+
+- **Concurrency is named rather than left to be discovered.** The duplicate rule
+  keys on a path and its mtime, and in a tree several agents are working in, the
+  mtime moves for reasons this session had no part in -- so the rule correctly
+  declines and the lever silently reports less than it is worth. It fails
+  towards saying nothing, never towards a wrong refusal, which is exactly why
+  nothing would have surfaced it. `guard.concurrent_sessions` counts the
+  condition and `adder guard` says the figure is a floor when it holds.
+
+- **The overflow note named the weaker of two equal models.** When nothing on
+  the ladder holds the read, `policy.decide` reports which model has the largest
+  window. Sonnet and Opus both hold 1M tokens and `max()` returns the first
+  maximum, so the note said `claude-sonnet-5` on every overflow -- and that
+  sentence is the one a reader follows when they go and split the read by hand.
+  Ties now break toward the more capable rung.
+
+- **Two test modules read the developer's real `~/.claude`.** CLAUDE.md forbids
+  it and it bit during this change: `Settings.resolve` reads
+  `~/.claude/adder.json`, so on a machine that had run `adder auto on` the guard
+  was enforcing throughout `tests/decide/hooks/test_hooks.py`, two assertions
+  about `additionalContext` failed for a reason that exists nowhere in CI, and
+  the suite's own fires went to the real `adder-guard-fires.jsonl` where they
+  skewed the uptake measurement. Setting `HOME` is not enough --
+  `settings.USER_FILE` is `Path.home() / ...` evaluated at import -- so both
+  modules now take `isolated_home`. `tests/decide/test_auto.py` gained an
+  autouse fixture of its own: with `plan()` defaulting to user scope, a test
+  that forgets to say which scope it means writes into whoever ran the suite.
+
 - **The declared build floor could not build the package, and CI never
   installed what it built.** `build-system.requires` said `setuptools>=68`
   while `[project]` declared `license = "MIT"` and `license-files`, which are
@@ -1875,5 +2031,6 @@ noted.
      detection, fast-mode pricing, feasibility gates, cache-miss attribution,
      growth attribution, quality proxies, policy gates, and the new levers.
 
-[Unreleased]: https://github.com/stephenoffer/adder/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/stephenoffer/adder/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/stephenoffer/adder/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/stephenoffer/adder/releases/tag/v0.1.0

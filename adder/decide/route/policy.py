@@ -474,7 +474,13 @@ def right_size(
                 "no rung was both feasible and permitted; falling back to the "
                 "cheapest that at least holds the task")
         else:
-            widest = max(rungs, key=lambda r: context_window(r.model, 0))
+            # Ties break toward the more capable rung, not the first one
+            # `max` happens to see. Sonnet and Opus both hold 1M tokens, so a
+            # plain argmax named Sonnet on every overflow -- and the sentence
+            # this rung produces tells the reader which model to reach for
+            # when they split the read. Naming the weaker of two equals is a
+            # recommendation that is wrong for free.
+            widest = max(rungs, key=lambda r: (context_window(r.model, 0), int(r.tier)))
             eligible = [widest]
             reasons.append(
                 f"nothing on the ladder holds ~{need_tokens:,} tokens: "

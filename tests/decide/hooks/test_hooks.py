@@ -40,13 +40,28 @@ def _load(name: str):
 
 
 @pytest.fixture
-def guard(monkeypatch, tmp_path):
+def guard(monkeypatch, tmp_path, isolated_home):
     """The hook, with its state file pointed away from the real home directory.
 
     Without the redirect this suite would write to `~/.claude/.adder-guard.json`
     on the machine running it, which CLAUDE.md forbids and which would also make
     the tests depend on whatever the developer's own sessions had recorded.
+
+    Naming the two files was not enough, and the gap is the one CLAUDE.md warns
+    about in as many words: `Settings.resolve` reads `~/.claude/adder.json`, so
+    on a machine that had run `adder auto on` the guard was *enforcing*
+    throughout, every duplicate came back as a denial, and two tests asserting
+    on `additionalContext` failed for a reason that exists nowhere in CI. The
+    same omission sent this suite's fires to the developer's real
+    `adder-guard-fires.jsonl`, where they went on to skew `adder guard`'s own
+    uptake measurement.
+
+    `isolated_home` closes both. Setting `HOME` alone does not: `USER_FILE` is
+    `Path.home() / ".claude" / "adder.json"` evaluated at import, so the
+    environment variable moves nothing that was already computed -- the exact
+    hazard CLAUDE.md names under "a default derived from `Path.home()`".
     """
+    monkeypatch.setenv("ADDER_HOME", str(isolated_home / ".claude"))
     monkeypatch.setenv("ADDER_GUARD_STATE", str(tmp_path / "guard.json"))
     monkeypatch.setenv("ADDER_SIZE_MODEL", str(tmp_path / "sizes.json"))
     return _load("pretooluse_read_guard")

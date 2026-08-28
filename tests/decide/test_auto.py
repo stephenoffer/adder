@@ -23,6 +23,7 @@ import pytest
 from adder.decide import guard
 from adder.decide.auto import (
     BACKUP_SUFFIX,
+    HOOK_TIMEOUT_S,
     HOOKS,
     Plan,
     _override_warnings,
@@ -44,6 +45,30 @@ FOREIGN = {
     'permissions': {'allow': ['Bash(ls:*)']},
     'model': 'opusplan',
 }
+
+
+@pytest.fixture(autouse=True)
+def never_the_real_home(tmp_path_factory, monkeypatch):
+    """No test in this module may touch the home directory of whoever ran it.
+
+    Autouse, and not a discipline anyone has to remember. `plan()` defaults to
+    user scope now -- that is the point of the change -- and user scope is
+    `Path.home()`. While the default was project scope, a test that forgot to
+    say which scope it meant wrote inside `cwd` and was harmless; the same
+    omission now writes three hooks, a config file and four agent definitions
+    into the developer's own `~/.claude`. It did, once, during the change.
+
+    `clean_home` is requested explicitly by the tests that need to *read* an
+    installed state back; explicit fixtures are set up after autouse ones, so
+    it still wins where it applies.
+    """
+    # Beside `tmp_path`, never inside it: several tests here assert that
+    # planning left the working directory empty, and a decoy home in there
+    # would be the one file they found.
+    home = tmp_path_factory.mktemp('not-your-home')
+    (home / '.claude').mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
 
 
 @pytest.fixture
@@ -74,7 +99,36 @@ class TestMerging:
         out, changed = merge({})
         assert len(changed) == len(HOOKS)
         for h in HOOKS:
-            assert any(h['script'] in c for c in _commands(out))
+            assert any(h['module'] in c for c in _commands(out))
+
+    def test_every_entry_carries_an_explicit_timeout(self):
+        """Inheriting the 60s default on a hook that matches `Bash` turns any
+        hang -- a stalled mount under ~/.claude -- into a minute of dead time on
+        every tool call. Measured latency here is 159ms, so a 5s bound costs
+        nothing and converts a hang into a skip."""
+        out, _ = merge({})
+        entries = [e for groups in out['hooks'].values()
+                   for g in groups for e in g['hooks']]
+        assert entries and all(e['timeout'] == HOOK_TIMEOUT_S for e in entries)
+
+    def test_the_portable_form_names_no_path_from_this_machine(self):
+        """What `--project` writes ends up in a tracked settings.json, so it may
+        not carry this machine's interpreter or this machine's checkout."""
+        out, _ = merge({}, portable=True)
+        for c in _commands(out):
+            assert c.startswith('adder hook ')
+            assert '/' not in c and '\\' not in c
+
+    def test_both_forms_are_recognised_as_ours(self):
+        """`off` has to remove an entry `on` wrote in either scope, and in the
+        absolute-path form older versions wrote. A stale hook it fails to
+        remove is one that errors on every tool call."""
+        from adder.decide.auto import _is_ours
+        for portable in (False, True):
+            for c in _commands(merge({}, portable=portable)[0]):
+                assert _is_ours(c)
+        assert _is_ours('/usr/bin/python3 /old/checkout/'
+                        'adder/decide/hooks/pretooluse_read_guard.py')
 
     def test_the_guard_is_matched_against_every_tool_it_watches(self):
         from adder.decide.guard import OBSERVED
@@ -150,19 +204,19 @@ class TestPlanning:
     """`plan` reads, `apply` writes, and nothing else does either."""
 
     def test_planning_writes_nothing(self, tmp_path):
-        plan(cwd=tmp_path)
+        plan(cwd=tmp_path, user=False)
         assert list(tmp_path.iterdir()) == []
 
     def test_it_reports_the_level_it_would_set(self, tmp_path):
-        assert plan(cwd=tmp_path, level='full').level == 'full'
-        assert plan(cwd=tmp_path).level == 'certain'
+        assert plan(cwd=tmp_path, user=False, level='full').level == 'full'
+        assert plan(cwd=tmp_path, user=False).level == 'certain'
 
     def test_a_malformed_settings_file_blocks_rather_than_being_overwritten(self,
                                                                            tmp_path):
         p = tmp_path / '.claude' / 'settings.json'
         p.parent.mkdir()
         p.write_text('{ this is not json')
-        got = plan(cwd=tmp_path)
+        got = plan(cwd=tmp_path, user=False)
         assert got.blocked
         with pytest.raises(ValueError):
             apply(got)
@@ -170,16 +224,16 @@ class TestPlanning:
 
     def test_a_malformed_config_file_blocks_too(self, tmp_path):
         (tmp_path / '.adder.json').write_text('nope')
-        assert plan(cwd=tmp_path).blocked
+        assert plan(cwd=tmp_path, user=False).blocked
 
     def test_a_plan_with_nothing_to_do_says_so(self, tmp_path):
-        apply(plan(cwd=tmp_path))
-        assert plan(cwd=tmp_path).empty
+        apply(plan(cwd=tmp_path, user=False))
+        assert plan(cwd=tmp_path, user=False).empty
 
 
 class TestApplying:
     def test_it_writes_both_files(self, tmp_path):
-        p = plan(cwd=tmp_path)
+        p = plan(cwd=tmp_path, user=False)
         apply(p)
         assert json.loads(p.settings_path.read_text())['hooks']
         assert json.loads(p.config_path.read_text())['guard_enforce'] == 'certain'
@@ -188,7 +242,7 @@ class TestApplying:
         s = tmp_path / '.claude' / 'settings.json'
         s.parent.mkdir()
         s.write_text(json.dumps(FOREIGN))
-        apply(plan(cwd=tmp_path))
+        apply(plan(cwd=tmp_path, user=False))
         assert json.loads(s.with_name(s.name + BACKUP_SUFFIX).read_text()) == FOREIGN
 
     def test_the_backup_is_not_overwritten_by_a_later_run(self, tmp_path):
@@ -196,13 +250,13 @@ class TestApplying:
         s = tmp_path / '.claude' / 'settings.json'
         s.parent.mkdir()
         s.write_text(json.dumps(FOREIGN))
-        apply(plan(cwd=tmp_path))
-        apply(plan_off(cwd=tmp_path))
-        apply(plan(cwd=tmp_path, level='full'))
+        apply(plan(cwd=tmp_path, user=False))
+        apply(plan_off(cwd=tmp_path, user=False))
+        apply(plan(cwd=tmp_path, user=False, level='full'))
         assert json.loads(s.with_name(s.name + BACKUP_SUFFIX).read_text()) == FOREIGN
 
-    def test_the_written_file_is_valid_json_a_harness_could_read(self, tmp_path):
-        p = plan(cwd=tmp_path)
+    def test_the_written_file_is_valid_json_a_harness_could_read(self, clean_home):
+        p = plan(cwd=clean_home)
         apply(p)
         blob = json.loads(p.settings_path.read_text())
         for groups in blob['hooks'].values():
@@ -210,18 +264,32 @@ class TestApplying:
                 for e in g['hooks']:
                     assert e['type'] == 'command'
                     # `sys.executable`, not `python3`: see `guard.interpreter`.
-                    assert e['command'].startswith(guard.interpreter() + ' ')
+                    # A user-scope file never leaves the machine that
+                    # interpreter is right for.
+                    assert e['command'].startswith(guard.interpreter() + ' -m ')
 
-    def test_the_hook_scripts_it_points_at_exist(self, tmp_path):
-        p = plan(cwd=tmp_path)
+    def test_the_hook_modules_it_points_at_import(self, clean_home):
+        import importlib
+
+        p = plan(cwd=clean_home)
         apply(p)
         for cmd in _commands(json.loads(p.settings_path.read_text())):
-            assert Path(cmd.split(' ', 1)[1]).is_file(), \
+            module = cmd.rsplit(' ', 1)[1]
+            assert Path(importlib.import_module(module).__file__).is_file(), \
                 "an installed hook that is not on disk fails on every tool call"
 
+    def test_a_moved_checkout_does_not_strand_the_hooks(self, clean_home):
+        """The reason the script path went away. An absolute path to a file in a
+        checkout is wrong the moment the checkout moves, and the guard fails
+        open, so the symptom is silence rather than an error."""
+        apply(plan(cwd=clean_home))
+        for cmd in _commands(json.loads(
+                (clean_home / '.claude' / 'settings.json').read_text())):
+            assert 'adder/decide/hooks' not in cmd
+
     def test_off_after_on_leaves_no_trace_in_settings(self, tmp_path):
-        apply(plan(cwd=tmp_path))
-        p = plan_off(cwd=tmp_path)
+        apply(plan(cwd=tmp_path, user=False))
+        p = plan_off(cwd=tmp_path, user=False)
         apply(p)
         assert not json.loads(p.settings_path.read_text()).get('hooks')
         assert json.loads(p.config_path.read_text())['guard_enforce'] == 'off'
@@ -238,13 +306,13 @@ class TestTheAgentFiles:
 
     def test_activation_installs_them(self, tmp_path):
         from adder.decide.auto import AGENTS
-        p = plan(cwd=tmp_path)
+        p = plan(cwd=tmp_path, user=False)
         apply(p)
         for name in AGENTS:
             assert (p.agents_path / name).is_file()
 
     def test_they_go_beside_the_settings_file_it_wrote(self, tmp_path):
-        p = plan(cwd=tmp_path)
+        p = plan(cwd=tmp_path, user=False)
         assert p.agents_path.parent == p.settings_path.parent
 
     def test_explore_is_installed_because_it_needs_no_decision(self):
@@ -259,7 +327,7 @@ class TestTheAgentFiles:
         mine = tmp_path / '.claude' / 'agents' / 'Explore.md'
         mine.parent.mkdir(parents=True)
         mine.write_text('mine, and I rely on it')
-        p = plan(cwd=tmp_path)
+        p = plan(cwd=tmp_path, user=False)
         apply(p)
         assert mine.read_text() == 'mine, and I rely on it'
         assert 'Explore.md' in p.agent_skips
@@ -270,26 +338,26 @@ class TestTheAgentFiles:
         mine = tmp_path / '.claude' / 'agents' / 'Explore.md'
         mine.parent.mkdir(parents=True)
         mine.write_text('mine')
-        text = '\n'.join(_render_plan(plan(cwd=tmp_path)))
+        text = '\n'.join(_render_plan(plan(cwd=tmp_path, user=False)))
         assert 'Explore.md' in text and 'left alone' in text
 
     def test_an_identical_file_is_neither_written_nor_flagged(self, tmp_path):
         """Re-running activation must be a no-op, not a list of pretend work."""
-        apply(plan(cwd=tmp_path))
-        again = plan(cwd=tmp_path)
+        apply(plan(cwd=tmp_path, user=False))
+        again = plan(cwd=tmp_path, user=False)
         assert not again.agent_writes and not again.agent_skips
         assert again.empty
 
     def test_off_leaves_them_in_place(self, tmp_path):
         """They cost nothing without the hooks, and one may have been edited."""
-        p = plan(cwd=tmp_path)
+        p = plan(cwd=tmp_path, user=False)
         apply(p)
-        apply(plan_off(cwd=tmp_path))
+        apply(plan_off(cwd=tmp_path, user=False))
         assert (p.agents_path / 'route-t0.md').is_file()
 
     def test_the_installed_copy_matches_the_source(self, tmp_path):
         from adder.decide.auto import agents_dir
-        p = plan(cwd=tmp_path)
+        p = plan(cwd=tmp_path, user=False)
         apply(p)
         assert (p.agents_path / 'route-t2.md').read_text() == \
             (agents_dir() / 'route-t2.md').read_text()
@@ -330,7 +398,7 @@ class TestStatus:
         assert 'adder auto on' in render_status(status(cwd=clean_home))
 
     def test_it_reports_on_once_the_hooks_are_written(self, clean_home):
-        apply(plan(cwd=clean_home))
+        apply(plan(cwd=clean_home, user=False))
         s = status(cwd=clean_home)
         assert s.installed and s.level == 'certain' and not s.hooks_missing
         assert 'ON' in render_status(s)
@@ -354,7 +422,7 @@ class TestStatus:
 
     def test_rendering_a_plan_names_every_file_it_would_touch(self, tmp_path):
         from adder.decide.auto import _render_plan
-        p = plan(cwd=tmp_path)
+        p = plan(cwd=tmp_path, user=False)
         text = '\n'.join(_render_plan(p))
         assert str(p.settings_path) in text and str(p.config_path) in text
 
@@ -392,7 +460,7 @@ class TestTheEnforcingThresholds:
 
     def test_full_writes_the_measured_thresholds(self, tmp_path):
         from adder.decide.auto import ENFORCING_THRESHOLDS
-        got = plan(cwd=tmp_path, level='full').config_after
+        got = plan(cwd=tmp_path, user=False, level='full').config_after
         for k, v in ENFORCING_THRESHOLDS.items():
             assert got[k] == v
 
@@ -400,7 +468,7 @@ class TestTheEnforcingThresholds:
         """`certain` refuses only what admits nothing new. How large a call has
         to be before the guard speaks is a different question, already answered
         by whatever the user configured."""
-        got = plan(cwd=tmp_path, level='certain').config_after
+        got = plan(cwd=tmp_path, user=False, level='certain').config_after
         assert set(got) == {'guard_enforce'}
 
     def test_the_floor_is_above_the_one_the_reports_solve_for(self):
@@ -411,25 +479,25 @@ class TestTheEnforcingThresholds:
         assert ENFORCING_THRESHOLDS['guard_min_tokens'] == 800
 
     def test_a_tuned_answer_overrides_the_shipped_one(self, tmp_path):
-        got = plan(cwd=tmp_path, level='full',
+        got = plan(cwd=tmp_path, user=False, level='full',
                    thresholds={'guard_min_tokens': 1234}).config_after
         assert got['guard_min_tokens'] == 1234
 
     def test_the_change_list_names_every_setting_it_moves(self, tmp_path):
-        p = plan(cwd=tmp_path, level='full')
+        p = plan(cwd=tmp_path, user=False, level='full')
         assert len(p.config_changes) == 4
         assert any('guard_enforce' in c for c in p.config_changes)
 
     def test_a_setting_already_at_the_target_is_not_relisted(self, tmp_path):
         (tmp_path / '.adder.json').write_text(json.dumps({'guard_min_tokens': 800}))
-        p = plan(cwd=tmp_path, level='full')
+        p = plan(cwd=tmp_path, user=False, level='full')
         assert not any(c.startswith('guard_min_tokens') for c in p.config_changes)
 
     def test_off_does_not_revert_a_tuned_threshold(self, tmp_path):
         """They are measurements of this workload and they mean something to an
         advisory guard too. `off` means stop refusing, not forget."""
-        apply(plan(cwd=tmp_path, level='full'))
-        p = plan_off(cwd=tmp_path)
+        apply(plan(cwd=tmp_path, user=False, level='full'))
+        p = plan_off(cwd=tmp_path, user=False)
         apply(p)
         after = json.loads(p.config_path.read_text())
         assert after['guard_enforce'] == 'off' and after['guard_min_tokens'] == 800

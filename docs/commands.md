@@ -48,11 +48,12 @@ Turn a measurement into a choice.
 | `adder outcomes [--log PATH] [--project P] [--context TOK] [--json]` | escalation calibration (p_fail), and how far each tier is from being allowed to take work |
 | `adder outcomes record --tier T [--model M] [--project P] [--escalated] ...` | append one dispatch outcome by hand |
 | `adder outcomes import [root] [--write] [--json]` | backfill that log from transcripts: every `Agent` dispatch and whether it escalated. Dry run unless `--write`; idempotent, so re-running adds only what is new |
-| `adder guard [root] [--learn] [--replay] [--explain CMD] [--install] [--json]` | what the PreToolUse guard predicts, decides, and has cost |
+| `adder guard [root] [--learn] [--replay] [--shadow] [--last] [--explain CMD] [--install] [--json]` | what the PreToolUse guard predicts, decides, and has cost. `--shadow` reads back what shadow mode would have refused and how often the session went round it; `--last` lists every finding and refusal from the most recent recorded session. Both are read-only — `adder auto on --shadow` is what turns shadow mode on |
 | `adder ledger [--log PATH] [--json]` | has the advice been worth more than the asking? |
-| `adder guard [root] [--learn] [--explain CMD] [--json]` | what the PreToolUse guard predicts, decides, and has cost ([guard.md](guard.md)) |
+| `adder guard [root] [--learn] [--replay] [--shadow] [--last] [--explain CMD] [--json]` | what the PreToolUse guard predicts, decides, and has cost ([guard.md](guard.md)) |
 | `adder handoff [--cwd DIR] [--context TOK] [--remaining N] [--top N] [--json]` | the largest brief that can cross a restart before restarting stops paying, what the brief has to name (files edited, commands re-run, reads by re-establishment cost), and what handoffs on this machine have actually been |
-| `adder classify "<task>"` | task-complexity classification, on its own |
+| `adder classify "<task>" [--json]` | task-complexity classification, on its own |
+| `adder classify --terms [--json]` | the project vocabulary in effect, and how to set it. The shipped vocabulary is English about software in general; on a domain codebase it abstains on nearly every task, which spends routing overhead to arrive at "no change". `classify_terms` in the project's `.adder.json` teaches it this repository's nouns |
 | `adder similar "<task>" [--floor R] [--top K] [--json]` | what happened last time on tasks whose vocabulary resembles this one: the per-tier escalation rate over the nearest recorded runs, against the tier-wide rate the router used before ([tiers.md](tiers.md)) |
 | `adder pick "<task>" [--combos] [--json]` | cheapest model, or combination, that clears the quality bar ([models.md](models.md)) |
 | `adder harvest [root] [--handoff TOK] [--discount R] [--interruptions N] [--json]` | whether cheap-but-interruptible capacity would pay, given how much context an interruption destroys ([research-map.md](research-map.md)) |
@@ -80,7 +81,8 @@ Check that a lever is real before trusting it.
 | `adder calib [--log PATH] [--global-rate] [--json]` | score `p_fail` out of sample, prequentially: Brier, skill against the base rate, reliability by bin, and the dollars miscalibration moved |
 | `adder verbosity [battles.jsonl] [--turns N] [--json]` | fit the style-controlled Bradley-Terry model: how much of a model's rating is length rather than capability, and what those extra tokens cost per answer ([research-map.md](research-map.md)) |
 | `adder design [battles.jsonl] [--budget N] [--cost USD] [--json]` | allocate a fixed comparison budget to the model pairs that would actually reduce uncertainty about the ranking, instead of spreading it evenly ([routing.md](routing.md)) |
-| `adder ab --help` | controlled A/B on answer quality |
+| `adder ab [--models A,B] [--backend cli\|sdk] [--repeats N] [--run]` | controlled A/B on answer quality: identical prompts, identical context, different models ([quality.md](quality.md)) |
+| `adder ab --recall [--models A,B] [--run]`, `adder ab --print-seed` | score each model on a fixture with a known number of planted defects, and name the ones it missed. The only quality signal here that shares no code with the cost model, so it is the only one that cannot agree with a saving by construction. `--print-seed` prints the fixture and the prompt so the same measurement can be run by hand |
 | `adder repro [root] [--deep] [--write PATH] [--check PATH] [--json]` | hash the four things every number depends on (transcripts, prices, catalog, code) and diff against a manifest recorded earlier; exits 1 on drift |
 | `adder doctor [root] [--strict] [--json]` | run every check and rank the findings by dollars at stake |
 
@@ -90,13 +92,16 @@ Inspect what the tool is configured to do, and turn on the parts that run
 without being asked. `adder auto on` is the only command in this tool that
 writes a file you did not name: it says what it will change before it changes
 it, keeps a `.adder.bak` of whatever was there, and `adder auto off` removes
-exactly what it added.
+exactly what it added. It writes to `~/.claude` unless you pass `--project`:
+a `.claude/settings.json` is commonly tracked in git, and a hooks block there
+is configuration every contributor inherits without asking for it.
 
 | Command | What it does |
 |---|---|
 | `adder auto [status]` | is anything running between your turns, and what has it been worth: refusals at par, advice discounted by measured uptake |
-| `adder auto on [--full] [--user] [--yes] [--dry-run]` | install the three hooks and start enforcing. `certain` (default) refuses only calls that admit nothing new; `--full` also refuses a large read that has a cheaper equal |
-| `adder auto off [--yes]` | remove the hooks and stop enforcing; foreign hooks in the same file are left alone |
+| `adder auto on [--shadow\|--full] [--project] [--yes] [--dry-run]` | install the three hooks (with an explicit 5s timeout each) and start enforcing. Writes to `~/.claude` by default; `--project` writes to this repository's `.claude/` instead and says what it is putting inside a tracked tree. `certain` (default) refuses only calls that admit nothing new; `--full` also refuses a large read that has a cheaper equal; `--shadow` refuses nothing at all and records what it would have refused, which is how the assumed uptake term becomes a measurement before anything is denied |
+| `adder auto off [--project] [--yes]` | remove the hooks and stop enforcing; foreign hooks in the same file are left alone |
+| `adder hook NAME` | run one harness hook (`read-guard`, `compact-learn`, `cost-advisor`). Claude Code calls this; you do not. It exists so a project-scope install can name a command that resolves on every contributor's machine instead of one absolute path from the machine that ran `auto on` |
 | `adder config [name] [--json] [--explain]` | every setting in effect, its value, and which layer set it |
 | `adder config --init` | print a config-file template to stdout |
 | `adder completion [bash\|zsh\|fish]` | shell completion, generated from the command table and each module's own parser |

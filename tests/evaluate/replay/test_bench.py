@@ -42,6 +42,32 @@ def _sessions(n=3, n_turns=120, admit=6_000, out=600, base=20_000, model=OPUS):
     return out_sessions
 
 
+def _corpus(tmp_path, results):
+    import json
+
+    d = tmp_path / "proj"
+    d.mkdir(parents=True, exist_ok=True)
+    recs, ctx = [], 20_000
+    for i, (cmd, out) in enumerate(results):
+        ctx += len(out) // 4 + 300
+        recs.append({
+            "type": "assistant", "sessionId": "s", "cwd": "/repo",
+            "timestamp": f"2026-08-01T10:{i:02d}:00Z",
+            "message": {"id": f"m{i}", "model": "claude-opus-5",
+                        "usage": {"input_tokens": 1, "cache_read_input_tokens": ctx,
+                                  "cache_creation_input_tokens": 2_000,
+                                  "output_tokens": 300},
+                        "content": [{"type": "tool_use", "id": f"u{i}",
+                                     "name": "Bash", "input": {"command": cmd}}]}})
+        recs.append({
+            "type": "user", "sessionId": "s", "cwd": "/repo",
+            "timestamp": f"2026-08-01T10:{i:02d}:30Z",
+            "message": {"content": [{"type": "tool_result",
+                                     "tool_use_id": f"u{i}", "content": out}]}})
+    (d / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs))
+    return tmp_path
+
+
 class TestGuardThreshold:
     def test_the_token_floor_is_the_hooks_floor(self):
         """The benchmark must price the guard people actually run.
@@ -204,6 +230,67 @@ class TestRun:
             assert math.isfinite(b.multiple(i)) and b.multiple(i) >= 1.0 - 1e-9
 
 
+class TestItSaysWhichGuardItPriced:
+    """The gap somebody found by reading this report next to the install command.
+
+    `adder auto on` writes `guard_enforce=certain`, which refuses duplicates.
+    The ladder models that -- the duplicate rung reads `refusal` rather than
+    `advice` at that level -- but nothing in the output said which of the two
+    it had priced, so on a machine that had activated nothing the numbers read
+    as a description of the configuration the install command writes, and were
+    a description of a different one.
+    """
+
+    def test_the_level_is_recorded_on_the_result(self, monkeypatch):
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "certain")
+        assert run(_sessions(), corners=False).level == "certain"
+
+    def test_it_names_what_the_install_command_would_set(self, monkeypatch):
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "off")
+        b = run(_sessions(), corners=False)
+        assert b.level == "off" and b.installs_level == "certain"
+
+    def test_the_duplicate_rung_is_a_refusal_at_certain(self, monkeypatch):
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "certain")
+        rungs = ladder(_sessions(), min_cost=0.25, duplicates=True)
+        dup = next(c for c in rungs if "duplicate" in c.label)
+        assert "refusal" in dup.label and "no uptake assumption" in dup.note
+
+    def test_the_duplicate_rung_is_only_advice_at_off(self, monkeypatch):
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "off")
+        rungs = ladder(_sessions(), min_cost=0.25, duplicates=True)
+        dup = next(c for c in rungs if "duplicate" in c.label)
+        assert "advice" in dup.label and "adder auto on" in dup.note
+
+    def test_an_off_machine_is_told_the_ladder_is_not_what_on_installs(
+            self, capsys, monkeypatch, tmp_path, isolated_home):
+        """The whole finding, as output. Reading this report on a machine that
+        has activated nothing must not leave someone believing they have just
+        seen the configuration `adder auto on` writes."""
+        from adder.evaluate.replay.bench import report
+
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "off")
+        root = _corpus(tmp_path, [("cat a.py", "x" * 40_000)] * 6)
+        assert report(root) == 0
+        out = capsys.readouterr().out
+        assert "guard_enforce=off" in out
+        assert "not what `adder auto on` installs" in out
+
+    def test_the_reader_is_pointed_at_the_reconciliation(
+            self, capsys, monkeypatch, tmp_path, isolated_home):
+        """`adder savings` prices the same lever about 4x higher. Two correct
+        numbers in two reports with nothing between them read as one wrong
+        one."""
+        from adder.evaluate.replay.bench import report
+
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "certain")
+        root = _corpus(tmp_path, [("cat a.py", "x" * 40_000)] * 6)
+        assert report(root) == 0
+        assert "adder savings" in capsys.readouterr().out
+
+
+
+
 class TestTheDuplicateRung:
     """What `guard_enforce=certain` is worth, on the report someone reads
     before installing anything.
@@ -212,36 +299,11 @@ class TestTheDuplicateRung:
     it: no summary ratio, no p_fail, no handoff. The call does not run.
     """
 
-    def _corpus(self, tmp_path, results):
-        import json
-
-        d = tmp_path / "proj"
-        d.mkdir(parents=True, exist_ok=True)
-        recs, ctx = [], 20_000
-        for i, (cmd, out) in enumerate(results):
-            ctx += len(out) // 4 + 300
-            recs.append({
-                "type": "assistant", "sessionId": "s", "cwd": "/repo",
-                "timestamp": f"2026-08-01T10:{i:02d}:00Z",
-                "message": {"id": f"m{i}", "model": "claude-opus-5",
-                            "usage": {"input_tokens": 1, "cache_read_input_tokens": ctx,
-                                      "cache_creation_input_tokens": 2_000,
-                                      "output_tokens": 300},
-                            "content": [{"type": "tool_use", "id": f"u{i}",
-                                         "name": "Bash", "input": {"command": cmd}}]}})
-            recs.append({
-                "type": "user", "sessionId": "s", "cwd": "/repo",
-                "timestamp": f"2026-08-01T10:{i:02d}:30Z",
-                "message": {"content": [{"type": "tool_result",
-                                         "tool_use_id": f"u{i}", "content": out}]}})
-        (d / "s.jsonl").write_text("\n".join(json.dumps(r) for r in recs))
-        return tmp_path
-
     def test_the_shell_re_reads_are_dropped_and_the_rest_re_priced(self, tmp_path):
         from adder.core.trace import load_sessions
         from adder.evaluate.replay.bench import duplicate_admissions, run
 
-        root = self._corpus(tmp_path, [("cat /a.py", "x" * 40_000)] * 4)
+        root = _corpus(tmp_path, [("cat /a.py", "x" * 40_000)] * 4)
         sessions = load_sessions(root)
         dups = duplicate_admissions(root)
         assert sum(dups.values()) > 0
@@ -257,7 +319,7 @@ class TestTheDuplicateRung:
         from adder.core.trace import load_sessions
         from adder.evaluate.replay.bench import run
 
-        root = self._corpus(tmp_path, [(f"cat /{i}.py", "x" * 40_000) for i in range(4)])
+        root = _corpus(tmp_path, [(f"cat /{i}.py", "x" * 40_000) for i in range(4)])
         b = run(load_sessions(root), corners=False)
         assert not any(c.regime.refuse_duplicates for c in b.configs)
 

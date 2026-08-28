@@ -33,6 +33,17 @@ from adder.decide.guard import (
 OPUS = "claude-opus-5"
 
 
+@pytest.fixture(autouse=True)
+def _no_local_config(isolated_home):
+    """`Settings.resolve` reads `~/.claude/adder.json`, so without this the
+    assertions about the default level pass or fail on whether the developer
+    has run `adder auto on`. They failed on the machine of the person adding
+    the `shadow` level, which is the population this suite most needs to work
+    for -- see CLAUDE.md, "Tests must not read the real `~/.claude`".
+    """
+    return isolated_home
+
+
 @pytest.fixture
 def sizes():
     return SizeModel(
@@ -80,7 +91,15 @@ class TestItIsOffUntilItIsTurnedOn:
         assert Settings.resolve(env={"ADDER_GUARD_ENFORCE": "aggressive"}).enforce == "off"
 
     def test_the_levels_are_ordered_least_to_most(self):
-        assert ENFORCE_LEVELS == ("off", "certain", "full")
+        assert ENFORCE_LEVELS == ("off", "shadow", "certain", "full")
+
+    def test_shadow_is_not_enforcing(self):
+        """The whole point of the level. `enforcing` used to be `!= 'off'`, and
+        under that spelling adding a level between them would have started
+        refusing calls on a machine that asked for a measurement."""
+        cfg = Settings.resolve(env={"ADDER_GUARD_ENFORCE": "shadow"})
+        assert cfg.enforce == "shadow"
+        assert cfg.enforcing is False and cfg.shadowing is True
 
     def test_advising_still_happens_with_enforcement_off(self, sizes, big):
         v = _read(big, _seen(big), Settings(), sizes)

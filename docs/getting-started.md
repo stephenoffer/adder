@@ -1,8 +1,8 @@
 # Getting started
 
 ```bash
-pip install adder-cli
-adder auto on --full
+pip install adder-cli        # the distribution is `adder-cli`; bare `adder`
+adder auto on --full         # on PyPI is an unrelated 2014 package
 ```
 
 That is the setup. No account, no API key, no configuration file to write. adder

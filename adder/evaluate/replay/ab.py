@@ -28,6 +28,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from adder.evaluate.replay.seeded import Recall
+
 
 def _repo_root() -> Path:
     """Walk up to the directory holding `pyproject.toml`.
@@ -237,6 +239,66 @@ def run_arm_cli(model: str, tasks: list[Task], *, timeout: int = 180) -> ArmResu
     return arm
 
 
+def run_recall_cli(model: str, *, timeout: int = 300) -> Recall:
+    """Ask one model to find the planted defects, and score what came back.
+
+    Through the same CLI backend as `run_arm_cli`, for the same reason: it uses
+    the credentials Claude Code already holds. What is different is what comes
+    out of it -- a set of ids matched against a known list, computed by
+    `seeded.score`, which touches nothing in the cost model. That is the whole
+    point of the mode. Every other quality signal in this repo is derived from
+    the same parse and the same prices as the saving it is checking.
+    """
+    import json
+    import subprocess
+
+    from adder.evaluate.replay import seeded
+
+    prompt = (f'<file path="cache_helpers.py">\n{seeded.SOURCE}\n</file>\n\n'
+              f"{seeded.PROMPT}\n\nAnswer strictly from the file above. "
+              "Do not use any tools.")
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", prompt, "--model", model,
+             "--output-format", "json", "--max-turns", "1"],
+            capture_output=True, text=True, timeout=timeout, cwd="/tmp",
+        )
+        if proc.returncode != 0:
+            return seeded.Recall(model, error=(proc.stderr or "nonzero exit")[:160])
+        data = json.loads(proc.stdout)
+        text = data.get("result") or ""
+        return seeded.Recall(model, seeded.score(text), reply=text,
+                             cost=float(data.get("total_cost_usd") or 0.0))
+    except subprocess.TimeoutExpired:
+        return seeded.Recall(model, error="timeout")
+    except (json.JSONDecodeError, ValueError) as exc:
+        return seeded.Recall(model, error=f"bad json: {exc}"[:160])
+
+
+def run_recall_sdk(model: str, *, max_tokens: int = 2_000) -> Recall:
+    """The same, through the anthropic SDK. Needs credentials of its own."""
+    import anthropic
+
+    from adder.evaluate.replay import seeded
+    from adder.pricing.prices import rate
+
+    try:
+        client = anthropic.Anthropic()
+        r = rate(model)
+        msg = client.messages.create(
+            model=model, max_tokens=max_tokens,
+            messages=[{"role": "user",
+                       "content": f'<file path="cache_helpers.py">\n'
+                                  f'{seeded.SOURCE}\n</file>\n\n{seeded.PROMPT}'}],
+        )
+        text = " ".join(b.text for b in msg.content
+                        if getattr(b, "type", "") == "text")
+        cost = (msg.usage.input_tokens * r.inp + msg.usage.output_tokens * r.out) / 1e6
+        return seeded.Recall(model, seeded.score(text), reply=text, cost=cost)
+    except Exception as exc:                        # network, auth, rate limit
+        return seeded.Recall(model, error=str(exc)[:160])
+
+
 def wilson_lower_bound(passed: int, n: int, *, alpha: float = 0.05) -> float:
     """Lower bound of a 95% CI on the pass rate. Small n must not look conclusive.
 
@@ -300,6 +362,30 @@ def preflight() -> list[str]:
     return out
 
 
+def _recall(a, models: list[str]) -> int:
+    """The `--recall` arm of `main`. Same dry-run contract as everything else here."""
+    from adder.evaluate.replay import seeded
+
+    if not a.run:
+        print(f"\n  DRY RUN. {seeded.K} planted defects x {len(models)} models "
+              f"= {len(models)} API calls.\n")
+        for line in preflight():
+            print(f"    {line}")
+        print()
+        for s in seeded.SEEDS:
+            print(f"    {s.symbol:<18}{s.what}")
+        print("\n  `--print-seed` prints the fixture and the prompt. Re-run with "
+              "--run to score\n  a model against it.\n")
+        return 1 if any(ln.startswith("[MISSING]") for ln in preflight()) else 0
+
+    runner = run_recall_cli if a.backend == "cli" else run_recall_sdk
+    results = [runner(m) for m in models]
+    print()
+    print(seeded.report(results))
+    print()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -312,7 +398,27 @@ def main(argv: list[str] | None = None) -> int:
                     help="cli uses the local claude binary and existing credentials")
     ap.add_argument("--repeats", type=int, default=1,
                     help="repeat the task set N times to tighten the interval")
+    ap.add_argument("--recall", action="store_true",
+                    help="score each model on a fixture with a known number of "
+                         "planted defects, instead of the comprehension tasks. "
+                         "Shares no code with the cost model")
+    ap.add_argument("--print-seed", action="store_true",
+                    help="print the seeded fixture and the prompt, so the same "
+                         "measurement can be run by hand or by another tool")
     a = ap.parse_args(argv)
+
+    if a.print_seed:
+        from adder.evaluate.replay import seeded
+
+        print(seeded.SOURCE)
+        print(seeded.PROMPT)
+        print()
+        print(f"  {seeded.K} defects are planted. `adder ab --recall --run` "
+              "scores a reply against them.")
+        return 0
+
+    if a.recall:
+        return _recall(a, models=[m.strip() for m in a.models.split(",") if m.strip()])
 
     models = [m.strip() for m in a.models.split(",") if m.strip()]
     tasks = TASKS * max(1, a.repeats)

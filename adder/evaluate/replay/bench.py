@@ -296,6 +296,18 @@ class Bench:
     measured: float
     sessions: int
     corners: list[tuple[tuple[float, float, int], float]]   # (inputs, multiple)
+    # Which guard this ladder describes. It was not recorded, and that is the
+    # gap somebody found by reading the report next to the install command:
+    # `adder auto on` writes `guard_enforce=certain`, which *refuses*
+    # duplicates, and every number here was being read as if it described the
+    # advisory guard -- because on a machine that had not activated anything,
+    # it did. The level is an input to the ladder, so it belongs in the output.
+    level: str = "off"
+
+    @property
+    def installs_level(self) -> str:
+        """What `adder auto on` would set, as against what is set now."""
+        return "certain"
 
     @property
     def baseline(self) -> float:
@@ -375,7 +387,7 @@ def run(sessions, *, min_cost: float = 0.25, handoff_tokens: int = DEFAULT_HANDO
     base = results[0].total
     swept = corner_sweep(prepared, configs[-1].regime, base,
                          output_share=share, on=on) if corners and len(configs) > 1 else []
-    return Bench(configs, results, measured, len(sessions), swept)
+    return Bench(configs, results, measured, len(sessions), swept, level=_enforce_level())
 
 
 def report(root: Path | str = DEFAULT_ROOT, *, min_cost: float = 0.25,
@@ -399,6 +411,23 @@ def report(root: Path | str = DEFAULT_ROOT, *, min_cost: float = 0.25,
         print("  ! the replay does not reproduce the measured total closely enough;")
         print("    treat the multiples below as illustrative, not as a quote")
     print()
+    print(f"  Priced against `guard_enforce={b.level}`" +
+          ("" if b.level != "off" else
+           "   <- not what `adder auto on` installs"))
+    if b.level == "off":
+        print(f"    `adder auto on` writes `{b.installs_level}`, which refuses the "
+              "calls that admit")
+        print("    nothing new instead of describing them. On this ladder that "
+              "moves the")
+        print("    duplicate row above the line and drops its uptake assumption "
+              "entirely.")
+    elif b.level == "shadow":
+        print("    Shadow refuses nothing, so the duplicate row below is what "
+              "`certain` would")
+        print("    collect, not what this machine is currently collecting. "
+              "`adder guard --shadow`")
+        print("    is the measured version of the same question.")
+    print()
     print("  Rows are cumulative. The levers are substitutes -- they attack the same")
     print("  pool of re-read context -- so adding them up separately double-counts it.\n")
     print(f"  {'configuration':<58}{'total':>10}{'vs no adder':>13}")
@@ -421,6 +450,14 @@ def report(root: Path | str = DEFAULT_ROOT, *, min_cost: float = 0.25,
         print(f"  Following what the reports say:      {b.followed:>5.1f}x")
         print("    The * row is the restart cadence. No hook can restart a session,")
         print("    so the gap between the two numbers is the part that is on you.")
+    print()
+    print("  The duplicate row is a fraction of what `adder savings` prices the "
+          "same")
+    print("  lever at, and both are right: that one measures the pool, this one "
+          "prices")
+    print("  a hook with a memory, a budget and a rule against refusing twice. "
+          "`adder")
+    print("  savings` prints the difference item by item.")
 
     if b.corners:
         print()
@@ -488,6 +525,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {cfg.label:<58}${res.total:>9,.0f}{b.multiple(i):>12.1f}x")
         return 0
     print(json.dumps({
+        "level": b.level,
+        "installs_level": b.installs_level,
         "measured": round(b.measured, 2),
         "baseline": round(b.baseline, 2),
         "residual": round(b.residual, 4),

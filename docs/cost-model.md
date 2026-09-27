@@ -18,11 +18,12 @@ generating it did. Every cost tool reports only the generation cost.
 
 `adder debt` computes this against your own transcripts.
 
-**`cache_read_rate` is the provider's, not a constant.** It is 0.10x input on
-Anthropic, which is where the `R/50` above comes from; 0.20x on the OpenAI 5.x
-family; and, on a hosted endpoint with no prompt cache at all, 1.00x, because
-re-reading the prefix genuinely costs full input rate there. That last case is
-not a rounding difference. It makes the debt multiple roughly ten times larger,
+## The cache read rate belongs to the provider
+
+It is 0.10x input on Anthropic, which is where the `R/50` above comes from;
+0.20x on the OpenAI 5.x family; and, on a hosted endpoint with no prompt cache
+at all, 1.00x, because re-reading the prefix genuinely costs full input rate
+there. That last case is not a rounding difference. It makes the debt multiple roughly ten times larger,
 so verbosity is ten times more expensive than an Anthropic-shaped estimate
 would say, and the break-even arrives almost immediately instead of at turn 50.
 `docs/providers.md` has the table; `adder debt --model <id>` prices whichever
@@ -36,10 +37,10 @@ That is correct for stateless APIs and wrong for agent sessions.
 
 Worse, the obvious move actively loses money. Opus 5 reads cached context at
 $0.50/MTok; Haiku 4.5 reads it fresh at $1.00/MTok, because the cache is
-model-scoped,
-so downgrading a warm conversation makes input **2x more expensive**. Break-even
-is `output > context / 40`: at the measured median context (544K) that needs
-13.6K output tokens per turn. The measured average is **783**.
+model-scoped, so downgrading a warm conversation makes input **2x more
+expensive**. Break-even is `output > context / 40`: at the measured median
+context (544K) that needs 13.6K output tokens per turn. The measured average is
+**783**.
 
 And at 544K the switch is not merely unprofitable, it is **impossible**: Haiku
 4.5 holds 200K. Every gate checks the context window before quoting a saving,
@@ -85,12 +86,14 @@ remaining turns. It is a good approximation and each of its three parts is
 measurable, so none of them has to stay an assumption. `adder carry` measures
 all three against local transcripts.
 
-**The published discount is a floor, not a rate.** A re-read costs 0.10x only when the prefix is
-warm on the turn that reads it. Turns miss: the 5m TTL expires while you read a
-diff, a tool result lands past the cache-breakpoint lookback, a parallel fan-out
-races the first write. A miss rewrites at 1.25x rather than reading at
-0.10x. The realized multiplier is recoverable from the transcripts directly,
-because every turn records how its input actually split:
+### The published discount is a floor, not a rate
+
+A re-read costs 0.10x only when the prefix is warm on the turn that reads it,
+and turns miss. The 5m TTL expires while you read a diff, a tool result lands
+past the cache-breakpoint lookback, a parallel fan-out races the first write. A
+miss rewrites at 1.25x rather than reading at 0.10x. The realized multiplier is
+recoverable from the transcripts directly, because every turn records how its
+input actually split:
 
 ```
 realized_mult = sum(uncached + read_mult*cache_read + write_mult*cache_write)
@@ -103,9 +106,11 @@ than continuing one). Measured on the transcripts behind this repo it is
 **0.115x, or 1.15x the assumption**. The carry term was already ~76% of spend and
 it was being under-priced.
 
-**`R` is not how many turns the token is present for.** Compaction evicts it. A
-token admitted now is re-read every turn until the next compaction, survives it
-with roughly the share the compaction kept, and so on, so the honest count is
+### `R` is not how many turns the token is present for
+
+Compaction evicts it. A token admitted now is re-read every turn until the next
+compaction, survives it with roughly the share the compaction kept, and so on,
+so the honest count is
 
 ```
 E[reads] = sum over epochs j of  survival^j * (turns in epoch j within R)
@@ -120,10 +125,11 @@ that switches delegation off across the board. A compaction requires the context
 to have been at 60% of the model's ceiling *and* to have lost half of itself;
 the 7 real events sit at 999.5K–999.9K dropping to 4–6%.
 
-**`R` is a mean, not a median.** Cost is linear in remaining turns, so its
-expectation is `c * E[R]`, and `E[R]` is the conditional **mean**. Session length
-is heavy-tailed, so the mean sits above the median: 351 against 305 at turn 0
-here, a factor of 1.15. `horizon.remaining()` returns the median because that is
+### `R` is a mean, not a median
+
+Cost is linear in remaining turns, so its expectation is `c * E[R]`, and `E[R]`
+is the conditional mean. Session length is heavy-tailed, so the mean sits above
+the median: 351 against 305 at turn 0 here, a factor of 1.15. `horizon.remaining()` returns the median because that is
 the right number to show a person; `horizon.mean_remaining()` returns the mean
 because that is the one that prices carry. Using the median under-prices
 admission in exactly the long sessions that hold the spend.
@@ -134,9 +140,11 @@ tokens at a 348-turn horizon from $1.80 to $2.07.
 
 ## Two things that fall out once the carry number is honest
 
-**How long to run a session.** Average per-turn input cost on a `k`-turn cycle,
-in a session growing at `g` tokens per turn from a floor `F` that a restart
-cannot avoid, with `W` the one-off write a restart pays:
+### How long to run a session
+
+Average per-turn input cost on a `k`-turn cycle, in a session growing at `g`
+tokens per turn from a floor `F` that a restart cannot avoid, with `W` the
+one-off write a restart pays:
 
 ```
 A(k) = m*r*F + m*r*g*(k+1)/2 + W/k        =>    k* = sqrt(2W / (m*r*g))
@@ -149,8 +157,10 @@ softest input, and it is why "compact constantly" is nearly always worse advice
 than it sounds. `adder carry` prints it as a sweep over handoff size rather than
 as a single figure.
 
-**When to delegate.** Both sides of the placement decision are affine in the read
-size, so the break-even is one division rather than a search:
+### When to delegate
+
+Both sides of the placement decision are affine in the read size, so the
+break-even is one division rather than a search:
 
 ```
 inline(x) = x * r_m * (w + m*E)

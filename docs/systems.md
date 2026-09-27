@@ -35,19 +35,20 @@ because that is the quantity nobody believes until they see it.
 
 Two gates come before price, and both have bitten:
 
-- **Feasibility.** A context window that cannot hold the session is not a cheap
-  option, it is a 400.
-- **Cache economics.** A provider with no prompt cache re-reads your prefix at
-  full input rate, not a tenth of it. A per-token price 40% cheaper can be
-  several times dearer across a long session. Providers that publish no cache
-  rate are assumed to have no cache, which is the pessimistic direction.
+Feasibility. A context window that cannot hold the session is not a cheap
+option, it is a 400.
+
+Cache economics. A provider with no prompt cache re-reads your prefix at full
+input rate rather than a tenth of it, so a per-token price 40% cheaper can be
+several times dearer across a long session. Providers that publish no cache rate
+are assumed to have none, which is the pessimistic direction.
 
 ## Deadlines: a discount you cannot collect is not a discount
 
 Batch processing is half price, the largest single price lever available, and
 one `adder` never recommended because nothing here knew what a deadline was.
 
-The trade is not "cheaper but slower", it is **cheaper but uncertain**. The
+The trade is not "cheaper but slower", it is cheaper but *uncertain*. The
 cheap path returns work at a rate you do not control and may stall entirely.
 Against a deadline that converts a discount into a risk, which needs a policy.
 
@@ -55,15 +56,14 @@ Against a deadline that converts a discount into a risk, which needs a policy.
 deadline. It deliberately does not have a favourite, because the obvious
 candidate is optimal under one assumption and bad under another:
 
-- **Greedy** (batch until the slack runs out, then sprint) wins outright when
-  the guaranteed path can absorb the whole remaining queue at once, which is
-  true of an API you can fan out against. On a 200-unit queue over 24 steps it
-  costs
-  $100.52 against the proportional policy's $130.35, and both meet every
-  deadline.
-- **Proportional** (keep completed work on the line `total × t / horizon`) wins
-  when the guaranteed path is rate-limited, because greedy concentrates every
-  expensive unit into the window with the least capacity to place them.
+*Greedy* — batch until the slack runs out, then sprint — wins outright when the
+guaranteed path can absorb the whole remaining queue at once, which is true of
+an API you can fan out against. On a 200-unit queue over 24 steps it costs
+$100.52 against the proportional policy's $130.35, and both meet every deadline.
+
+*Proportional* — keep completed work on the line `total × t / horizon` — wins
+when the guaranteed path is rate-limited, because greedy concentrates every
+expensive unit into the window with the least capacity to place them.
 
 The proportional rule has no slack fraction, risk tolerance, or threshold to
 fit: a parameter is a thing that gets set once from one workload and is then

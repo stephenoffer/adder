@@ -263,6 +263,17 @@ class TestReport:
         text = report([Check("spend", True, "fine")])
         assert "Nothing material to fix" in text
 
+    def test_dollars_line_up_in_one_column(self):
+        text = report([Check("tools", False, "big", action="a", dollars=1234.5),
+                       Check("memory", False, "small", action="b", dollars=7.0)])
+        big = next(line for line in text.splitlines() if "big" in line)
+        small = next(line for line in text.splitlines() if "small" in line)
+        assert big.index("$1,234.50") + len("$1,234.50") == small.index("$7.00") + len("$7.00")
+
+    def test_an_unpriced_finding_does_not_read_as_free(self):
+        text = report([Check("guard", False, "not installed", action="adder auto on")])
+        assert "$0.00" not in text
+
     def test_warns_that_levers_overlap(self, tmp_path, make_sessions, isolated_home):
         text = report(run(tmp_path, make_sessions(3, 80)))
         if "at stake" in text:

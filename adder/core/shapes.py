@@ -30,8 +30,8 @@ the flags that change the output's magnitude. Arguments are dropped, because
 gives every shape a sample size of one.
 
 Nothing here is a claim about *this* machine until `SizeModel.learn` has run.
-`PRIOR` is the fallback, and it is a measurement (see `docs/guard.md`), not a
-guess -- but it is a measurement of somebody else's workload, which is why
+`PRIOR` is the fallback, and it is a measurement (see `docs/guard-internals.md`),
+not a guess -- but it is a measurement of somebody else's workload, which is why
 `adder guard --learn` exists and why the report says which of the two answered.
 """
 

@@ -400,7 +400,8 @@ def report(root: Path | str = DEFAULT_ROOT, *, min_cost: float = 0.25,
     b = run(sessions, min_cost=min_cost, handoff_tokens=handoff_tokens,
             min_tokens=min_tokens, on=on, dups=duplicate_admissions(root))
     if not b.measured:
-        print(f"\n  No priced turns found under {root}\n")
+        from adder.util.render import nothing_found
+        print("\n" + nothing_found("priced turns", str(root)) + "\n")
         return 1
 
     print(f"\n  Measured spend            ${b.measured:>10,.0f}   "

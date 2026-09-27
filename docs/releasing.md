@@ -108,10 +108,13 @@ a regression waiting for the next release.
 
 ## If a release goes wrong
 
-- **Caught before the tag is pushed:** delete the local tag and start over.
-- **Caught after the tag but before PyPI upload:** delete the tag and the draft
-  GitHub Release, fix, re-tag the same version. Nothing external consumed it yet.
-- **Caught after PyPI upload:** do not delete the release. PyPI does not allow
-  re-uploading a version, and yanking breaks anyone who already pinned it.
-  Ship a patch version with the fix and yank the bad one only if it is actively
-  harmful.
+Caught before the tag is pushed: delete the local tag and start over.
+
+Caught after the tag but before the PyPI upload: delete the tag and the draft
+GitHub Release, fix it, re-tag the same version. Nothing external consumed it
+yet.
+
+Caught after the PyPI upload: do not delete the release. PyPI does not allow
+re-uploading a version, and yanking breaks anyone who already pinned it. Ship a
+patch version with the fix, and yank the bad one only if it is actively
+harmful.

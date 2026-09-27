@@ -607,7 +607,8 @@ def report(root: Path | str = DEFAULT_ROOT, *, target: float = 10.0,
     sessions = load_sessions(root, use_cache=True)
     measured = sum(s.cost_on(on) for s in sessions.values())
     if not measured:
-        print(f"\n  No priced turns found under {root}\n")
+        from adder.util.render import nothing_found
+        print("\n" + nothing_found("priced turns", str(root)) + "\n")
         return 1
 
     share = output_share_of_growth(sessions)

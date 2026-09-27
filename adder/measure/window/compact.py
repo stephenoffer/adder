@@ -57,6 +57,7 @@ from datetime import date
 
 from adder.core import settings as _settings
 from adder.core.filters import root_of as _root_of
+from adder.core.trace import project_name
 from adder.pricing.cost import Rates
 from adder.pricing.registry import context_window, rate
 
@@ -433,7 +434,7 @@ def report(rep: CompactReport, sessions, *, top: int = 10,
     if rep.misses:
         lines += ["", f"  Carried but never compacted — {money(rep.missed_total(on=on))} "
                       "of avoidable carry:", ""]
-        body = [[m.session[:8], m.project[-24:], m.turns_above, tokens(m.mean_context),
+        body = [[m.session[:8], project_name(m.project)[:24], m.turns_above, tokens(m.mean_context),
                  money(m.saving(rep.read_mult, kept=rep.survival, on=on))]
                 for m in rep.misses[:top]]
         lines += table(body, ["session", "project", "turns above", "mean ctx",
@@ -512,7 +513,8 @@ def main(argv: list[str] | None = None) -> int:
         if a.json:
             print(json.dumps({"sessions": 0, "compactions": 0}))
             return 0
-        print(f"No sessions under {a.root} matching {window.describe()}.")
+        from adder.util.render import nothing_found
+        print(nothing_found("sessions", a.root, window=window.describe()))
         return 1
 
     rep = analyse(sessions)

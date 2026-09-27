@@ -124,12 +124,12 @@ actually run, not the ones that flatter it.
   removes 1% of the loss rather than most of it. "Checkpointing is what makes
   preemptible capacity pay" holds only where the checkpoint is large relative
   to the state, and a handoff summary against a 500K context is not.
-- **Universal text-parameter optimisation.** The system prompt, CLAUDE.md and
+- *Universal text-parameter optimisation.* The system prompt, CLAUDE.md and
   skill descriptions are text parameters billed on every turn, which is a real
   and measurable cost, but optimising them requires running the agent, and this
   package does not run the agent. `adder memory` prices them; improving them is
   out of scope by construction.
-- **A dollar figure for the metering window.** `adder limits` reconstructs the
+- *A dollar figure for the metering window.* `adder limits` reconstructs the
   five-hour window and reports what each one read, but it asserts no capacity.
   The cap is not published in tokens, differs by model, and drains faster in
   peak hours, so the only capacity statement the data supports is "the heaviest
@@ -138,7 +138,7 @@ actually run, not the ones that flatter it.
   clock face on it, so the report compares against that floor and says what it
   is. The one number quoted without qualification is the within-window slope,
   because it does not depend on the boundary rule at all.
-- **Backfilling vocabulary sketches into the existing outcome log.** Rows
+- *Backfilling vocabulary sketches into the existing outcome log.* Rows
   written before `similar.py` existed carry no sketch and are invisible to the
   neighbour estimator, which looks like an obvious thing to fix and is not. The
   sketch would have to be written into rows already on disk, and the log is
@@ -152,7 +152,7 @@ actually run, not the ones that flatter it.
   carry sketches, the estimator needs four neighbours, and `adder similar`
   reports the coverage fraction so the gap is visible rather than silent. The
   decision is to let it heal and to say so here.
-- **A heavy-tailed verdict in `adder sched`.** Attempted and abandoned: every
+- *A heavy-tailed verdict in `adder sched`.* Attempted and abandoned: every
   finite workload's mean-residual-life curve turns down past the median length,
   so the claim is unfalsifiable on this data. The module says so rather than
   printing a category it cannot defend.

@@ -489,7 +489,8 @@ def report(root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
     sessions = load_sessions(root, use_cache=True)
     total = sum(s.cost_on(on) for s in sessions.values())
     if not total:
-        print(f"No priced turns found under {root}")
+        from adder.util.render import nothing_found
+        print(nothing_found("priced turns", str(root)))
         return
 
     read_total, baseline, accumulated = decompose_read_cost(sessions, on)

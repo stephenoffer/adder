@@ -214,3 +214,42 @@ def wrap(text: str, width: int = 78, indent: str = "  ") -> list[str]:
     if cur:
         lines.append(indent + cur)
     return lines
+
+
+def nothing_found(subject: str, root: str, *, window: str = "") -> str:
+    """The empty report: what was looked for, where, and the way forward.
+
+    Six commands each printed their own bare sentence here, and a run that
+    finds nothing is exactly when a bare sentence is least useful. "No priced
+    turns found under /Users/x/.claude/projects" reads as a bug when the real
+    answer is usually one of two mundane things: the window excluded every
+    turn, or the transcripts are somewhere this invocation did not look. So
+    the message names which of those it is rather than leaving the reader to
+    guess, and a first run that lands here gets a next command instead of a
+    full stop.
+
+    `window` is `Window.describe()`. It is passed as a string rather than a
+    `Window` because `util` sits below `core` and may not import it.
+    """
+    filtered = bool(window) and window != "everything on disk"
+    out = [f"No {subject} found under {root}" + (f" matching {window}." if filtered else ".")]
+    if filtered:
+        out += ["", *wrap("Every turn on disk was excluded by that filter. Widen it, or "
+                          "drop --since/--project to see what is there.")]
+    else:
+        out += ["", *wrap("Nothing here has been priced yet. Claude Code writes a "
+                          "transcript per project, so this fills in after a session "
+                          "or two."),
+                "",
+                *wrap("Transcripts somewhere else? Pass the directory as the first "
+                      "argument, or set `root` in .adder.json "
+                      "(`adder config --init` prints a template)."),
+                "",
+                *wrap("What does not need history is the half that prevents spend "
+                      "rather than reporting it:"),
+                "",
+                "      adder auto on --full",
+                "",
+                *wrap("which prices a tool call before its result lands in your "
+                      "context.")]
+    return "\n".join(out)

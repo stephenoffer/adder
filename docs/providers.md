@@ -195,20 +195,23 @@ every gate already reads as *unknown* and never as *free*.
 Worth saying plainly, since the point of this tool is that a number carries its
 own caveats:
 
-- **Provider mechanics marked `verified=False` are MODELLED.** Google's storage
-  rate, DeepSeek's and xAI's discounts, Bedrock's cache behaviour. They are
-  documented defaults, not read off a bill.
-- **The quality signal is still arena Elo**, which measures human preference on
-  chat and web-dev prompts, not multi-file agentic tool use. It is used because
-  it is the only cross-vendor signal that updates within days of a launch and is
-  not self-reported. `outcomes.p_fail` overrides it the moment there is measured
-  history.
-- **Effort vocabularies differ and are not translated.** Anthropic takes labels
-  up to `max`, OpenAI adds `minimal` and stops at `high`, Google takes an
-  integer thinking budget. `adder` refuses a level a model does not accept
-  rather than mapping it to a neighbour, because asking for a level the model
-  rejects is a 400, not a cheaper turn.
-- **The carry model is fitted to Claude Code transcripts.** The *shape* of it
-  (context growth per turn, survival across compaction) is a property of how an
-  agent works, not of who serves it, but it has only been measured on one
-  harness. `adder carry` refits it from whatever transcripts you point it at.
+Provider mechanics marked `verified=False` are modelled, not read off a bill:
+Google's storage rate, DeepSeek's and xAI's discounts, Bedrock's cache
+behaviour. They are documented defaults.
+
+The quality signal is still arena Elo, which measures human preference on chat
+and web-dev prompts rather than multi-file agentic tool use. It is used because
+it is the only cross-vendor signal that updates within days of a launch and is
+not self-reported. `outcomes.p_fail` overrides it the moment there is measured
+history.
+
+Effort vocabularies differ and are not translated. Anthropic takes labels up to
+`max`, OpenAI adds `minimal` and stops at `high`, Google takes an integer
+thinking budget. `adder` refuses a level a model does not accept rather than
+mapping it to a neighbour, because asking for a level the model rejects is a
+400, not a cheaper turn.
+
+The carry model is fitted to Claude Code transcripts. Its *shape* — context
+growth per turn, survival across compaction — is a property of how an agent
+works rather than of who serves it, but it has only been measured on one
+harness. `adder carry` refits it from whatever transcripts you point it at.

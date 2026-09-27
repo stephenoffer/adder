@@ -61,7 +61,9 @@ class TestTheCommandItself:
         """The failure as it happened: `python -m adder help` into a pipe."""
         out = _narrow_stream()
         monkeypatch.setattr(sys, "stdout", out)
-        monkeypatch.setattr(sys, "argv", ["adder", "help"])
+        # `--all`: the reference screen is the one that carries the arrow; the
+        # short screen a bare `adder help` prints does not.
+        monkeypatch.setattr(sys, "argv", ["adder", "help", "--all"])
         assert run() == 0
         out.flush()
         text = out.buffer.getvalue().decode("utf-8")

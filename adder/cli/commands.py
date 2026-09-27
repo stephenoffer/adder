@@ -174,6 +174,19 @@ BY_NAME: dict[str, Command] = {c.name: c for c in COMMANDS}
 # `adder help`, which is exactly the silent failure `tests/test_cli.py` guards.
 GROUPS: tuple[str, ...] = ("Measure", "Decide", "Evaluate", "Setup")
 
+# The short `adder help` screen: what a first run needs, in the words a person
+# would use to ask for it. Each entry is (invocation, what it answers). The
+# command name must be in COMMANDS; `tests/cli/test_dispatch.py` checks it.
+START_HERE: tuple[tuple[str, str], ...] = (
+    ("doctor", "what is costing you money, biggest first, and what to do about it"),
+    ("live", "what the session in this directory has cost, and will cost by the end"),
+    ("sessions", "every session, one row each, most expensive first"),
+    ("trace", "total spend, split by model"),
+    ("savings", "what each change of habit would have saved on your own history"),
+    ('policy "<task>"', "do this task here, or hand it to a subagent, and on which model"),
+    ("auto on", "install the hooks that stop wasteful tool calls (shows every change first)"),
+)
+
 GROUP_BLURB = {
     "Measure": "read-only, no API calls, no network",
     # `models refresh` is the single exception to the no-network rule, and it

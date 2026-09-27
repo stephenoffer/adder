@@ -45,15 +45,17 @@ then every result has to be read against a baseline nobody remembers).
 
 Three things `adder routereval` prints that the bare metric does not:
 
-- **The random baseline as an interval, not a constant.** On 40 recorded
-  episodes a random router lands anywhere between about 0.42 and 0.58. A router
-  scoring 0.55 on that sample has demonstrated nothing, and the report says so
-  rather than printing "+10% over random".
-- **The oracle ceiling.** APGR does not top out at 1.0. If half the tasks
-  genuinely need the strong model, a router with perfect foresight scores 0.75.
-  Reading 0.75 as "75% of the way to perfect" is wrong: on that task mix it
-  *is* perfect. The report prints the ceiling and the regret against it.
-- **A dollar axis.** See below.
+The random baseline comes out as an interval rather than a constant. On 40
+recorded episodes a random router lands anywhere between about 0.42 and 0.58, so
+a router scoring 0.55 on that sample has demonstrated nothing, and the report
+says so rather than printing "+10% over random".
+
+The oracle ceiling is printed too, because APGR does not top out at 1.0. If half
+the tasks genuinely need the strong model, a router with perfect foresight
+scores 0.75. Reading that as "75% of the way to perfect" is wrong: on that task
+mix it *is* perfect. The report prints the ceiling and the regret against it.
+
+And a dollar axis, which is the next section.
 
 ## Where we deviate: calls are not costs
 
@@ -92,15 +94,15 @@ presumably part of why it went unreported for so long.
 So two more numbers are printed, named as the benchmarks name them so they can
 be quoted next to a published figure without translation:
 
-- **gain vs best single**: the quality the best threshold on the curve adds over
-  the better of the two fixed choices. Zero is the common answer and it is a
-  finding, not a measurement failure: it means no mix beat just picking one.
-  It is positive only where the two models are genuinely complementary.
-- **cost saved at equal quality**: the cheapest threshold whose quality still
-  matches that better fixed choice, read as a share of the all-strong budget.
-  This is the figure a reader actually wants: not "how much of the gap did it
-  recover" but "how much cheaper can this get before it starts costing me
-  answers".
+`gain vs best single` is the quality the best threshold on the curve adds over
+the better of the two fixed choices. Zero is the common answer, and it is a
+finding rather than a measurement failure: no mix beat just picking one. It is
+positive only where the two models are genuinely complementary.
+
+`cost saved at equal quality` is the cheapest threshold whose quality still
+matches that better fixed choice, read as a share of the all-strong budget. This
+is the figure a reader actually wants. Not "how much of the gap did it recover"
+but "how much cheaper can this get before it starts costing me answers".
 
 `best_single` is the *better* of the two arms and is deliberately not assumed to
 be the strong one. On a task mix where the weak model wins, quoting the strong

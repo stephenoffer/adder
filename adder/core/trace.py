@@ -56,7 +56,62 @@ def cache_path() -> Path:
         return configured_path("trace_cache", CACHE_PATH)
     except Exception:
         return CACHE_PATH
-CACHE_VERSION = 8  # bumped when Turn gained agent_id
+CACHE_VERSION = 9  # bumped when subagent files stopped being project "subagents"
+
+
+# Directories people keep repositories in. `project_name` drops one of these
+# from the front of a label, because in a list of forty projects under
+# ~/Desktop the word "Desktop" is on every row and tells the reader nothing.
+_CONTAINERS = ("Desktop", "Documents", "Downloads", "Projects", "projects", "Code",
+               "code", "src", "dev", "repos", "git", "github", "GitHub", "workspace",
+               "work")
+
+
+def project_slug(path: Path) -> str:
+    """The `~/.claude/projects/<slug>` directory a transcript belongs to.
+
+    A subagent's transcript is not a child of the slug: it sits at
+    `<slug>/<session>/subagents/agent-*.jsonl`. Taking `path.parent.name`
+    for every file labelled all of those turns project "subagents", and since
+    a subagent turn carries its parent's session id, a session whose subagent
+    file happened to be read first was labelled "subagents" as a whole -- the
+    second most expensive "project" on the machine this was found on.
+    """
+    parent = path.parent
+    if parent.name == "subagents" and len(path.parents) >= 3:
+        return path.parents[2].name
+    return parent.name
+
+
+def project_name(slug: str) -> str:
+    """A project slug as a person would name it, for display only.
+
+    Claude Code names the directory after the working directory with every
+    non-alphanumeric character turned into `-`, so `~/Desktop/wolfgang-v2`
+    becomes `-Users-jo-smith-Desktop-wolfgang-v2`. Reports that truncated that
+    to fit a column showed `phen-offer-Desktop-wolfgang-v2`: the left end of
+    the name cut off and the part that identifies the project buried at the end.
+
+    The encoding is lossy (a `/` and a `-` both become `-`), so this does not
+    try to recover the path. It drops the home prefix and then one container
+    directory, and only when that directory exists -- and not when the whole
+    remainder is itself a directory in home, which is `~/code-review` and not
+    `review` under `~/code`. Keys, filters and JSON keep the slug unchanged;
+    this is for what a person reads.
+    """
+    home = Path.home()
+    home_slug = "".join(ch if ch.isalnum() else "-" for ch in str(home))
+    if slug == home_slug:
+        return "~"
+    if not slug.startswith(home_slug + "-"):
+        return slug.lstrip("-") or slug
+    rest = slug[len(home_slug) + 1:]
+    if not rest or (home / rest).exists():
+        return rest or slug
+    for c in _CONTAINERS:
+        if rest.startswith(c + "-") and len(rest) > len(c) + 1 and (home / c).is_dir():
+            return rest[len(c) + 1:]
+    return rest
 
 
 # What counts as a compaction rather than a wobble.
@@ -540,7 +595,7 @@ def iter_file(path: Path, *, skip_unknown: bool = True,
     only the final record completes -- keeping the first instead of the max
     undercounts output by 2.6% here.
     """
-    project = path.parent.name
+    project = project_slug(path)
     try:
         # Explicit UTF-8. Claude Code writes transcripts as UTF-8 regardless of
         # locale; opening with the platform default decoded them as cp1252 on a

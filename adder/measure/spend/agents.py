@@ -37,7 +37,7 @@ from pathlib import Path
 
 from adder.core import settings as _settings
 from adder.core.filters import root_of as _root_of
-from adder.core.trace import Session, Turn
+from adder.core.trace import Session, Turn, project_name
 from adder.pricing.prices import MODELS, fits, resolve
 from adder.pricing.registry import fits as _fits
 from adder.pricing.registry import limit_str
@@ -313,7 +313,7 @@ def report(rep: AgentReport, *, top: int = 10, on: date | None = None) -> str:
         biggest = sorted(rep.runs, key=lambda r: -r.cost(on))[:top]
         lines.append("")
         lines.append("  most expensive runs:")
-        rows = [[r.session[:8], r.project[-24:], f"{r.n_turns:,}",
+        rows = [[r.session[:8], project_name(r.project)[:24], f"{r.n_turns:,}",
                  tokens(r.peak_context), tokens(r.summary_tokens), money(r.cost(on))]
                 for r in biggest]
         lines += table(rows, ["session", "project", "turns", "peak ctx",

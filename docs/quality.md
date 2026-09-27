@@ -31,8 +31,8 @@ its own homework: if the cost model is wrong about result sizes or the carry
 multiplier, the check is wrong in the same direction and agrees with itself.
 
 The asymmetry matters because of which side is easy. Cost is measured five ways
-in this repo. Quality — the thing routing a task to a cheaper tier would
-actually lose — was measured by the cost machinery.
+in this repo. Quality, the thing routing a task to a cheaper tier would
+actually lose, was measured by the cost machinery.
 
 `adder ab --recall` is the corroborating signal. It ships a small source file
 with a known number of defects planted in it, asks a model to find them, and

@@ -120,21 +120,24 @@ Each of these is enforced by a test in `tests/repo/test_invariants.py` or by a m
 own tests, not just by convention. They are listed in `CLAUDE.md` as rules; here is why
 they exist.
 
-- **Deduplicate by `message.id`.** Without it, every figure in the project is
-  ~1.78x too high.
-- **No network outside `sources.py`.** A cost report that silently depends on a
-  third party breaks in CI at the worst moment. `tests/repo/test_invariants.py`
-  walks the AST of every module and fails on a networking import.
-- **No runtime dependencies.** The tool must run from a bare checkout on any
-  machine with Python 3.10+, including one with no reachable package index.
-- **Read-only over user data.** The tool never writes under `~/.claude`. Output
-  goes to stdout or to a path the user named.
-- **Feasibility gates before profitability.** A model that cannot hold the
-  context is not an option at any price, so the window check runs before the
-  break-even math.
-- **A recommendation must clear its own overhead.** A routing turn re-reads the
-  whole context, which at 500K tokens on Opus is ~$0.25. If the modelled saving
-  is smaller than that, the honest output is "just do it".
+Deduplicate by `message.id`. Without it, every figure in the project comes out
+~1.78x too high.
+
+No network outside `sources.py`, and no runtime dependencies. A cost report that
+silently depends on a third party breaks in CI at the worst moment, and the tool
+has to run from a bare checkout on any machine with Python 3.10+, including one
+with no reachable package index. `tests/repo/test_invariants.py` walks the AST
+of every module and fails on a networking import or a non-empty dependency list.
+
+Read-only over user data. Nothing is written under `~/.claude` except by
+`adder auto on`; output goes to stdout or to a path the user named.
+
+Feasibility gates before profitability. A model that cannot hold the context is
+not an option at any price, so the window check runs before the break-even math.
+
+A recommendation must clear its own overhead. A routing turn re-reads the whole
+context, which at 500K tokens on Opus is ~$0.25. If the modelled saving is
+smaller than that, the honest output is "just do it".
 
 ## Why it is shaped this way
 

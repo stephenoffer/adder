@@ -68,6 +68,16 @@ class TestReport:
     def test_reports_concentration(self, make_sessions):
         assert "concentration" in report(make_sessions(3, 10))
 
+    def test_names_the_session_so_it_can_be_filtered_on(self, make_session):
+        sid = "858ee003-5a1c-4b1e-9d7a-0c1e2f3a4b5c"
+        rows = report({sid: make_session(10, sid=sid)}).splitlines()
+        assert any(r.split()[:2] == ["1", "858ee003"] for r in rows)
+
+    def test_explains_its_abbreviated_columns(self, make_sessions):
+        lines = report(make_sessions(2, 10)).splitlines()
+        for column in ("peak ctx", "compacted", "rebuilds", "duration"):
+            assert any(line.startswith(f"  {column}  ") for line in lines), column
+
 
 class TestCli:
     def test_json(self, tmp_path, capsys, write_jsonl):

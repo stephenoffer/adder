@@ -121,7 +121,9 @@ when two machines produce different numbers from the same transcripts.
   Dates may be absolute (`2026-08-01`) or relative (`7d`, `2w`, `today`,
   `yesterday`). The window is half-open (`--since` is inclusive, `--until` is
   exclusive), so two adjacent windows partition the data exactly.
-- `adder` with no arguments, or `adder help`, prints the command list.
+- `adder` with no arguments, or `adder help`, prints a one-screen start list and
+  every command name by group. `adder help --all` prints every command with its
+  one-line description.
 - `adder help <command>` and `adder <command> --help` both show that command's flags.
   Each module owns its own parser, so the flags shown are always the real ones.
 - `adder version` prints the installed version.

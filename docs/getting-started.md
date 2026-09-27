@@ -28,8 +28,8 @@ works on a machine with no reachable package index.
 
 ## What activation actually does
 
-It prints the change, asks, and then writes it. Nothing is written before you
-answer, `--dry-run` stops after the printing, and `adder auto off` reverses it.
+It prints the change and asks before writing anything. `--dry-run` stops after
+the printing; `adder auto off` reverses it.
 
 ```
 $ adder auto on --full
@@ -65,17 +65,18 @@ $ adder auto on --full
   Write these changes? [y/N]
 ```
 
-Three properties of that, each of which is a test rather than a promise:
+Three properties of that are tests rather than promises.
 
-- **Your `settings.json` survives it.** Hooks another tool registered are kept,
-  unrelated keys are kept, and a file that does not parse is refused rather than
-  replaced. The original is copied to `settings.json.adder.bak` before the first
-  edit, and that backup is never overwritten by a later run.
-- **An existing agent file is never overwritten.** If you already have an
-  `Explore` you rely on, it is reported as `keep ... (yours differs)` and left
-  exactly as it was.
-- **`adder auto off` removes precisely what `on` added**, matching on the script
-  name rather than the path, so it still works after you move the checkout.
+Your `settings.json` survives it. Hooks another tool registered are kept,
+unrelated keys are kept, and a file that does not parse is refused rather than
+replaced. The original is copied to `settings.json.adder.bak` before the first
+edit, and that backup is never overwritten by a later run.
+
+An agent file you already have is never overwritten. If you rely on your own
+`Explore`, it is reported as `keep ... (yours differs)` and left alone.
+
+And `adder auto off` removes precisely what `on` added, matching on the script
+name rather than the path, so it still works after you move the checkout.
 
 `--user` writes to `~/.claude` instead of this project, which is what you want
 once you have decided you like it. `--dry-run` prints the plan and stops.
@@ -99,8 +100,8 @@ assumption about whether anyone listened.
 
 Every report here reads a transcript you have already paid for, so on a fresh
 machine `adder doctor` has nothing to measure and says so. That is the one
-asymmetry worth knowing on day one: **the reports need history, the guard does
-not.** Activation is useful before you have run a single session, and the size
+asymmetry worth knowing on day one: the reports need history, the guard does
+not. Activation is useful before you have run a single session, and the size
 model it predicts with re-learns from your own transcripts as they accumulate.
 
 ## Words used here
@@ -143,23 +144,23 @@ Line by line:
 | Line | What it means |
 |---|---|
 | `$0.89 spent` | what this session has cost so far. This is the number a dashboard would show you |
-| `~340 more turns → ~$28.27` | sessions that get this far usually keep going. **This is the bill you are actually on the hook for**, and it is 32x the number above it |
+| `~340 more turns → ~$28.27` | sessions that get this far usually keep going. this is the bill you are actually on the hook for, and it is 32x the number above it |
 | `One more turn … ~$0.042` | what it costs to continue right now. It grows as the context grows, so this number is worse later than it is today |
 | the table | what one file costs if you read it into this conversation (`inline`) versus handing it to a subagent that reads it and hands back a summary (`delegated`) |
 | `Every 10K tokens … ~$1.76` | the entry fee for anything new arriving in context, paid across every remaining turn |
 
-**The table is the point.** Reading a 50,000-token file into this session costs
-**$8.81** by the time the session ends. Handing the same file to a subagent that
-reads it and returns a summary costs **$0.96**. Same information, **9x apart**,
-and nothing in your usage dashboard distinguishes them.
+The table is the point. Reading a 50,000-token file into this session costs
+$8.81 by the time the session ends. Handing the same file to a subagent that
+reads it and returns a summary costs $0.96. Same information, 9x apart, and
+nothing in your usage dashboard distinguishes them.
 
 The difference is not the reading. It is that the inline version leaves 50,000
 tokens sitting in your context, and you pay rent on them for the next 340 turns.
 The subagent's context is thrown away when it finishes; only the summary comes
 back.
 
-So the habit adder is arguing for is short: **stop pulling large things into
-long conversations. Delegate the reading, keep the answer.**
+So the habit adder argues for is short. Stop pulling large things into long
+conversations; delegate the reading and keep the answer.
 
 ## If you only run one command
 
@@ -208,7 +209,7 @@ Start with `live`. Everything else is there when you have a specific question.
 | What does a token in my context really cost to carry? | `adder carry` |
 | Has this tool been worth more than the turns it costs? | `adder ledger` |
 
-`adder help` prints the full list, including the estimator and evaluation
+`adder help --all` prints the full list, including the estimator and evaluation
 commands (`horizon`, `regret`, `simulate`, `ab`, `validate`, `outcomes`,
 `classify`, `models`, `effort`). `adder <command> --help` shows the flags for
 one. Full reference: [commands.md](commands.md).
@@ -233,7 +234,7 @@ counts, prices, timestamps, model ids, and tool *names*, never message content.
 
 ## What adder writes
 
-**Your transcripts are never modified.** Nothing under `~/.claude/projects` is
+Your transcripts are never modified. Nothing under `~/.claude/projects` is
 written, renamed, or deleted, ever. adder does keep its own files beside them,
 and they are listed here rather than left for you to discover:
 
@@ -275,21 +276,23 @@ question, and it has its own page: [overhead.md](overhead.md).
 The CLI reports. The hooks and agent definitions are what act on those reports,
 they ship inside the package, and `adder auto on` installs them:
 
-- **Agents.** `Explore` on Haiku plus three routing tiers (T0/T1/T2), each with
-  rules that bound how much output comes back into your context. See
-  [tiers.md](tiers.md).
-- **Hooks.** A prompt hook that prices the session as you work, and a
-  **PreToolUse read guard** that prices a tool result *before* it lands in your
-  context. The guard is the only piece here that prevents cost instead of
-  reporting it after the fact, so it triggers on what the call will *cost*: with
-  400 turns left, 6,000 tokens is $1.24 to carry and $0.13 delegated. A fixed
-  token count cannot be right at both ends of a session. It advises by default
-  and never blocks silently. See [guard.md](guard.md).
-- **Skills.** `/adder` routes one task, `/adder-doctor` diagnoses a session,
-  `/adder-context` decides whether to compact or restart, and `/adder-init`
-  walks the install. These live in this repository's `.claude/skills/` and are a
-  convenience for a checkout, not part of the mechanism; activation does not
-  need them.
+Four agent definitions: `Explore` on Haiku plus three routing tiers
+(T0/T1/T2), each with rules that bound how much output comes back into your
+context. See [tiers.md](tiers.md).
+
+Three hooks. One prices the session as you work. The read guard prices a tool
+result *before* it lands in your context, and it is the only piece here that
+prevents cost rather than reporting it afterwards, so it triggers on what the
+call will cost rather than on its size: with 400 turns left, 6,000 tokens is
+$1.24 to carry and $0.13 delegated. A fixed token count cannot be right at both
+ends of a session. It advises by default and never blocks silently. See
+[guard.md](guard.md).
+
+The skills are a convenience for a checkout rather than part of the mechanism,
+and activation does not need them: `/adder` routes one task, `/adder-doctor`
+diagnoses a session, `/adder-context` decides whether to compact or restart, and
+`/adder-init` walks the install. They live in this repository's
+`.claude/skills/`.
 
 If you want the habit without the machinery, `adder policy "<task>"` gives you
 the inline-versus-delegate call for a single task, and refuses to recommend
@@ -300,10 +303,10 @@ delegating when the saving would not cover the cost of the routing turn itself.
 The dollar figures in these docs come from one machine's transcripts, dominated
 by one workload, and they grow every session. Your absolute numbers will be
 different. The *shares* are what drive the advice, and even those are worth
-re-checking on your own history, which is the entire point of the tool. **Run
-`adder savings` before believing any number here.**
+re-checking on your own history, which is the entire point of the tool. Run
+`adder savings` before believing any number here.
 
-3,260 tests, no API key, and no network outside `adder models refresh`. Two of
+3,753 tests, no API key, and no network outside `adder models refresh`. Two of
 those tests exist only to enforce the last two clauses: one walks the code of
 every module and fails if anything outside `adder/pricing/sources.py` imports a
 networking library, the other fails if the dependency list stops being empty.

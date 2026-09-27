@@ -14,7 +14,8 @@ import pathlib
 import pytest
 
 from adder import __version__
-from adder.cli import COMMANDS, main, usage
+from adder.cli import BY_NAME, COMMANDS, main, usage
+from adder.cli.commands import START_HERE
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
@@ -108,3 +109,27 @@ class TestDispatch:
             main(["help", "trace"])
         assert e.value.code == 0
         assert "usage" in capsys.readouterr().out.lower()
+
+
+class TestShortHelp:
+    """The screen a first run sees. It used to be all sixty commands with their
+    flag syntax, and the one a new user needed was fifty lines down."""
+
+    @pytest.mark.parametrize("entry", START_HERE, ids=lambda e: e[0])
+    def test_every_start_here_entry_is_a_real_command(self, entry):
+        assert entry[0].split()[0] in BY_NAME
+
+    def test_leads_with_start_here_and_fits_a_screen(self):
+        text = usage()
+        assert text.index("Start here") < text.index("Every command")
+        assert len(text.splitlines()) <= 40
+
+    def test_does_not_repeat_the_flag_reference(self):
+        # One command's flag syntax in the short screen means all of them are.
+        assert BY_NAME["guard"].usage not in usage()
+        assert BY_NAME["guard"].usage in usage(full=True)
+
+    def test_help_all_prints_the_reference(self, capsys):
+        assert main(["help", "--all"]) == 0
+        out = capsys.readouterr().out
+        assert all(c.summary in out for c in COMMANDS)

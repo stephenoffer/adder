@@ -38,13 +38,14 @@ from the same file, so the survival term is 1.0 forever.
 
 Two consequences that are not obvious from file sizes:
 
-- **A skill library is nearly free and an instruction file is not.** Only a
-  skill's `name` and `description` are resident; its body loads when it runs.
-  A 40,000-token skill collection costs less than a 3,000-token `CLAUDE.md`.
-- **Most of the floor is not yours.** Of a 30K opening context here, 2.7K is
-  files on disk. The other 28K is the system prompt and tool schemas, and
-  `adder memory` reports it as `unaccounted` rather than attributing it to a
-  file somebody is about to edit.
+A skill library is nearly free and an instruction file is not. Only a skill's
+`name` and `description` are resident; its body loads when it runs. A
+40,000-token skill collection costs less than a 3,000-token `CLAUDE.md`.
+
+And most of the floor is not yours. Of a 30K opening context here, 2.7K is files
+on disk. The other 28K is the system prompt and tool schemas, which `adder
+memory` reports as `unaccounted` rather than attributing to a file somebody is
+about to edit.
 
 ## 2. The second copy buys nothing
 
@@ -55,9 +56,9 @@ purchase of *nothing*, plus its own carry to the end of the session.
 `adder reread` separates two cases that look identical in a transcript and are
 not:
 
-- **redundant.** The result is byte-identical to a copy already resident.
-  Recoverable in full.
-- **refresh.** The result changed. The call was justified; the superseded copy
+- `redundant` — the result is byte-identical to a copy already resident, and
+  recoverable in full.
+- `refresh` — the result changed, so the call was justified. The superseded copy
   is still resident and still being re-read, but skipping the call would have
   been wrong.
 
@@ -94,7 +95,7 @@ so it is worth doing exactly when
 remaining_turns  >  kept * write_mult / (freed * read_mult)
 ```
 
-**Compact when more turns remain than that, not when the bar looks full.** The
+Compact when more turns remain than that, not when the bar looks full. The
 threshold is small (a few dozen turns at the measured multipliers), which
 means the common failure is not compacting too often. It is carrying a full
 context for hundreds of turns because compaction felt destructive.
@@ -110,7 +111,7 @@ pinned against the ceiling and cannot grow, the compacted one regrows into the
 gap, and the gap closes. `Miss.saving` models that; the naive version was 16%
 higher.
 
-**What is not priced anywhere here: what compaction deletes.** A detail that
+What is not priced anywhere here is what compaction deletes. A detail that
 has to be re-derived is paid for twice, and `adder reread` is where that bill
 shows up. The verdict is therefore a bound — below the threshold a compaction
 is *certainly* a loss; above it, a gain *if* nothing important was dropped.
@@ -149,10 +150,10 @@ thumb gets wrong in the expensive direction.
 
 In rough order of how much it is worth per unit of effort:
 
-1. **Bound what enters.** The guard prices a read before it lands
+1. Bound what enters. The guard prices a read before it lands
    (`adder guard`); a summary from a subagent costs a tenth of the file.
-2. **Never admit the same thing twice.** The first copy never left.
-3. **Reset at boundaries, and carry a brief.** Restart beats compaction at a
+2. Never admit the same thing twice. The first copy never left.
+3. Reset at boundaries, and carry a brief. Restart beats compaction at a
    large context; the brief budget is almost never the limiting factor.
-4. **Keep the instruction file short and the skill bodies long.** Resident
+4. Keep the instruction file short and the skill bodies long. Resident
    tokens are re-read forever; on-demand tokens are not.

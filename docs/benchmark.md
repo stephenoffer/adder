@@ -26,9 +26,9 @@ and nothing in this repo enforces it.
 
 So the honest one-line summary is two numbers, not one:
 
-- **1.6x** for installing it and changing nothing.
-- **6.7x** if you then work the way it tells you to, at nominal assumptions.
-  **3.4x** at the pessimistic corner of them.
+- 1.6x for installing it and changing nothing.
+- 6.7x if you then work the way it tells you to, at nominal assumptions, and
+  3.4x at the pessimistic corner of them.
 
 Reporting only the 6.7x would be the more impressive claim and a lie by
 omission. It is not what installing the tool gets you; it is what restructuring
@@ -142,16 +142,17 @@ asserted:
 | 30% | 30% | 2,000 | 4.7x |
 | 30% | 30% | 20,000 | **3.4x** |
 
-- **Summary ratio.** What a delegated read hands back. At 10% the content stays
-  out of the context; at 30% most of the carry it was supposed to avoid comes
-  back. This sets the floor of the range, and `adder ab` is the only thing here
-  that can test it.
-- **p_fail.** How often a delegated step has to be redone on the expensive
-  model. Doubling it costs about 0.7x of the multiple, which is less than the
-  summary ratio and less than the handoff.
-- **Handoff.** How many tokens a restarted session has to be told. Nothing in a
-  transcript records what a person needs to resume. A 10x larger handoff costs
-  about 2.2x of the multiple, which makes it the second-softest input here.
+The *summary ratio* is what a delegated read hands back. At 10% the content
+stays out of the context; at 30% most of the carry it was supposed to avoid
+comes back. This sets the floor of the range, and `adder ab` is the only thing
+here that can test it.
+
+*p_fail* is how often a delegated step has to be redone on the expensive model.
+Doubling it costs about 0.7x of the multiple, less than either of the other two.
+
+*Handoff* is how many tokens a restarted session has to be told, and nothing in
+a transcript records what a person needs to resume. A 10x larger handoff costs
+about 2.2x of the multiple, which makes it the second-softest input here.
 
 At this threshold 99% of admitted tokens are delegated. That is not a tweak to
 how you work. It is the orchestrator pattern, where the main session holds the

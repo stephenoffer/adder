@@ -19,6 +19,7 @@ from adder.core.trace import (
     GROUPINGS,
     group_by,
     load_sessions,
+    project_name,
     summarize_sessions,
 )
 
@@ -42,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     from adder.core import settings
     from adder.core.filters import Window
     from adder.core.filters import add_arguments as add_window
-    from adder.util.render import bar, money, table, tokens
+    from adder.util.render import bar, money, nothing_found, table, tokens
     from adder.util.stats import gini, share
 
     ap = argparse.ArgumentParser(prog="adder trace",
@@ -72,7 +73,6 @@ def main(argv: list[str] | None = None) -> int:
     s = summarize_sessions(sessions, unknown=unknown)
 
     if not s.n_turns:
-        detail = f" matching {window.describe()}" if window.active else ""
         # The unknown-model tally is carried into the empty case too, because
         # it is the whole explanation for it: a corpus of turns nobody can
         # price reports "no priced turns" and, without this, no reason. That is
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
                               "unknown_turns": s.unknown_turns,
                               "synthetic_turns": s.synthetic_turns}))
         else:
-            print(f"No priced turns found under {a.root}{detail}")
+            print(nothing_found("priced turns", a.root, window=window.describe()))
             if s.unknown_models:
                 names = ", ".join(sorted(s.unknown_models)[:5])
                 print(f"  ⚠ {s.unknown_turns:,} turns used a model with no price "
@@ -201,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n  most expensive sessions:")
         for x in ranked[: a.top]:
             print(f"    ${x.cost:>8,.0f}  {x.n_turns:>5,} turns  "
-                  f"avg ctx {x.avg_context:>9,}  {x.project[:44]}")
+                  f"avg ctx {x.avg_context:>9,}  {project_name(x.project)[:44]}")
 
     if s.synthetic_turns:
         print(f"\n  {s.synthetic_turns:,} client-side placeholder records "

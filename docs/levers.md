@@ -20,7 +20,7 @@ multiplicatively on the residual: **~$4,436, or 69% of measured spend**, over
 
 ## The seventh lever, and why the table above does not price it
 
-**Skip re-reads of content the context already held.** It is the only lever
+Skip re-reads of content the context already held. It is the only lever
 here that trades nothing. Every other substitute gives something up -- output
 that might have been needed, a grep narrow enough to miss, a subagent that may
 summarise away the point -- and this one declines calls whose results were
@@ -110,7 +110,8 @@ guard is right to wave through 245 times and wrong to wave through the 246th.
 
 `adder guard --replay` prices all three against your own transcripts. On the
 author's, replaying 29,464 calls: 236 findings, worth $85 against $2.58 of
-injected advice. That is an upper bound, and [guard.md](guard.md) says why.
+injected advice. That is an upper bound, and
+[guard-internals.md](guard-internals.md) says why.
 
 ## The sixth lever, and why it is not in that table
 
@@ -204,12 +205,12 @@ page still prices splitting at a 300-turn cadence, because `adder savings` price
 each lever in isolation against the read pool and has no restart term to solve.
 `adder plan` is where the cadence is solved and the restart is charged. Two caveats travel with it:
 
-- **The handoff is modelled, and it is now the softest input in the tool.** A
+- The handoff is modelled, and it is now the softest input in the tool. A
   restart every 19 turns only works if 2,000 tokens is enough to carry the
   thread. `adder plan --handoff` sweeps it: at 50,000 tokens the cadence
   stretches to 46 turns and the multiple falls to 5.5x. The direction survives
   the sweep; the magnitude does not.
-- **Warmth is only relied on inside the TTL.** Openings here measure warm even
+- Warmth is only relied on inside the TTL. Openings here measure warm even
   after gaps of days, which no TTL explains, so that observation is excluded
   from the measurement. Restarting mid-work puts the previous turn seconds
   behind, which is the case the number is taken from.
@@ -251,9 +252,11 @@ adder plan --target 10
   run `adder quality` before and after, because none of this is free.
 ```
 
-**Both thresholds are solved, not chosen.** `19 turns` used to be a round `300`,
-and `300 tokens` used to be a round `5,000`. Both are set by the prompt cache,
-and both were being guessed. The arithmetic is in the two sections above.
+### Both thresholds are solved, not chosen
+
+`19 turns` used to be a round `300`, and `300 tokens` used to be a round
+`5,000`. Both are set by the prompt cache, and both were being guessed. The
+arithmetic is in the two sections above.
 
 The delegation threshold is the less intuitive of the two. A shorter restart
 cycle leaves fewer re-reads to avoid, which should *raise* the threshold, and it
@@ -264,25 +267,28 @@ leaving most of it unused.
 
 Three things make this different from the savings table.
 
-**It reproduces your bill before it quotes a discount.** The second line is the
-whole guarantee: replay the transcripts with no regime applied and the total has
-to come back as the number you actually paid. It does, to −0.0%. Every multiple
-below it is a ratio against that. `adder validate` re-checks it, because two
-ordering bugs in the replay were caught by exactly this line and nothing else
-would have caught them.
+### It reproduces your bill before it quotes a discount
 
-**Both sides are on the books.** A delegated read still has to be read by
-somebody, that somebody still writes a summary, and some fraction of those runs
-come back wrong and get redone on Opus. All three are charged. The saving is
-smaller than the version that only counts what left your context, and it is the
-one you would actually get.
+The second line is the whole guarantee: replay the transcripts with no regime
+applied and the total has to come back as the number you actually paid. It
+does, to −0.0%. Every multiple below it is a ratio against that. `adder
+validate` re-checks it, because two ordering bugs in the replay were caught by
+exactly this line and nothing else would have caught them.
 
-**Delegability is measured, not assumed.** Every earlier estimate here used
-"assume 25% of turns are delegable", which is a guess with a percent sign on it
-and is not a rule anyone can follow. The regime triggers on something the
-transcript records exactly, which is how many tokens a step would pull into
-context. So "delegate anything over 5,000 tokens" is checkable, followable, and
-the 23% that matches is a measurement.
+### Both sides are on the books
+
+A delegated read still has to be read by somebody, that somebody still writes a
+summary, and some fraction of those runs come back wrong and get redone on
+Opus. All three are charged. The saving is smaller than the version that only
+counts what left your context, and it is the one you would actually get.
+
+### Delegability is measured, not assumed
+
+Every earlier estimate here used "assume 25% of turns are delegable", which is
+a guess with a percent sign on it and is not a rule anyone can follow. The
+regime triggers on something the transcript records exactly, which is how many
+tokens a step would pull into context. So "delegate anything over 5,000 tokens"
+is checkable, followable, and the 23% that matches is a measurement.
 
 When no configuration on the grid meets the target, the report says so and names
 the floor, instead of searching until it finds a number that flatters the

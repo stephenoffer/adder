@@ -35,7 +35,7 @@ import json
 from dataclasses import dataclass
 from datetime import date
 
-from adder.core.trace import Session, Turn
+from adder.core.trace import Session, Turn, project_name
 
 # Robust-z above which a turn is worth naming. 3.5 on a MAD scale is roughly
 # the classic outlier threshold; on this data it flags well under 1% of turns.
@@ -235,7 +235,7 @@ def report(rep: Report, *, top: int = 20) -> str:
                      f"{money(rep.excess)} of which is above the median turn"
                      f"{f' (showing {len(shown)})' if len(shown) < len(rep.turns) else ''}:")
         lines.append("")
-        rows = [[f.key, f.when[:10], f.project[-24:], money(f.cost),
+        rows = [[f.key, f.when[:10], project_name(f.project)[:24], money(f.cost),
                  f"{f.z:.0f}x", f.cause] for f in shown]
         lines += table(rows, ["turn", "date", "project", "cost", "z", "cause"],
                        align="<<<>><")
@@ -250,7 +250,7 @@ def report(rep: Report, *, top: int = 20) -> str:
     if rep.sessions:
         lines.append("")
         lines.append("  Sessions whose cost per turn is out of line:")
-        rows = [[f.key, f.when[:10], f.project[-28:], money(f.cost), f"{f.z:.0f}x"]
+        rows = [[f.key, f.when[:10], project_name(f.project)[:28], money(f.cost), f"{f.z:.0f}x"]
                 for f in rep.sessions[:8]]
         lines += table(rows, ["session", "date", "project", "cost", "z"],
                        align="<<<>>")

@@ -30,7 +30,7 @@ from datetime import date
 
 from adder.core.filters import day_of
 from adder.core.filters import root_of as _root_of
-from adder.core.trace import Session
+from adder.core.trace import Session, project_name
 
 SORTS = ("cost", "per-turn", "turns", "context", "rebuilds", "compactions",
          "recent", "duration", "output")
@@ -115,8 +115,9 @@ def report(sessions: dict[str, Session], *, by: str = "cost", top: int = 20,
         s = r.session
         body.append([
             i,
+            s.id[:8],
             day_of(r.when).isoformat() if r.when else "—",
-            s.project[-30:],
+            project_name(s.project)[:30],
             f"{s.n_turns:,}",
             money(r.cost),
             money(r.per_turn),
@@ -127,13 +128,18 @@ def report(sessions: dict[str, Session], *, by: str = "cost", top: int = 20,
             duration(s.wall_seconds) if s.wall_seconds else "—",
         ])
     lines = [f"  {len(rows):,} sessions · {money(total)} · sorted by {by}", ""]
-    lines += table(body, ["#", "date", "project", "turns", "cost", "$/turn",
-                          "peak ctx", "out", "cmpct", "rblds", "wall"],
-                   align="><<>>>>>>>>")
+    lines += table(body, ["#", "session", "date", "project", "turns", "cost", "$/turn",
+                          "peak ctx", "output", "compacted", "rebuilds", "duration"],
+                   align="><<<>>>>>>>>")
     if len(rows) > top:
         rest = sum(r.cost for r in rows[top:])
         lines.append(f"    … {len(rows) - top:,} more, {money(rest)} "
                      f"({100 * rest / total:.0f}% of the total)")
+    lines.append("")
+    lines.append("  peak ctx   the largest context any one turn read")
+    lines.append("  compacted  times the context was compacted")
+    lines.append("  rebuilds   times the prompt cache was lost and rewritten at full price")
+    lines.append("  duration   first turn to last, idle time included")
     lines.append("")
     lines.append(f"  concentration {gini([r.cost for r in rows]):.2f} "
                  f"(0 = every session costs the same, 1 = one session is everything)")
@@ -142,6 +148,8 @@ def report(sessions: dict[str, Session], *, by: str = "cost", top: int = 20,
     if worst is not None and worst.rebuild_cost > 0.01:
         lines.append(f"  most cache rebuild waste: {money(worst.rebuild_cost)} in "
                      f"{worst.session.id[:8]} ({worst.rebuilds} rebuilt prefixes)")
+    lines.append("  one session in detail: add `--session ID` to any report, "
+                 "e.g. `adder cache --session ID`")
     return "\n".join(lines)
 
 
@@ -168,7 +176,8 @@ def main(argv: list[str] | None = None) -> int:
 
     sessions, window = load_window(a)
     if not sessions:
-        print(f"No sessions under {a.root} matching {window.describe()}.")
+        from adder.util.render import nothing_found
+        print(nothing_found("sessions", a.root, window=window.describe()))
         return 1
 
     rows = rank(sessions, a.sort)

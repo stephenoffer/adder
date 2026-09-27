@@ -3,20 +3,58 @@
 Help text that is maintained by hand drifts from the code within about two
 commits, and the drift is silent: the command still works, it is just invisible.
 So this module owns no list of its own -- it formats `commands.COMMANDS`.
+
+There are two screens, because the one screen that existed failed its first
+reader. Sixty commands, each with its flag syntax, in declaration order, put
+`adder doctor` fifty lines below `adder cachesim` and gave a new user no way to
+tell which of them mattered. `usage()` is now the short screen: the handful of
+commands a first run needs, in plain words, then every command name by group so
+nothing is hidden. `usage(full=True)` (`adder help --all`) is the reference.
 """
 
 from __future__ import annotations
 
-from adder.cli.commands import COMMANDS, GROUP_BLURB, GROUPS
+import textwrap
+
+from adder.cli.commands import COMMANDS, GROUP_BLURB, GROUPS, START_HERE
+
+TAGLINE = "adder — what your Claude Code sessions cost, and how to spend less"
 
 
-def usage() -> str:
+def _short() -> str:
+    width = max(len(f"adder {inv}") for inv, _ in START_HERE)
+    out = [TAGLINE, "", "usage: adder <command> [args]", "", "  Start here"]
+    out += [f"    {('adder ' + inv).ljust(width)}  {what}" for inv, what in START_HERE]
+    out += ["", "  Every command, by group"]
+    label = max(len(g) for g in GROUPS)
+    for group in GROUPS:
+        names = " ".join(c.name for c in COMMANDS if c.group == group)
+        wrapped = textwrap.wrap(names, width=78 - label - 6) or [""]
+        out.append(f"    {group.ljust(label)}  {wrapped[0]}")
+        out += [f"    {'':<{label}}  {rest}" for rest in wrapped[1:]]
+    out += [
+        "",
+        "  adder help <command>   what one command does, and its flags",
+        "  adder help --all       every command with a one-line description",
+        "",
+        "Everything is computed locally from the transcripts Claude Code already keeps.",
+        "No account, no model calls, no network (except `adder models refresh`, when you",
+        "run it), and nothing under ~/.claude/projects is ever modified.",
+    ]
+    return "\n".join(out)
+
+
+def _full() -> str:
+    meta = (
+        ("help [--all | <command>]", "the short screen, this one, or one command's flags"),
+        ("version, --version, -V", "print the installed version"),
+    )
     width = max(
         max(len(f"{c.name} {c.usage}") for c in COMMANDS),
-        len("version, --version, -V"),
+        max(len(left) for left, _ in meta),
     )
     out = [
-        "adder <command> [args]   —  cost tooling for Claude agent sessions",
+        "adder <command> [args]   —  " + TAGLINE.split(" — ", 1)[1],
         "",
     ]
     for group in GROUPS:
@@ -27,15 +65,15 @@ def usage() -> str:
                 left = f"{c.name} {c.usage}".rstrip()
                 out.append(f"    {left.ljust(width)}  {c.summary}")
         out.append("")
-    meta = (
-        ("help, --help, -h", "this message"),
-        ("version, --version, -V", "print the installed version"),
-    )
     out.append("  Meta")
     out += [f"    {left.ljust(width)}  {right}" for left, right in meta]
     out += [
         "",
-        "Every report is computed locally from transcript files. Start with `adder live`.",
+        "Every report is computed locally from transcript files. New here? `adder doctor`.",
         "Per-command flags: `adder <command> --help`.",
     ]
     return "\n".join(out)
+
+
+def usage(full: bool = False) -> str:
+    return _full() if full else _short()

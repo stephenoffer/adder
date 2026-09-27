@@ -185,23 +185,25 @@ them, per tier, against the tier-wide rate the gate used before.
 Similarity is a MinHash sketch of the task's terms and adjacent bigrams, with
 Jaccard between sketches. Three properties earn it its place:
 
-- **No model, no dependency, no network.** The routing benchmarks find that
-  clustering queries and scoring each cluster is competitive with trained
-  matrix-factorization and graph routers, which says the recoverable signal is
-  mostly "which kind of task is this", and that kind survives being reduced to
-  vocabulary. Nearest neighbours rather than k clusters, because the log is
-  small enough that the extra resolution is free and needs no k chosen up front.
-- **The task is not stored.** Each slot of the sketch is a minimum over the whole
-  term set, so the terms are not recoverable from it. The outcome log has never
-  held task text and still does not.
-- **It cannot buy a downgrade it has not earned.** The asymmetry above applies
-  again, one level deeper, because a rate over four neighbours is far easier to
-  push around than one over four hundred runs. A neighbour estimate with real
-  mass behind it replaces the tier-wide rate in either direction. A thin one may
-  *raise* `p_fail`, which can only decline a downgrade, and declining a
-  downgrade costs at most the model you would have used anyway. It is
-  discarded when it is thin and optimistic, which is the exact case that would
-  spend money on four rows.
+No model, no dependency, no network. The routing benchmarks find that
+clustering queries and scoring each cluster is competitive with trained
+matrix-factorization and graph routers, which says the recoverable signal is
+mostly "which kind of task is this", and that kind survives being reduced to
+vocabulary. Nearest neighbours rather than k clusters, because the log is small
+enough that the extra resolution is free and needs no k chosen up front.
+
+The task is not stored. Each slot of the sketch is a minimum over the whole term
+set, so the terms are not recoverable from it. The outcome log has never held
+task text and still does not.
+
+It cannot buy a downgrade it has not earned. The asymmetry above applies again,
+one level deeper, because a rate over four neighbours is far easier to push
+around than one over four hundred runs. A neighbour estimate with real mass
+behind it replaces the tier-wide rate in either direction. A thin one may
+*raise* `p_fail`, which can only decline a downgrade, and declining a downgrade
+costs at most the model you would have used anyway. It is discarded when it is
+thin and optimistic, which is the exact case that would spend money on four
+rows.
 
 When there are too few neighbours, when the log predates sketches, or when the
 task shares no vocabulary with anything on record, the estimator returns nothing

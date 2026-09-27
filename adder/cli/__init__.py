@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         # `adder help <command>` forwards to that command's own parser.
         if len(argv) > 1 and argv[1] in BY_NAME:
             return main([argv[1], "--help"])
-        print(usage())
+        print(usage(full="--all" in argv[1:]))
         return 0
 
     if argv[0] in ("version", "-V", "--version"):

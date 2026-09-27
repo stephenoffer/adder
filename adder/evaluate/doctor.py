@@ -214,7 +214,8 @@ def check_compact(sessions, total: float) -> Check:
         "compact", not _material(missed, total),
         f"{rep.n} compactions on record · {len(rep.misses)} sessions carried a "
         f"near-full context and never compacted ({money(missed)})",
-        action=f"`adder compact` — compact when more than ~{need} turns remain, "
+        action=f"`adder compact` — compact when more than ~{need} "
+               f"turn{'' if need == 1 else 's'} remain{'s' if need == 1 else ''}, "
                "not when the bar looks full",
         dollars=missed,
         detail=[f"median compaction kept {rep.mean_kept():.0%} of the context"],
@@ -656,29 +657,44 @@ def run(root: Path | str, sessions=None, *, on: date | None = None) -> list[Chec
 
 
 def report(checks: list[Check]) -> str:
+    """The table, then the numbered list of what to do.
+
+    Dollars sit in their own right-aligned column ahead of the headline. They
+    used to trail it, so the one number the ranking is by landed at a different
+    column on every row and a reader had to hunt along each line to compare two
+    findings. A check with nothing to quote shows a blank there, not `$0.00`,
+    which read as "this costs nothing" on checks that simply are not priced.
+    """
     from adder.util.render import money
 
     fixes = [c for c in checks if not c.ok and not c.skipped]
     at_stake = sum(c.dollars for c in fixes)
-    lines = ["  adder doctor", ""]
-    for c in checks:
-        mark = {"OK": "  ok  ", "FIX": " FIX  ", "SKIP": " --   "}[c.status]
-        amount = f"  {money(c.dollars)}" if c.dollars >= 0.01 else ""
-        lines.append(f"  {mark}{c.name:<12}{c.headline}{amount}")
-        for d in c.detail:
-            if d:
-                lines.append(f"                 {d}")
+    amounts = [money(c.dollars) if c.dollars >= 0.01 else "" for c in checks]
+    dw = max([len("at stake"), *map(len, amounts)])
+    nw = max([12, *(len(c.name) + 2 for c in checks)])
+    pad = " " * (2 + 6 + dw + 2 + nw)
+    lines = [
+        "  adder doctor — every check, most money at stake first",
+        "",
+        f"  {'':6}{'at stake':>{dw}}  {'check':<{nw}}finding",
+    ]
+    for c, amount in zip(checks, amounts, strict=True):
+        mark = {"OK": "ok", "FIX": "fix", "SKIP": "--"}[c.status]
+        lines.append(f"  {mark:<6}{amount:>{dw}}  {c.name:<{nw}}{c.headline}")
+        lines += [f"{pad}{d}" for d in c.detail if d]
     lines.append("")
     if not fixes:
         lines.append("  Nothing material to fix. The expensive levers here are already")
         lines.append("  either pulled or not worth pulling on this workload.")
         return "\n".join(lines)
 
-    lines.append(f"  {len(fixes)} finding{'s' if len(fixes) > 1 else ''}, "
-                 f"{money(at_stake)} at stake, most expensive first:")
+    stake = f", {money(at_stake)} at stake" if at_stake >= 0.01 else ""
+    lines.append(f"  What to do — {len(fixes)} finding{'s' if len(fixes) > 1 else ''}"
+                 f"{stake}:")
     lines.append("")
     for i, c in enumerate([c for c in fixes if c.action], 1):
-        lines.append(f"  {i}. {c.name} — {money(c.dollars)}")
+        cost = f" — {money(c.dollars)}" if c.dollars >= 0.01 else ""
+        lines.append(f"  {i}. {c.name}{cost}")
         lines.append(f"     {c.action}")
     lines.append("")
     lines.append("  `at stake` is what the measurement says is addressable, not a")

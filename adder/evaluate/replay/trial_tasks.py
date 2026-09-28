@@ -959,9 +959,124 @@ class TaskList:
 )
 
 
+
+# ---------------------------------------------------------------------------
+# `sprawl`: a repository big enough that reading it is most of the bill.
+#
+# The other tasks fit in one screen, so a session's context never grows the
+# way a real one does and the carry -- the cost `plan` says dominates -- is
+# never exercised. Here every part is a failing test in a different module of
+# ~300 functions (~10K tokens), so a session that does them all in one context re-reads every
+# module it has opened on every later turn, and one that restarts reads one.
+# Generated, not written: each function comes from a template with one known
+# correct body and one planted bug, so the hidden tests are exact.
+# ---------------------------------------------------------------------------
+
+# (docstring, correct body, buggy body, args, cases)
+_TEMPLATES = (
+    ("Sum of the items at even positions.", "return sum(xs[k] for k in range(0, len(xs), 2))",
+     "return sum(xs[k] for k in range(1, len(xs), 2))", "xs",
+     ["[1, 2, 3, 4, 5]", "[]", "[7]"]),
+    ("Clamp a into the range [lo, hi].", "return max(lo, min(a, hi))",
+     "return min(lo, max(a, hi))", "a, lo, hi", ["5, 0, 3", "-2, 0, 3", "2, 0, 3"]),
+    ("Count the vowels in s, ignoring case.",
+     "return sum(c in 'aeiou' for c in s.lower())",
+     "return sum(c in 'aeio' for c in s.lower())", "s",
+     ["'Queue'", "'xyz'", "'AEIOU'"]),
+    ("The n-th triangular number.", "return n * (n + 1) // 2",
+     "return n * (n - 1) // 2", "n", ["0", "1", "10"]),
+    ("Items strictly greater than t, in order.", "return [x for x in xs if x > t]",
+     "return [x for x in xs if x >= t]", "xs, t", ["[1, 2, 3, 2], 2", "[], 0", "[5], 5"]),
+    ("Keys ordered by value, largest first, ties by key.",
+     "return sorted(d, key=lambda k: (-d[k], k))",
+     "return sorted(d, key=lambda k: (d[k], k))", "d",
+     ["{'a': 1, 'b': 3, 'c': 3}", "{}", "{'z': 0}"]),
+    ("Running totals of xs.",
+     "out, t = [], 0\n    for x in xs:\n        t += x\n        out.append(t)\n    return out",
+     "out, t = [], 0\n    for x in xs:\n        out.append(t)\n        t += x\n    return out",
+     "xs", ["[1, 2, 3]", "[]", "[-1, 1]"]),
+    ("The largest gap between consecutive items, or 0.",
+     "return max((b - a for a, b in zip(xs, xs[1:])), default=0)",
+     "return max((a - b for a, b in zip(xs, xs[1:])), default=0)", "xs",
+     ["[1, 4, 6, 13]", "[3]", "[5, 1]"]),
+    ("Percentage of part in whole, rounded to one place; 0.0 for an empty whole.",
+     "return round(100.0 * part / whole, 1) if whole else 0.0",
+     "return round(100.0 * whole / part, 1) if part else 0.0", "part, whole",
+     ["1, 3", "0, 0", "5, 5"]),
+    ("Words of s longer than n characters, lower-cased.",
+     "return [w.lower() for w in s.split() if len(w) > n]",
+     "return [w.lower() for w in s.split() if len(w) < n]", "s, n",
+     ["'Alpha be Gamma', 2", "'', 1", "'a bb ccc', 1"]),
+)
+_VERBS = ("tally", "score", "rank", "merge", "scan", "fold", "weigh", "trim", "bucket",
+          "sample", "gauge", "index", "probe", "sift", "blend")
+_NOUNS = ("orders", "ledgers", "routes", "shifts", "claims", "tickets", "batches", "quotas",
+          "parcels", "invoices", "slots", "grades", "sensors", "leases", "cohorts")
+
+
+def _eval_template(body: str, args: str, case: str):
+    ns: dict = {}
+    # Fixed templates from this file, never input: exec is how one table
+    # yields both the code the agent sees and the answers the tests expect.
+    exec(f"def f({args}):\n    {body}\n", ns)
+    return eval(f"f({case})", ns)
+
+
+def sprawl(n_modules: int = 16, per_module: int = 300, seed: int = 7) -> Task:
+    import random
+
+    rng = random.Random(seed)
+    files = {"sprawl/__init__.py": ""}
+    solution, hidden, parts = {}, {}, []
+    for m in range(n_modules):
+        mod = f"mod{m:02d}"
+        names, rows = [], []
+        for j in range(per_module):
+            ti = rng.randrange(len(_TEMPLATES))
+            name = f"{rng.choice(_VERBS)}_{rng.choice(_NOUNS)}_{m:02d}{j:02d}"
+            names.append((name, ti))
+            rows.append((name, ti))
+        bad = rng.randrange(per_module)
+
+        def render(buggy_at, m=m, rows=rows):
+            out = [f'"""Operations on sprawl batch {m:02d}."""\n']
+            for j, (name, ti) in enumerate(rows):
+                doc, good, broken, args, _ = _TEMPLATES[ti]
+                body = broken if j == buggy_at else good
+                out.append(f"\n\ndef {name}({args}):\n    \"\"\"{doc}\"\"\"\n    {body}\n")
+            return "".join(out)
+
+        files[f"sprawl/{mod}.py"] = render(bad)
+        solution[f"sprawl/{mod}.py"] = render(None)
+        bname, bti = rows[bad]
+        cases = _TEMPLATES[bti][4]
+        vis = [f"from sprawl.{mod} import {bname}\n\n\ndef test_{bname}():"]
+        for c in cases:
+            vis.append(f"    assert {bname}({c}) == {_eval_template(_TEMPLATES[bti][1], _TEMPLATES[bti][3], c)!r}")
+        files[f"tests/test_{mod}.py"] = "\n".join(vis) + "\n"
+        # Hidden: the fixed function and four others, so a fix that breaks a
+        # neighbour does not pass.
+        checked = [bad, *rng.sample([j for j in range(per_module) if j != bad], 4)]
+        lines = [f"from sprawl import {mod}\n"]
+        for j in checked:
+            name, ti = rows[j]
+            for k, c in enumerate(_TEMPLATES[ti][4]):
+                want = _eval_template(_TEMPLATES[ti][1], _TEMPLATES[ti][3], c)
+                lines.append(f"\ndef test_{name}_{k}():\n"
+                             f"    assert {mod}.{name}({c}) == {want!r}\n")
+        hidden[f"tests_hidden/test_{mod}_hidden.py"] = "".join(lines)
+        parts.append(f"tests/test_{mod}.py fails. Find the bug in the sprawl package "
+                     f"and fix it; do not change the tests.")
+    return Task(id="sprawl", files=files, parts=tuple(parts), hidden=hidden,
+                solution=solution)
+
+
+SPRAWL = sprawl()
+
+
 TASKS: tuple[Task, ...] = (LEDGER, INVENTORY, DEPS, TEXTKIT, CACHEKIT)
 # Long enough that context accumulates the way a real session's does: eight
 # parts, each building on the last. Not in the default suite, because one
 # baseline run of it costs what the rest of the suite does.
-LONG: tuple[Task, ...] = (TASKLOG,)
+LONG: tuple[Task, ...] = (TASKLOG, SPRAWL)
 BY_ID: dict[str, Task] = {t.id: t for t in TASKS + LONG}

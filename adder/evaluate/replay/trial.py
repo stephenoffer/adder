@@ -293,6 +293,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="comma-separated task ids (default: all)")
     ap.add_argument("--arms", default=",".join(ARMS), help="comma-separated arms")
     ap.add_argument("--repeats", type=positive_int, default=1)
+    ap.add_argument("--session-cap", type=positive_float, default=SESSION_CAP_USD,
+                    metavar="USD", help="hard ceiling per session; a session that hits "
+                                        "it fails (default: %(default)s)")
     ap.add_argument("--budget", type=positive_float, default=25.0,
                     help="stop before a session the remaining budget cannot cover (USD)")
     ap.add_argument("--out", type=Path, help="results JSONL to append to (required with --run)")
@@ -312,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     plan_ = [(t, arm, r) for r in range(a.repeats) for t in tasks for arm in arms]
     sessions = sum(len(prompts(t, arm)) for t, arm, _ in plan_)
     print(f"\n  {len(plan_)} runs, {sessions} sessions, capped at "
-          f"${SESSION_CAP_USD:.2f} a session and ${a.budget:.2f} in all.\n")
+          f"${a.session_cap:.2f} a session and ${a.budget:.2f} in all.\n")
     if not a.run:
         for t, arm, _ in plan_[:len(tasks) * len(arms)]:
             print(f"    {t.id:<12}{arm.name:<16}{arm.model:<18}"
@@ -332,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         if left < 0.5:
             print(f"  budget reached (${spent:.2f} of ${a.budget:.2f}); stopping")
             break
-        res = run_one(t, arm, rep, spend_left=left)
+        res = run_one(t, arm, rep, cap=a.session_cap, spend_left=left)
         spent += res.cost
         with a.out.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(asdict(res)) + "\n")

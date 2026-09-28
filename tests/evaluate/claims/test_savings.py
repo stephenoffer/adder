@@ -79,6 +79,39 @@ class TestComposition:
     def test_no_levers_saves_nothing(self):
         assert combine(1000.0, [], []) == (0.0, 0.0)
 
+    def test_the_combined_saving_never_exceeds_the_bill(self):
+        """Terseness, effort, delegation and routing all re-price the same
+        output, and adding them reported 167% of spend saved on one workload."""
+        from adder.evaluate.claims.savings import Estimate
+
+        big = [Estimate(f"g{i}", 0.0, "MODELLED", "", generation_saving=80.0)
+               for i in range(3)]
+        sep = [Estimate("route", 70.0, "MODELLED", "")]
+        pool_saving, gen = combine(50.0, big, sep, total=100.0)
+        assert pool_saving + gen <= 100.0
+
+    def test_composing_them_is_less_than_adding_them(self):
+        from adder.evaluate.claims.savings import Estimate
+
+        parts = [Estimate("a", 0.0, "MODELLED", "", generation_saving=10.0),
+                 Estimate("b", 0.0, "MODELLED", "", generation_saving=10.0)]
+        _, gen = combine(0.0, parts, [], total=100.0)
+        assert gen == pytest.approx(100.0 * (1 - 0.9 * 0.9))
+
+
+class TestEffortOnlyReachesTurnsAtThatEffort:
+    """A turn already at medium cannot be moved from high to medium."""
+
+    def test_turns_already_lower_are_not_credited(self):
+        from adder.evaluate.claims.savings import effort_reduction
+
+        s = _sess(200)
+        full = effort_reduction({"a": s})
+        for t in s.turns:
+            t.effort = "medium"
+        assert effort_reduction({"a": s}).saving == 0.0
+        assert full.saving > 0.0
+
 
 class TestSeparateLevers:
     def test_model_routing_is_small_on_warm_contexts(self):

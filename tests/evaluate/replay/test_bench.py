@@ -151,9 +151,12 @@ class TestLadder:
 
     def test_the_advisory_guard_does_not_enforce_the_solved_threshold(self,
                                                                       monkeypatch):
-        """The default is still advisory, and the report must say so."""
+        """The default is still advisory, and the report must say so.
+
+        The rung exists only where the solved threshold is below the guard's
+        floor, so the floor is raised to put it there."""
         monkeypatch.setenv("ADDER_GUARD_ENFORCE", "off")
-        rungs = ladder(_sessions(), min_cost=0.25)
+        rungs = ladder(_sessions(), min_cost=0.25, min_tokens=100_000)
         solved = [c for c in rungs if c.regime.label == "solved"]
         assert solved and not solved[0].enforced
 

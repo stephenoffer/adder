@@ -772,12 +772,15 @@ def main(argv: list[str] | None = None) -> int:
     env_path = os.environ.get("ADDER_EPISODES", "")
     path = args.path or (Path(env_path) if env_path else None)
     if path is not None:
-        if not path.exists():
-            print(f"adder routereval: no such file: {path}", file=sys.stderr)
+        # A directory is what every transcript report takes, so it is the
+        # natural thing to pass here; opening one raised IsADirectoryError.
+        if not path.is_file():
+            print(f"adder routereval: not a file: {path} (this takes a JSONL of "
+                  "episodes, not a transcript directory)", file=sys.stderr)
             return 1
         try:
             episodes = load_episodes(path)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             print(f"adder routereval: {exc}", file=sys.stderr)
             return 2
         label = path.name

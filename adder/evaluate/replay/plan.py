@@ -79,7 +79,12 @@ from adder.core.trace import DEFAULT_ROOT, load_sessions
 from adder.decide.route.classify import Tier
 from adder.decide.route.classify import ladder as ladder_models
 from adder.measure.window.prefix import DEFAULT_HANDOFF, Opening
-from adder.pricing.cost import EFFORT_OUTPUT_MULT, Rates, run_cost
+from adder.pricing.cost import (
+    EFFORT_OUTPUT_MULT,
+    SUBAGENT_OPENING_TOKENS,
+    Rates,
+    subagent_run_cost,
+)
 from adder.pricing.registry import context_window, fits, rate
 
 M = 1_000_000.0
@@ -87,6 +92,7 @@ M = 1_000_000.0
 # Tokens of task brief a delegated step has to be given. Small, but it is paid
 # on every delegation and there are a lot of them.
 BRIEF_TOKENS = 400
+
 
 # Fraction of context growth that is assistant output rather than tool results
 # or user input. Measured per-run by `debt.output_share_of_growth`; this is the
@@ -146,6 +152,12 @@ class Result:
     sub_escalation: float = 0.0   # the modelled cost of redoing the ones that fail
     session_rework: float = 0.0   # the modelled cost of a cheaper session model failing
     restart: float = 0.0          # re-opening a session: the prefix read back, plus a handoff
+    # The main-context turn that dispatches a delegated step. The read is
+    # refused, so the model has to issue the Agent call instead, and that turn
+    # re-reads the whole context. It was charged only in the p_fail share of
+    # cases, which let the replay delegate below the size where delegating can
+    # pay at all.
+    dispatch: float = 0.0
     turns: int = 0
     restarts: int = 0
     delegated: int = 0
@@ -158,7 +170,8 @@ class Result:
     @property
     def total(self) -> float:
         return (self.main_input + self.main_out + self.sub_run
-                + self.sub_escalation + self.session_rework + self.restart)
+                + self.sub_escalation + self.session_rework + self.restart
+                + self.dispatch)
 
     @property
     def delegated_share(self) -> float:
@@ -171,8 +184,14 @@ class Result:
         return self.delegated_tokens / self.admitted_tokens if self.admitted_tokens else 0.0
 
 
-def _admissions(sess) -> tuple[int, int, list[int]]:
-    """(starting context, restart floor, tokens admitted per turn).
+def _admissions(sess) -> tuple[int, int, list[int], list[int]]:
+    """(starting context, restart floor, tokens admitted per turn, and per turn
+    the output of the previous turn on the same chain).
+
+    The last list is what lets a caller separate the two halves of an
+    admission: the growth between two turns is the earlier turn's own output
+    plus whatever its tool calls returned, and only the second half is
+    something a hook could have sent elsewhere.
 
     A compaction shows up as a context that went down. Clamping admission at
     zero treats that turn as admitting nothing, which understates admission
@@ -182,7 +201,7 @@ def _admissions(sess) -> tuple[int, int, list[int]]:
     apply the drop too; `replay` does, proportionally.
     """
     if not sess.turns:
-        return 0, 0, []
+        return 0, 0, [], []
     # Each chain differenced against ITSELF, and the result aligned to
     # `sess.turns` so a caller can index it by turn. A subagent runs in its own
     # window: the step down into one and the climb back out are not admissions
@@ -191,13 +210,17 @@ def _admissions(sess) -> tuple[int, int, list[int]]:
     # `carry._context_dynamics`, `agents.missed` and `anomaly.scan` all split
     # the chains for the same reason and say so.
     adm = [0] * len(sess.turns)
+    prev_out = [0] * len(sess.turns)
     prev: dict[bool, int | None] = {False: None, True: None}
+    last_out: dict[bool, int] = {False: 0, True: 0}
     for i, t in enumerate(sess.turns):
         was = prev[t.sidechain]
         adm[i] = 0 if was is None else max(0, t.context - was)
+        prev_out[i] = 0 if was is None else last_out[t.sidechain]
         prev[t.sidechain] = t.context
-    main = [t.context for t in sess.main_turns]
-    return main[0], min(main), adm
+        last_out[t.sidechain] = int(t.out)
+    main = [t.context for t in sess.main_turns] or [0]
+    return main[0], min(main), adm, prev_out
 
 
 @dataclass(frozen=True)
@@ -231,10 +254,30 @@ class Step:
     # here that cannot be derived from a turn's own accounting, because it is a
     # statement about a *previous* turn's tool results.
     dup: int = 0
+    # A subagent's turn. It cannot delegate -- Claude Code subagents cannot
+    # spawn subagents -- and 39% of the delegations the replay credited were
+    # turns already running inside one.
+    side: bool = False
+    # Of `adm`, the part that was this chain's previous turn's own output: the
+    # model's reasoning and edits, which no hook can move into a subagent. The
+    # delegation gate fired on the whole admission and then re-priced that
+    # output at the subagent's rate.
+    own: int = 0
+    # Of the cache writes, the part beyond what this turn admitted: a prefix
+    # rebuilt after the cache expired or was invalidated. It rewrites the whole
+    # context, so it scales with the context the regime leaves, as reads do.
+    # Folded into `write_cost` and scaled by admission, it was untouched by a
+    # restart -- $624 of $8,747 here, 7% of the bill, credited to no lever.
+    rebuild_cost: float = 0.0
+
+    @property
+    def tool_part(self) -> int:
+        """What the previous turn's tool calls brought in, net of refusals."""
+        return max(0, self.adm - self.own - self.dup)
 
     @property
     def in_cost(self) -> float:
-        return self.read_cost + self.write_cost
+        return self.read_cost + self.write_cost + self.rebuild_cost
 
 
 def prepare(sessions, on: date | None = None,
@@ -251,7 +294,7 @@ def prepare(sessions, on: date | None = None,
     """
     out = []
     for sess in sessions.values():
-        start_ctx, floor_ctx, adm = _admissions(sess)
+        start_ctx, floor_ctx, adm, prev_out = _admissions(sess)
         sid = str(getattr(sess, "id", "") or "")
         steps = []
         for i, t in enumerate(sess.turns):
@@ -263,13 +306,30 @@ def prepare(sessions, on: date | None = None,
             # which this used to do -- makes every split-heavy regime look
             # cheaper than it is. Measured here, cache writes run at 2.1x
             # admitted tokens, so they track admission, not context size.
-            w_cost = t.cache_write * t.rates(on).cache_write / M
+            # Each TTL bucket at its own rate, then spread evenly over the
+            # tokens written: which of them were the rebuild is not recorded.
+            w_cost = t.cache_write_cost(on)
+            w_rate = w_cost / t.cache_write if t.cache_write else 0.0
+            # Written beyond what was admitted is a rebuild of what was already
+            # there. Measured here, writes run at 2.1x admissions, so this is
+            # about half of every write dollar.
+            rebuilt = max(0, t.cache_write - adm[i]) * w_rate
             dup = min(adm[i], int((dups or {}).get((str(sid), i), 0)))
-            steps.append(Step(t.input_cost(on) - w_cost, w_cost, t.output_cost(on),
+            steps.append(Step(t.input_cost(on) - w_cost, w_cost - rebuilt,
+                              t.output_cost(on),
                               t.context, adm[i], r.inp, r.out, t.model, t.ttl,
-                              t.pricing_date(on), dup))
+                              t.pricing_date(on), dup, side=bool(t.sidechain),
+                              own=min(adm[i], prev_out[i]), rebuild_cost=rebuilt))
         out.append((start_ctx, floor_ctx, steps))
     return out
+
+
+def sub_run_cost(model: str, read_tokens: int, summary_tokens: int,
+                 on: date | None = None) -> float:
+    """A delegated read, priced the way `placement_cost` prices it for the
+    guard -- including the subagent's own opening, which the replay used to
+    leave out and so priced every delegation at about $0.002."""
+    return subagent_run_cost(model, read_tokens, summary_tokens, on=on)
 
 
 def cheapest_tier(read_tokens: int, summary_tokens: int, *, p_fail: float,
@@ -286,14 +346,14 @@ def cheapest_tier(read_tokens: int, summary_tokens: int, *, p_fail: float,
     per delegated turn per regime.
     """
     models = models or ladder_models()
-    need = read_tokens + summary_tokens + BRIEF_TOKENS
+    need = read_tokens + summary_tokens + SUBAGENT_OPENING_TOKENS
     t2m = models[Tier.T2.name]
-    t2 = run_cost(t2m, min(need, context_window(t2m, need)), summary_tokens, on)
+    t2 = sub_run_cost(t2m, read_tokens, summary_tokens, on)
     best, best_cost = Tier.T2, t2 + p_fail * (t2 + overhead)
     for tier in Tier:
         if tier >= Tier.T2 or not fits(models[tier.name], need):
             continue
-        run = run_cost(models[tier.name], need, summary_tokens, on)
+        run = sub_run_cost(models[tier.name], read_tokens, summary_tokens, on)
         cost = run + p_fail * (t2 + overhead)
         if cost < best_cost:
             best, best_cost = tier, cost
@@ -343,6 +403,27 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
         # over-states it ~3x; assuming zero, which is what this replay used to
         # do, under-states it by all of it.
         reopen = steps[0].in_cost if steps else 0.0
+        # Main-chain turns still to come after each step: how many times an
+        # admission would be re-read. This is the session's real horizon, which
+        # the guard only estimates, so the delegation gate below decides with
+        # hindsight -- an upper bound on what the hook achieves, never a floor.
+        # A compaction ends the carry too -- it keeps a few percent of the
+        # context -- so the count stops at the next main-chain turn whose
+        # context fell below half the one before it.
+        cut = [False] * len(steps)
+        last = None
+        for j, sj in enumerate(steps):
+            if sj.side:
+                continue
+            if last is not None and sj.real_ctx < 0.5 * steps[last].real_ctx:
+                cut[j] = True
+            last = j
+        main_left, left = [0] * len(steps), 0
+        for j in range(len(steps) - 1, -1, -1):
+            main_left[j] = left
+            if steps[j].side:
+                continue
+            left = 0 if cut[j] else left + 1
         for i, st in enumerate(steps):
             res.turns += 1
 
@@ -384,35 +465,56 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
                 res.refused_tokens += st.dup
             res.admitted_tokens += raw
 
-            if regime.delegate_above is not None and raw >= regime.delegate_above:
-                summary = max(1, int(raw * regime.summary_ratio))
-                overhead = ctx * Rates.for_model(st.model, on=st.on).cache_read / M
+            # Only a tool result can be sent elsewhere, and only from the main
+            # chain. The model's own output stays where it was written, on the
+            # model that wrote it, and keeps its terseness and effort scaling.
+            tool_part = min(raw, st.tool_part)
+            gate = (regime.delegate_above is not None and not st.side
+                    and tool_part >= regime.delegate_above)
+            if gate:
+                summary = max(1, int(tool_part * regime.summary_ratio))
+                main_r = Rates.for_model(st.model, ttl=st.ttl, on=st.on)
+                overhead = ctx * main_r.cache_read / M
                 if regime.right_size:
-                    tier = cheapest_tier(raw, summary, p_fail=regime.p_fail,
+                    tier = cheapest_tier(tool_part, summary, p_fail=regime.p_fail,
                                          overhead=overhead, on=st.on, models=models)
                     sub_model = models[tier.name]
-                    res.by_tier[tier.name] = res.by_tier.get(tier.name, 0) + 1
                 else:
                     sub_model = regime.sub_model
-                redo = run_cost(t2m,
-                                min(raw + BRIEF_TOKENS,
-                                    context_window(t2m, raw + BRIEF_TOKENS)),
-                                summary, st.on)
-                res.sub_run += run_cost(sub_model, raw + BRIEF_TOKENS, summary, st.on)
+                redo = sub_run_cost(t2m, min(tool_part, context_window(t2m, tool_part)),
+                                    summary, st.on)
+                run = sub_run_cost(sub_model, tool_part, summary, st.on)
+                # The guard delegates only what is cheaper delegated, and so
+                # does this. Without the test, every result over the size
+                # floor went out, including the ones whose subagent opening and
+                # dispatch turn cost more than carrying them would have.
+                # A restart ends the carry, so under a split regime the horizon
+                # is the turns left before the next one, not in the session.
+                horizon = main_left[i]
+                if regime.split_turns:
+                    horizon = min(horizon, regime.split_turns - 1 - i % regime.split_turns)
+                # Carry priced the way this replay charges it, off the turn's
+                # own bill: its write cost per admitted token and its read cost
+                # per carried token. List rates here and recorded costs below
+                # disagree, and a gate that disagrees with the accounting it
+                # gates admits delegations the accounting then scores as losses.
+                w_tok = st.write_cost / st.adm if st.adm else main_r.cache_write / M
+                r_tok = ((st.read_cost + st.rebuild_cost) / st.real_ctx if st.real_ctx
+                         else main_r.cache_read / M)
+                per_token = w_tok + r_tok * horizon
+                cost_out = (run + overhead + summary * per_token
+                            + regime.p_fail * (redo + overhead))
+                gate = cost_out < tool_part * per_token
+            if gate:
+                if regime.right_size:
+                    res.by_tier[tier.name] = res.by_tier.get(tier.name, 0) + 1
+                res.sub_run += run
                 res.sub_escalation += regime.p_fail * (redo + overhead)
+                res.dispatch += overhead
                 res.delegated += 1
-                res.delegated_tokens += raw
-                kept = float(summary)
-                # The delegated step's own output happened elsewhere -- but it
-                # still happened, and somebody was billed for it. Charging zero
-                # here made delegation a free way to delete the session's
-                # output, and an optimiser handed a free lever takes it: solving
-                # the threshold down to ~300 tokens delegated 99% of admitted
-                # tokens and dropped main-session output to 1% of the total,
-                # which is not a regime anyone could run. It is a rate
-                # substitution, not a deletion: the same work, produced on the
-                # subagent's model.
-                out_mult = rate(sub_model, st.on).out / st.out_rate if st.out_rate else 0.0
+                res.delegated_tokens += tool_part
+                kept = float(summary) + (raw - tool_part) * keep_out
+                out_mult = keep_out
             else:
                 # Terseness and effort both attack assistant output and compose
                 # on it; tool discipline attacks the other half. Neither reaches
@@ -447,7 +549,8 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
             # fallen 12x too made restarts look free a second time over.
             scale = (ctx / st.real_ctx) if st.real_ctx else 1.0
             kept_frac = (kept / raw) if raw else 1.0
-            in_cost = st.read_cost * scale + st.write_cost * kept_frac
+            in_cost = ((st.read_cost + st.rebuild_cost) * scale
+                       + st.write_cost * kept_frac)
             out_cost = st.out_cost * out_mult
 
             # Running the session on a cheaper model is a pure rate substitution
@@ -711,6 +814,8 @@ def report(root: Path | str = DEFAULT_ROOT, *, target: float = 10.0,
         ("delegated steps", best.sub_run, "read once, on the tier that fits"),
         ("redoing the ones that fail", best.sub_escalation,
          f"at p_fail {best.regime.p_fail:.0%}"),
+        ("dispatching them", best.dispatch,
+         "the main-context turn that issues each delegation"),
         ("rework on the session model", best.session_rework,
          f"at {best.regime.session_rework:.0%}, an assumption not a measurement"),
         ("restarting sessions", best.restart,
@@ -923,6 +1028,7 @@ def _json_report(a) -> int:
             "main_out": round(r.main_out, 4),
             "sub_run": round(r.sub_run, 4),
             "sub_escalation": round(r.sub_escalation, 4),
+            "dispatch": round(r.dispatch, 4),
             "session_rework": round(r.session_rework, 4),
             "restart": round(r.restart, 4),
             "turns": r.turns, "restarts": r.restarts,

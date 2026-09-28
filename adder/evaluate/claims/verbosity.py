@@ -31,6 +31,7 @@ import json
 import sys
 from pathlib import Path
 
+from adder.measure.argtypes import positive_int
 from adder.pricing.bt import Battle
 from adder.pricing.style import FEATURES, Style, fit_controlled, mean_style, premium_cost
 from adder.util import render
@@ -178,19 +179,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rates-from", default="claude-opus-5",
                     help="model whose rates price the premium")
     ap.add_argument("--resamples", type=int, default=DEFAULT_RESAMPLES)
-    ap.add_argument("--top", type=int, default=10)
+    ap.add_argument("--top", type=positive_int, default=10)
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
     battles: list[Battle] = []
     styles: list[tuple[Style, Style]] = []
     if args.path is not None:
-        if not args.path.exists():
-            print(f"adder verbosity: no such file: {args.path}", file=sys.stderr)
+        if not args.path.is_file():
+            print(f"adder verbosity: not a file: {args.path} (this takes a JSONL of "
+                  "comparisons, not a transcript directory)", file=sys.stderr)
             return 1
         try:
             battles, styles = load(args.path)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             print(f"adder verbosity: {exc}", file=sys.stderr)
             return 2
 

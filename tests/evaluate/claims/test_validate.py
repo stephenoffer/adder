@@ -6,6 +6,8 @@ function is caught without anyone's history.
 """
 from __future__ import annotations
 
+import pytest
+
 from adder.core.trace import Session, Turn
 from adder.evaluate.claims.validate import (
     a_prior_never_buys_a_downgrade,
@@ -118,6 +120,20 @@ class TestSafetyClaims:
 
         monkeypatch.setenv("ADDER_LEDGER", str(tmp_path / "none.jsonl"))
         assert the_tool_has_paid_for_itself({}).ok
+
+    def test_a_ledger_of_only_declines_is_not_empty(self, tmp_path, monkeypatch):
+        """Declining still cost the routing turn. A ledger holding only
+        declines has spent and promised nothing, and was skipped as empty."""
+        import json as _json
+
+        from adder.evaluate.claims.validate import the_tool_has_paid_for_itself
+
+        log = tmp_path / "ledger.jsonl"
+        log.write_text(_json.dumps({"action": "inline", "predicted": 0.0, "worst": 0.0,
+                                    "overhead": 0.05, "accepted": False, "ts": 1.0}) + "\n")
+        monkeypatch.setenv("ADDER_LEDGER", str(log))
+        c = the_tool_has_paid_for_itself({})
+        assert not c.ok and c.measured != "nothing spent"
 
     def test_carry_claim_needs_data(self):
         from adder.evaluate.claims.validate import carry_multiplier_is_above_the_assumption
@@ -252,3 +268,44 @@ class TestTheThirdState:
 
         c = horizon_is_calibrated({})
         assert not c.ok and not c.untestable
+
+
+class TestTheCarryClaim:
+    """`docs/naming.md` quotes the carry at 5.7x the sum and nothing re-measured it."""
+
+    def test_it_is_measured(self, make_sessions):
+        from adder.evaluate.claims.validate import the_carry_exceeds_the_sum
+
+        c = the_carry_exceeds_the_sum(make_sessions(3, 80))
+        assert not c.untestable and c.measured.endswith("x")
+
+    @pytest.mark.parametrize(("share", "ok"), [(1.0, True), (0.01, False)])
+    def test_the_bar_is_the_readme_figure(self, make_sessions, monkeypatch, share, ok):
+        from adder.evaluate.claims.validate import the_carry_exceeds_the_sum
+
+        monkeypatch.setattr("adder.measure.spend.debt.output_share_of_growth",
+                            lambda s: share)
+        c = the_carry_exceeds_the_sum(make_sessions(3, 200))
+        assert c.expected == ">=5.0x" and c.ok is ok
+
+    def test_no_output_is_untestable(self):
+        from adder.evaluate.claims.validate import the_carry_exceeds_the_sum
+
+        assert the_carry_exceeds_the_sum({}).untestable
+
+    def test_it_is_in_the_run(self):
+        from adder.evaluate.claims.validate import CHECKS, the_carry_exceeds_the_sum
+
+        assert the_carry_exceeds_the_sum in CHECKS
+
+
+def test_calls_that_never_fired_are_not_called_absent(monkeypatch):
+    """1,600 calls and zero fires was reported as "no local tool calls"."""
+    from types import SimpleNamespace
+
+    from adder.evaluate.claims.validate import enforcement_removes_the_assumption
+
+    monkeypatch.setattr("adder.decide.guard.replay",
+                        lambda root, cfg: SimpleNamespace(calls=1_600, fires=0))
+    c = enforcement_removes_the_assumption({})
+    assert c.untestable and "1,600 calls" in c.note and "no local tool calls" not in c.note

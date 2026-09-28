@@ -162,9 +162,8 @@ def delegation(sessions, *, delegable_turns: float = 0.25,
             # meaning *today* -- compares a recorded turn against a rate that
             # was not in force when it ran. The two agree only while every rate
             # in the table is stable, which is the assumption `prices.py` exists
-            # to refuse: Sonnet 5 reverts from $2/$10 to $3/$15 after
-            # 2026-08-31, and this saving would move overnight with nothing in
-            # the repository having changed.
+            # to refuse: when an introductory rate expires, this saving would
+            # move overnight with nothing in the repository having changed.
             when = t.pricing_date(on)
             r_main, r_sub = t.rates(on), rate(sub_model, when)
             if r_sub.out < r_main.out:
@@ -254,11 +253,16 @@ def effort_reduction(sessions, *, from_effort: str = "high",
     share = output_share_of_growth(sessions)
     _, _, accumulated = decompose_read_cost(sessions, on)
 
-    gen = sum(
-        t.out * frac * t.rates(on).out / M
-        for s in sessions.values() for t in s.turns
-    )
-    reread = accumulated * share * frac
+    # Only turns that ran at `from_effort` can be moved off it. A third of the
+    # turns here were already at medium and were being credited the cut again.
+    # A turn with no recorded effort predates the field and is taken to have
+    # run at the default, which is `from_effort`'s job to name.
+    turns = [t for s in sessions.values() for t in s.turns]
+    eligible = [t for t in turns if (t.effort or from_effort) == from_effort]
+    out_all = sum(t.out for t in turns)
+    reach = sum(t.out for t in eligible) / out_all if out_all else 0.0
+    gen = sum(t.out * frac * t.rates(on).out / M for t in eligible)
+    reread = accumulated * share * frac * reach
     return Estimate(
         f"Drop effort {from_effort} -> {to_effort} (~{frac:.0%} less output)",
         gen + reread,
@@ -266,8 +270,9 @@ def effort_reduction(sessions, *, from_effort: str = "high",
         "effort-to-output priors x measured output share x accumulated read cost",
         f"assumes {to_effort} effort produces ~{frac:.0%} less output than "
         f"{from_effort} AND does not reduce task success; the token ratio is a "
-        "prior, not measured here",
-        pool_fraction=frac * share,
+        f"prior, not measured here; applies to the {reach:.0%} of output produced "
+        f"at {from_effort}",
+        pool_fraction=frac * share * reach,
         generation_saving=gen,
     )
 
@@ -424,20 +429,34 @@ def explore_on_haiku(sessions, cheap: str | None = None,
     )
 
 
-def combine(pool: float, levers: list[Estimate], separate: list[Estimate]) -> tuple[float, float]:
+def combine(pool: float, levers: list[Estimate], separate: list[Estimate],
+            *, total: float | None = None) -> tuple[float, float]:
     """Combine substitute levers multiplicatively on the residual pool.
 
     They are substitutes, so their savings do not add: applying terseness leaves
     less pool for splitting to remove. Residual after all of them is the product
     of each one's residual, which is both more accurate than max() (too
     conservative) and than the sum (double-counts).
+
+    The generation savings and the separate levers overlap in the same way --
+    terseness, lower effort, delegation and model routing all re-price the same
+    output tokens -- and adding them reported a combined saving of 167% of
+    spend on one workload. Given `total`, they compose multiplicatively on what
+    the pool levers leave, so the combined figure cannot exceed the bill.
+    Without it the sum is returned, for a caller that has no total to bound by.
     """
     residual = 1.0
     for e in levers:
         residual *= max(0.0, 1.0 - min(1.0, e.pool_fraction))
     pool_saving = pool * (1.0 - residual)
-    gen = sum(e.generation_saving for e in levers) + sum(e.saving for e in separate)
-    return pool_saving, gen
+    parts = [e.generation_saving for e in levers] + [e.saving for e in separate]
+    if total is None:
+        return pool_saving, sum(parts)
+    rest = max(0.0, total - pool_saving)
+    left = 1.0
+    for x in parts:
+        left *= max(0.0, 1.0 - min(1.0, max(0.0, x) / rest)) if rest else 0.0
+    return pool_saving, rest * (1.0 - left)
 
 
 def levers(sessions, root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
@@ -535,7 +554,7 @@ def report(root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
     for e in sorted(separate, key=lambda e: -e.saving):
         print("  " + e.line(total))
 
-    pool_saving, gen = combine(accumulated, pool, separate)
+    pool_saving, gen = combine(accumulated, pool, separate, total=total)
     realistic = pool_saving + gen
     print("\n  COMBINED (substitutes compose multiplicatively on the residual):")
     print(f"    pool removed      ${pool_saving:>9,.0f} of ${accumulated:,.0f}")
@@ -574,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         total = sum(s.cost_on() for s in sessions.values())
         _, _, accumulated = decompose_read_cost(sessions)
         pool, separate = levers(sessions, a.root, max_turns=a.max_turns)
-        pool_saving, gen = combine(accumulated, pool, separate)
+        pool_saving, gen = combine(accumulated, pool, separate, total=total)
         print(json.dumps({
             "total": round(total, 4),
             "addressable_pool": round(accumulated, 4),

@@ -318,13 +318,41 @@ class TestDelegatedWorkIsStillPaidFor:
         assert res.delegated > 0
         assert res.main_out > 0, "the work still happened, on somebody's model"
 
-    def test_it_is_charged_at_the_subagent_rate_not_the_session_rate(self):
+    def test_the_sessions_own_output_stays_on_the_session_model(self):
+        """What a subagent writes is its summary, charged in `sub_run`. The
+        main turn's own reasoning and edits are not a tool result, no hook can
+        send them anywhere, and re-pricing them at the subagent's rate was how
+        this replay credited delegation with savings it cannot make."""
         sess = _sessions(n_turns=100, admit=40_000, out=5_000)
         base = replay(sess, Regime())
         deleg = replay(sess, Regime(delegate_above=5_000))
-        assert deleg.main_out < base.main_out, "a cheaper model wrote it"
-        # Haiku output is 5/25 of Opus, and every turn but the first delegates.
-        assert deleg.main_out > base.main_out * 0.1
+        assert deleg.delegated > 0
+        assert deleg.main_out == pytest.approx(base.main_out)
+        assert deleg.sub_run > 0
+
+    def test_only_the_tool_result_is_delegated(self):
+        """Growth between two turns is the earlier turn's output plus what its
+        calls returned; only the second half can go to a subagent."""
+        sess = _sessions(n_turns=100, admit=40_000, out=5_000)
+        deleg = replay(sess, Regime(delegate_above=5_000))
+        assert deleg.delegated_tokens <= deleg.delegated * (40_000 - 5_000)
+
+    def test_a_subagent_turn_never_delegates(self):
+        sess = _sessions(n_turns=100, admit=40_000, out=5_000)
+        for t in sess["s"].turns:
+            t.sidechain = True
+        assert replay(sess, Regime(delegate_above=5_000)).delegated == 0
+
+    def test_each_delegation_pays_for_the_turn_that_dispatches_it(self):
+        sess = _sessions(n_turns=100, admit=40_000, out=5_000)
+        deleg = replay(sess, Regime(delegate_above=5_000))
+        assert deleg.dispatch > 0
+
+    def test_a_delegation_that_does_not_pay_is_not_made(self):
+        """Two turns from the end there is almost no carry left to save, and a
+        subagent's own opening costs more than that."""
+        sess = _sessions(n_turns=3, admit=6_000, out=100)
+        assert replay(sess, Regime(delegate_above=1_000)).delegated == 0
 
     def test_delegating_everything_cannot_zero_the_output(self):
         sess = _sessions(n_turns=100, admit=40_000, out=5_000)
@@ -388,7 +416,7 @@ class TestCounterfactualsArePricedOnTheTurnsDate:
         assert self._cheap(d).total == pytest.approx(
             self._cheap(d, on=date(2026, 8, 10)).total)
 
-    def test_and_the_reverted_rate_applies_after_it(self):
+    def test_and_the_reverted_rate_applies_after_it(self, scheduled_intro):
         d = self._sessions()
         assert self._cheap(d, on=date(2026, 9, 1)).total > self._cheap(d).total
 
@@ -461,3 +489,45 @@ class TestRefusingDuplicates:
         prepared = prepare(self._sessions(), None)
         assert (replay(prepared, Regime(refuse_duplicates=True)).total
                 == replay(prepared, Regime()).total)
+
+
+class TestARebuildScalesWithTheContextItRewrites:
+    """Cache writes beyond what a turn admitted are a prefix rebuilt after
+    expiry, and a rebuild rewrites the whole context. Scaled by admission, they
+    were untouched by a restart that shrank the context they rewrite."""
+
+    @staticmethod
+    def _rebuilding(n_turns=200, admit=4_000, base=20_000):
+        s = Session("s", "proj")
+        ctx = base
+        for i in range(n_turns):
+            if i:
+                ctx += admit
+            # Every tenth turn the cache has expired and the whole prefix is
+            # written again; the rest read it.
+            if i % 10 == 0:
+                s.turns.append(Turn("s", "proj", OPUS, 0, 0, ctx, 800, 0, False,
+                                    ts=f"2026-08-14T10:{i % 60:02d}:00Z"))
+            else:
+                s.turns.append(Turn("s", "proj", OPUS, 0, ctx - admit, admit, 800, 0,
+                                    False, ts=f"2026-08-14T10:{i % 60:02d}:00Z"))
+        return {"s": s}
+
+    def test_the_rebuild_part_is_split_out(self):
+        steps = prepare(self._rebuilding())[0][2]
+        assert steps[10].rebuild_cost > 0
+        assert steps[11].rebuild_cost == 0
+
+    def test_the_null_replay_still_reproduces_the_bill(self):
+        sess = self._rebuilding()
+        measured = sum(s.cost_on(ON) for s in sess.values())
+        assert replay(sess, Regime()).total == pytest.approx(measured, rel=1e-9)
+
+    def test_a_restart_shrinks_what_a_rebuild_costs(self):
+        prep = prepare(self._rebuilding())
+        base = replay(prep, Regime())
+        split = replay(prep, Regime(split_turns=20))
+        rebuilt = sum(st.rebuild_cost for st in prep[0][2])
+        # Without the split, the input side cannot fall by more than the reads
+        # plus the rebuilds; with it, some of the rebuild money has to go too.
+        assert base.main_input - split.main_input > 0.5 * rebuilt

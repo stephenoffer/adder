@@ -64,6 +64,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from adder.measure.argtypes import positive_int
 from adder.pricing.bt import Battle, Rating, fit_with_ci, win_probability
 from adder.util import render
 from adder.util.stats import wilson_interval
@@ -342,18 +343,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="comparisons you are willing to run (default 60)")
     ap.add_argument("--cost", type=float, default=0.0,
                     help="USD per comparison, to price the plan")
-    ap.add_argument("--top", type=int, default=10)
+    ap.add_argument("--top", type=positive_int, default=10)
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
     battles: list[Battle] = []
     if args.path is not None:
-        if not args.path.exists():
-            print(f"adder design: no such file: {args.path}", file=sys.stderr)
+        if not args.path.is_file():
+            print(f"adder design: not a file: {args.path} (this takes a JSONL of "
+                  "comparisons, not a transcript directory)", file=sys.stderr)
             return 1
         try:
             battles = load_battles(args.path)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             print(f"adder design: {exc}", file=sys.stderr)
             return 2
 

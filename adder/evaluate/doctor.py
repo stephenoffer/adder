@@ -101,7 +101,7 @@ def check_cache(sessions, total: float) -> Check:
 
 
 def check_tools(root, sessions, total: float) -> Check:
-    from adder.measure.window.tools import LEVERS, carried_cost, scan
+    from adder.measure.window.tools import LEVERS, billed_output, carried_cost, scan
     from adder.util.render import money, tokens
 
     rep = scan(root)
@@ -109,7 +109,11 @@ def check_tools(root, sessions, total: float) -> Check:
         return Check("tools", True, "no tool calls on record", skipped=True)
     costs = carried_cost(rep, sessions)
     worst = max(rep.by_tool.values(), key=lambda t: costs.get(t.name, 0.0))
-    share = rep.share_of_growth(worst)
+    # Assistant output belongs in the denominator, as it does in `carried_cost`
+    # and `adder tools`. Without it the headline said "Bash is 78% of context
+    # growth" next to a dollar figure that implied about 20%, and the 40% gate
+    # below fired on the inflated share.
+    share = rep.share_of_growth(worst, billed_output(sessions))
     at_stake = costs.get(worst.name, 0.0)
     return Check(
         "tools", share < 0.40 or not _material(at_stake, total),
@@ -638,10 +642,19 @@ def check_ledger() -> Check:
         return Check("ledger", True,
                      "no recommendations booked yet — `adder policy --record`",
                      skipped=True)
+    # The headline quotes the figure the verdict is judged on. It used to quote
+    # `delivered`, which only a verified entry carries, so every ledger read
+    # "$0.00 delivered" beside an OK computed from something else entirely.
+    detail = [f"{money(led.delivered)} of it verified"] if led.verified else []
+    if not led.gate_held:
+        detail.append(f"{len(led.gate_violations)} accepted below their own overhead "
+                      "— the gate let through advice it should have refused")
     return Check(
-        "ledger", led.solvent,
-        f"{money(led.delivered)} delivered against {money(led.spent)} of asking",
+        "ledger", led.solvent and led.gate_held,
+        f"{money(led.promised)} expected from advice taken, against "
+        f"{money(led.spent)} spent on {len(led.entries):,} routing turns",
         action="`adder ledger` — the advice has not paid for the turns spent giving it",
+        detail=detail,
     )
 
 
@@ -836,6 +849,18 @@ def run(root: Path | str, sessions=None, *, on: date | None = None) -> list[Chec
     return sorted(checks, key=lambda c: (c.skipped, c.ok, -c.dollars, c.name))
 
 
+def stake_range(fixes: list[Check]) -> tuple[float, float]:
+    """What fixing every finding is worth: the largest one, up to their sum.
+
+    The checks overlap -- tools, re-reads and compaction all price the same
+    re-read tokens -- so the sum is only a ceiling, and printing it as the
+    headline put $3,452 on the board for a history whose levers do not add to
+    that. The largest single finding is a floor you can actually collect.
+    """
+    dollars = [c.dollars for c in fixes]
+    return (max(dollars, default=0.0), sum(dollars))
+
+
 def report(checks: list[Check]) -> str:
     """The table, then the numbered list of what to do.
 
@@ -848,7 +873,7 @@ def report(checks: list[Check]) -> str:
     from adder.util.render import money
 
     fixes = [c for c in checks if not c.ok and not c.skipped]
-    at_stake = sum(c.dollars for c in fixes)
+    low, high = stake_range(fixes)
     amounts = [money(c.dollars) if c.dollars >= 0.01 else "" for c in checks]
     dw = max([len("at stake"), *map(len, amounts)])
     nw = max([12, *(len(c.name) + 2 for c in checks)])
@@ -868,7 +893,12 @@ def report(checks: list[Check]) -> str:
         lines.append("  either pulled or not worth pulling on this workload.")
         return "\n".join(lines)
 
-    stake = f", {money(at_stake)} at stake" if at_stake >= 0.01 else ""
+    if high < 0.01:
+        stake = ""
+    elif high - low < 0.01:
+        stake = f", {money(high)} at stake"
+    else:
+        stake = f", {money(low)} to {money(high)} at stake"
     lines.append(f"  What to do — {len(fixes)} finding{'s' if len(fixes) > 1 else ''}"
                  f"{stake}:")
     lines.append("")
@@ -960,7 +990,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.json:
         print(json.dumps({
-            "at_stake": round(sum(c.dollars for c in failed), 4),
+            "at_stake": round(stake_range(failed)[0], 4),
+            "at_stake_upper": round(stake_range(failed)[1], 4),
             "failed": [c.name for c in failed],
             "checks": [
                 {"name": c.name, "status": c.status, "ok": c.ok,

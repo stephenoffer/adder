@@ -240,7 +240,11 @@ def ladder(sessions, *, min_cost: float, handoff_tokens: int = DEFAULT_HANDOFF,
     cadence, _opening, cadence_note = recommended_cadence(
         sessions, handoff_tokens=handoff_tokens, on=on)
     solved, solved_note = recommended_threshold(sessions, split_turns=cadence, on=on)
-    if solved is not None:
+    # Only a lower threshold is a new rung. The replay delegates a step only
+    # where delegating it pays, so lowering the size floor can only add
+    # delegations that pay; a solved threshold above the guard's would remove
+    # some that do, and made the ladder more expensive at this row.
+    if solved is not None and solved < thr:
         # Split from the cadence, because the two are enforceable by different
         # things. A hook can refuse a read; nothing here can restart a session.
         # Bundling them made the whole of the largest rung unenforced and hid
@@ -248,16 +252,15 @@ def ladder(sessions, *, min_cost: float, handoff_tokens: int = DEFAULT_HANDOFF,
         rungs.append(Config(
             f"+ the threshold it solves for (over {solved:,} tok)",
             replace(rungs[-1].regime, label="solved", delegate_above=solved),
-            enforced=enforcing and solved >= thr,
-            note=(solved_note + ("" if enforcing else
-                                 "; the guard advises this, it does not enforce it — "
-                                 "`adder auto on --full`"))))
-        rungs.append(Config(
-            f"+ restarting every {cadence} turns",
-            replace(rungs[-1].regime, label="cadence", split_turns=cadence,
-                    handoff_tokens=handoff_tokens),
             enforced=False,
-            note=f"{cadence_note}. No hook can restart a session; this one is yours"))
+            note=(solved_note + ("; the guard's floor is higher, so this is advice "
+                                 "— lower `guard_min_tokens` to enforce it"))))
+    rungs.append(Config(
+        f"+ restarting every {cadence} turns",
+        replace(rungs[-1].regime, label="cadence", split_turns=cadence,
+                handoff_tokens=handoff_tokens),
+        enforced=False,
+        note=f"{cadence_note}. No hook can restart a session; this one is yours"))
     return rungs
 
 
@@ -470,10 +473,10 @@ def report(root: Path | str = DEFAULT_ROOT, *, min_cost: float = 0.25,
         for (sr, pf, ho), mult in b.corners:
             print(f"  {sr:>9.0%}{pf:>9.0%}{ho:>10,}{mult:>13.1f}x")
         print(f"\n  Nominal {b.followed:.1f}x, worst corner {b.worst_corner:.1f}x. "
-              "The floor is set by the summary")
-        print("  ratio: if a delegated read hands back 30% of what it read rather than")
-        print("  10%, most of the content is back in the context and the carry it was")
-        print("  supposed to avoid is only partly avoided.")
+              "Read the rows for which of the")
+        print("  three moves it: a larger handoff makes every restart dearer, a larger")
+        print("  summary returns more of each delegated read to the context, and a higher")
+        print("  p_fail pays for more of them twice.")
     print()
     return 0
 
@@ -521,8 +524,12 @@ def main(argv: list[str] | None = None) -> int:
     if not sessions:
         print(f"\n  No transcripts found under {a.root}\n")
         return 1
+    # The same measured duplicate set the unwindowed report replays against.
+    # Without it `--json` and a windowed run described a ladder with one rung
+    # fewer than the table printed for the same data.
     b = run(sessions, min_cost=min_cost, handoff_tokens=handoff,
-            min_tokens=min_floor)
+            min_tokens=min_floor,
+            dups=duplicate_admissions(a.root, window=window if window.active else None))
     if not a.json:
         # A windowed run re-prices the same ladder; print it the same way.
         for i, (cfg, res) in enumerate(zip(b.configs, b.results, strict=True)):

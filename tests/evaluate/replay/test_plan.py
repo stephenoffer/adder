@@ -553,3 +553,24 @@ class TestARebuildScalesWithTheContextItRewrites:
         # Without the split, the input side cannot fall by more than the reads
         # plus the rebuilds; with it, some of the rebuild money has to go too.
         assert base.main_input - split.main_input > 0.5 * rebuilt
+
+
+class TestTrimmingThePrefix:
+    """Every main-chain turn carries the always-loaded prefix, so at a short
+    restart cadence it is most of what is left to pay for."""
+
+    def test_a_smaller_prefix_carries_less(self):
+        sess = _sessions(base=40_000)
+        base = replay(sess, Regime(split_turns=30))
+        lean = replay(sess, Regime(split_turns=30, prefix_tokens=20_000))
+        assert lean.main_input < base.main_input
+        assert lean.restart < base.restart
+
+    def test_a_target_above_the_floor_changes_nothing(self):
+        sess = _sessions(base=20_000)
+        assert replay(sess, Regime(prefix_tokens=50_000)).total == pytest.approx(
+            replay(sess, Regime()).total)
+
+    def test_it_is_a_row_only_when_asked_for(self):
+        assert not any(r.prefix_tokens for r in ladder())
+        assert any(r.prefix_tokens == 25_000 for r in ladder(prefix_tokens=25_000))

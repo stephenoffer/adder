@@ -132,6 +132,13 @@ class Regime:
     # same way would put an uptake assumption behind the one saving that has
     # none.
     refuse_duplicates: bool = False
+    # The always-loaded prefix -- system prompt, tool definitions, CLAUDE.md,
+    # memory, the skill list -- trimmed to this many tokens. Every main-chain
+    # turn carries it, so at a short restart cadence it is most of what is
+    # left: here sessions open at ~49K, and a lean headless Claude Code opens
+    # at ~21K. MODELLED: how far a given setup can actually be trimmed is a
+    # property of what it loads, which the transcript does not itemise.
+    prefix_tokens: int | None = None
 
     @property
     def effort_mult(self) -> float:
@@ -429,7 +436,11 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
     keep_adm = output_share * keep_out + (1.0 - output_share) * (1.0 - regime.tool_discipline)
 
     for start_ctx, floor_ctx, steps in prepared:
-        ctx, real_prev = float(start_ctx), 0
+        # What trimming the prefix removes from every context this session
+        # carries: the part of its smallest context above the target.
+        trim = (max(0, floor_ctx - regime.prefix_tokens)
+                if regime.prefix_tokens is not None else 0)
+        ctx, real_prev = float(start_ctx - trim), 0
         # What re-opening this session costs, taken from what opening it cost.
         # `steps[0].in_cost` is the recorded bill for the turn that established
         # this session's prefix -- mostly a cache read of a floor that other
@@ -437,6 +448,8 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
         # over-states it ~3x; assuming zero, which is what this replay used to
         # do, under-states it by all of it.
         reopen = steps[0].in_cost if steps else 0.0
+        if trim and start_ctx:
+            reopen *= (start_ctx - trim) / start_ctx
         # Main-chain turns still to come after each step: how many times an
         # admission would be re-read. This is the session's real horizon, which
         # the guard only estimates, so the delegation gate below decides with
@@ -476,7 +489,7 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
                 # open smaller than an opening. It also has to be told what the
                 # last one knew, which is written in at the cache-write rate.
                 handoff = regime.handoff_tokens
-                ctx = float(max(start_ctx, floor_ctx) + handoff)
+                ctx = float(max(start_ctx, floor_ctx) + handoff - trim)
                 cost = reopen + handoff * Rates.for_model(
                     st.model, ttl=st.ttl, on=st.on).cache_write / M
                 if (cheap and cheap != st.model and not st.side and st.inp > 0
@@ -623,7 +636,8 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
 def ladder(delegate_above: int = 5_000, split_turns: int = 300,
            effort: str = "medium", session_model: str = "claude-sonnet-5",
            session_rework: float = 0.20,
-           handoff_tokens: int = DEFAULT_HANDOFF) -> list[Regime]:
+           handoff_tokens: int = DEFAULT_HANDOFF,
+           prefix_tokens: int | None = None) -> list[Regime]:
     steps = [Regime()]
     # Placement first, price second, and deliberately in that order: the first
     # row delegates to the model the session was already on, so it measures the
@@ -636,6 +650,10 @@ def ladder(delegate_above: int = 5_000, split_turns: int = 300,
                          right_size=True))
     steps.append(replace(steps[-1], label=f"+ split sessions at {split_turns} turns",
                          split_turns=split_turns, handoff_tokens=handoff_tokens))
+    if prefix_tokens is not None:
+        steps.append(replace(steps[-1],
+                             label=f"+ trim the loaded prefix to {prefix_tokens:,} tok",
+                             prefix_tokens=prefix_tokens))
     steps.append(replace(steps[-1], label=f"+ effort high -> {effort}", effort=effort))
     steps.append(replace(steps[-1], label="+ 30% terser, 40% less tool output",
                          terseness=0.30, tool_discipline=0.40))
@@ -757,7 +775,7 @@ def report(root: Path | str = DEFAULT_ROOT, *, target: float = 10.0,
            delegate_above: int | None = None, split_turns: int | None = None,
            effort: str = "medium", session_model: str = "claude-sonnet-5",
            session_rework: float = 0.20, handoff_tokens: int = DEFAULT_HANDOFF,
-           on: date | None = None) -> int:
+           prefix_tokens: int | None = None, on: date | None = None) -> int:
     from adder.measure.spend.debt import output_share_of_growth
 
     sessions = load_sessions(root, use_cache=True)
@@ -782,7 +800,7 @@ def report(root: Path | str = DEFAULT_ROOT, *, target: float = 10.0,
         delegate_above, threshold_note = recommended_threshold(
             sessions, split_turns=split_turns, on=on)
     steps = ladder(delegate_above, split_turns, effort, session_model,
-                   session_rework, handoff_tokens)
+                   session_rework, handoff_tokens, prefix_tokens)
     results = [replay(prepared, r, output_share=share, on=on) for r in steps]
     base = results[0]
 
@@ -1058,7 +1076,7 @@ def _json_report(a) -> int:
             sessions, split_turns=split_turns)
 
     steps = ladder(delegate_above, split_turns, a.effort, a.session_model,
-                   a.session_rework, a.handoff)
+                   a.session_rework, a.handoff, a.prefix)
     results = [replay(prepared, r, output_share=share) for r in steps]
     base, result = results[0], results[-1]
     solved, solved_res, severity = solve(
@@ -1133,6 +1151,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--session-rework", type=float, default=0.20, metavar="F",
                     help="modelled share of the session redone on the original "
                          "model (default: 0.20)")
+    ap.add_argument("--prefix", type=int, default=None, metavar="TOK",
+                    help="what-if: the always-loaded prefix (system prompt, tools, "
+                         "CLAUDE.md, skills) trimmed to TOK tokens. MODELLED")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)
     # `root_of`: the argument if one was given, else the `root`
@@ -1146,7 +1167,8 @@ def main(argv: list[str] | None = None) -> int:
     rc = report(a.root, target=a.target, delegate_above=a.delegate_above,
                 split_turns=a.split_turns, effort=a.effort,
                 handoff_tokens=a.handoff,
-                session_model=a.session_model, session_rework=a.session_rework)
+                session_model=a.session_model, session_rework=a.session_rework,
+                prefix_tokens=a.prefix)
     print()
     return rc
 

@@ -1,6 +1,6 @@
 ---
 description: Show where Claude Code token spend actually goes, what an output token really costs, and what each lever is worth. Read-only diagnostic - never changes configuration. Use when asked about token cost, spend, why a session is expensive, or how to reduce Claude Code cost.
-allowed-tools: Bash(adder:*), Bash(./scripts/adder:*), Read
+allowed-tools: Bash(adder doctor:*), Bash(adder live:*), Bash(adder tools:*), Bash(adder savings:*), Bash(adder debt:*), Bash(adder context:*), Bash(adder anomaly:*), Bash(adder reread:*), Bash(adder agents:*), Bash(adder plan:*), Bash(adder verify:*), Bash(adder quality:*), Read
 disable-model-invocation: false
 ---
 

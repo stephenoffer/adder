@@ -1,6 +1,6 @@
 ---
 description: Decide what to do about a session's context - compact, restart, or carry on - and what a restart may carry. Also audits what CLAUDE.md and memory cost per turn. Use when context is large, a session feels expensive, or before compacting or restarting.
-allowed-tools: Bash(adder:*), Bash(./scripts/adder:*), Read
+allowed-tools: Bash(adder live:*), Bash(adder handoff:*), Bash(adder reread:*), Bash(adder memory:*), Read
 disable-model-invocation: false
 ---
 

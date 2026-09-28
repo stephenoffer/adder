@@ -908,3 +908,159 @@ class TestLadderReachability:
         monkeypatch.setenv("ADDER_LADDER", "T0=not-a-real-model-xyz")
         rungs = {r for r, _, _ in ladder_mismatch("codex")}
         assert "T0" not in rungs
+
+
+def _outcome_log(tmp_path, monkeypatch, rows):
+    """Point the outcome log at a temp file. Never touch the real one."""
+    import json
+
+    path = tmp_path / "outcomes.jsonl"
+    now = time.time()
+    with path.open("w") as fh:
+        for tier, n, fails in rows:
+            for i in range(n):
+                fh.write(json.dumps({
+                    "tier": tier, "model": "m", "project": "proj",
+                    "escalated": i < fails, "ts": now - i * 3600,
+                }) + "\n")
+    monkeypatch.setattr("adder.decide.track.outcomes.DEFAULT_LOG", path)
+    return path
+
+
+class TestAuditedGates:
+    """Each of these was reproduced against the CLI before it was fixed."""
+
+    def test_a_downgrade_is_priced_at_the_cache_write_rate(self):
+        """At 1.0x this was a $0.013 saving on a $0.013 turn; a switch writes the
+        new prefix at 1.25x, and at that rate the saving is below the overhead."""
+        from adder.decide.route.policy import switch_write_mult
+
+        assert switch_write_mult(HAIKU) == pytest.approx(1.25)
+        p = decide("find where the config is loaded", context_tokens=5_500,
+                   remaining_turns=0, est_read_tokens=0, session_model=OPUS)
+        assert p.action != "downgrade"
+        honest = switch_is_profitable(OPUS, HAIKU, 5_500, 800, switch_in_mult=1.25)
+        assert honest.saving < p.overhead
+
+    def test_a_downgrade_must_hold_the_read_and_the_answer(self):
+        p = decide("find where the config is loaded", context_tokens=199_000,
+                   remaining_turns=0, est_read_tokens=30_000, est_out_tokens=20_000,
+                   session_model=OPUS)
+        assert p.action != "downgrade"
+        assert any("impossible" in r and "249,000" in r for r in p.reasons)
+
+    def test_inline_is_not_offered_when_the_session_cannot_hold_it(self):
+        p = decide("refactor the auth module across services and debug the race",
+                   context_tokens=990_000, remaining_turns=2, est_read_tokens=60_000,
+                   session_model=OPUS)
+        assert p.infeasible and "1,050,800" in p.infeasible
+        out = p.render()
+        assert out.startswith("DOES NOT FIT") and not out.startswith("INLINE")
+        assert any("compact or restart" in w for w in p.warnings)
+
+    def test_a_delegation_that_clears_its_bar_still_wins_when_inline_cannot_fit(self):
+        p = decide("refactor the auth module across services and debug the race",
+                   context_tokens=990_000, remaining_turns=400, est_read_tokens=60_000,
+                   session_model=OPUS)
+        assert p.action == "delegate" and not p.infeasible
+
+    def test_the_cli_refuses_a_context_larger_than_the_window(self, capsys):
+        from adder.decide.route.policy import main
+
+        rc = main(["--no-measure", "--no-cross-vendor", "--context", "1500000",
+                   "--remaining", "2", "find where the config is loaded"])
+        assert rc == 2
+        assert "larger than" in capsys.readouterr().err
+
+    def test_inputs_nobody_measured_are_named(self, capsys, isolated_home, monkeypatch):
+        """With no session here, the plan was priced on a 100K context and 450
+        turns that existed nowhere, and nothing on screen said so."""
+        import json
+
+        from adder.decide.route.policy import main
+
+        monkeypatch.setattr("adder.measure.session.live.current_session", lambda *a, **k: None)
+        main(["--no-measure", "--no-cross-vendor", "--json", "rename a variable"])
+        got = json.loads(capsys.readouterr().out)["warnings"]
+        assert any("no session was found" in w and "100,000-token context" in w
+                   for w in got)
+        main(["--no-measure", "--no-cross-vendor", "--json", "--context", "5000",
+              "--remaining", "10", "--read-tokens", "100", "rename a variable"])
+        got = json.loads(capsys.readouterr().out)["warnings"]
+        assert not any("assumed" in w for w in got)
+        # Given context and turns, nothing was looked up, so nothing was "not
+        # found" -- but the read size is still a guess and says so.
+        main(["--no-measure", "--no-cross-vendor", "--json", "--context", "5000",
+              "--remaining", "10", "rename a variable"])
+        got = json.loads(capsys.readouterr().out)["warnings"]
+        assert any(w.startswith("this assumed the tier's typical read") for w in got)
+        assert not any("no session was found" in w for w in got)
+
+    def test_a_downgrade_names_its_model_not_a_missing_agent(self):
+        from adder.decide.route.policy import Plan
+
+        head = Plan(action="downgrade", tier=Tier.T0, model=HAIKU, effort="default",
+                    agent=None, saving=1.0, overhead=0.1, confidence=0.9,
+                    reasons=[]).render().splitlines()[0]
+        assert "None" not in head and HAIKU in head
+
+
+class TestBatchAmortizes:
+    TASK = "find where the config is loaded"
+
+    def test_steps_too_small_alone_act_together(self):
+        """The batch's reason to exist: each step alone is declined, six share
+        one turn and clear it."""
+        from adder.decide.route.policy import routing_overhead, schedule
+
+        alone = decide(self.TASK, context_tokens=100_000, remaining_turns=20,
+                       session_model=OPUS, min_confidence=0.0)
+        assert alone.action == "inline"
+        b = schedule([self.TASK] * 6, context_tokens=100_000, remaining_turns=20,
+                     session_model=OPUS)
+        assert len(b.acted) == 6 and b.worth_it
+        assert b.overhead == pytest.approx(routing_overhead(100_000, OPUS))
+        assert b.saving > b.overhead
+
+    def test_the_share_does_not_let_a_losing_batch_through(self):
+        from adder.decide.route.policy import schedule
+
+        b = schedule([self.TASK] * 6, context_tokens=100_000, remaining_turns=12,
+                     session_model=OPUS)
+        assert not b.worth_it
+
+    def test_the_redo_term_keeps_the_whole_turn(self):
+        """Only the gate is amortized: a redo is caught by a turn of its own."""
+        full = decide(self.TASK, context_tokens=100_000, remaining_turns=20,
+                      session_model=OPUS, min_confidence=0.0)
+        shared = decide(self.TASK, context_tokens=100_000, remaining_turns=20,
+                        session_model=OPUS, min_confidence=0.0, overhead_share=1 / 6)
+        assert shared.guarantee.expected == pytest.approx(full.guarantee.expected)
+        assert shared.overhead == pytest.approx(full.overhead / 6)
+
+
+class TestLadderClampNeverInventsEvidence:
+    TASK = "make the ingest step tolerate a partial batch"
+
+    def test_a_lower_tier_record_does_not_lower_an_unlogged_higher_tier(
+            self, tmp_path, monkeypatch):
+        """Sixty T0 lookups at ~2% used to copy ~2% onto T2, where it became
+        `p_redo` for a multi-file change nobody had recorded."""
+        from adder.decide.route.classify import classify
+        from adder.decide.route.policy import prior_p_fail
+
+        _outcome_log(tmp_path, monkeypatch, [("T0", 60, 1)])
+        p = decide(self.TASK, context_tokens=300_000, remaining_turns=200,
+                   project="proj")
+        prior = prior_p_fail(classify(self.TASK).confidence)
+        t2 = next(r for r in p.ladder if r.tier is Tier.T2)
+        assert t2.p_fail == pytest.approx(prior)
+        assert p.tier is Tier.T2 and p.p_fail == pytest.approx(prior)
+
+    def test_a_weaker_tier_is_raised_to_a_stronger_tiers_measured_rate(
+            self, tmp_path, monkeypatch):
+        _outcome_log(tmp_path, monkeypatch, [("T1", 40, 1), ("T2", 40, 16)])
+        p = decide(self.TASK, context_tokens=300_000, remaining_turns=200,
+                   project="proj")
+        rates = {r.tier: r.p_fail for r in p.ladder}
+        assert rates[Tier.T1] >= rates[Tier.T2]

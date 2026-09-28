@@ -111,9 +111,18 @@ def main() -> int:
         payload = json.load(sys.stdin)
     except (ValueError, OSError):
         return 0
+    # Claude Code always sends an object, but this form runs without the
+    # `adder hook` wrapper's handler, and `[]` or a list-valued field raised
+    # out of it with a traceback instead of staying silent.
+    if not isinstance(payload, dict):
+        return 0
 
     tool = payload.get("tool_name") or ""
+    if not isinstance(tool, str):
+        return 0
     inp = payload.get("tool_input") or {}
+    if not isinstance(inp, dict):
+        return 0
     # The directory a relative path in a shell command is relative to. The
     # hook process usually inherits it, but "usually" is how a `cat
     # pyproject.toml` gets keyed against the wrong file; the payload says.
@@ -172,7 +181,7 @@ def main() -> int:
     try:
         from adder.measure.session.live import analyse, current_session
 
-        sess = current_session(cwd)
+        sess = current_session(cwd, transcript=payload.get("transcript_path"))
         if sess is None or sess.n_turns < 5:
             # Too early to price, but NOT too early to remember. Returning here
             # meant every read in a session's first five turns was forgotten --
@@ -181,9 +190,29 @@ def main() -> int:
             # The same applies to the running per-shape total the aggregate
             # rule is built on: it only works if the small early calls are
             # counted.
-            guard.observe(tool, inp, state, guard.Verdict(False, "session too short"),
-                          sizes=sizes, cwd=cwd)
+            #
+            # Too early to *price*, but a duplicate is not priced: it is
+            # certain, and in a headless run of "read this file, then read it
+            # again" the second read landed on turn 2 and went through. So the
+            # decision still runs, on the shipped horizon and the configured
+            # model, and only a certain verdict is acted on.
+            from adder.core.settings import session_model
+            from adder.measure.session.horizon import DEFAULT_REMAINING
+
+            turns = getattr(sess, "turns", None) or []
+            early = guard.decide(tool, inp,
+                                 model=turns[-1].model if turns else session_model(),
+                                 remaining_turns=DEFAULT_REMAINING, sizes=sizes,
+                                 state=state, cwd=cwd)
+            if not early.certain:
+                early = guard.Verdict(False, "session too short")
+            guard.observe(tool, inp, state, early, sizes=sizes, cwd=cwd)
             guard.save_state(session_id, state)
+            if early.fire:
+                guard.record_fire(str(payload.get("session_id") or ""), tool, inp, early)
+                out = early.payload()
+                if out:
+                    json.dump(out, sys.stdout)
             return 0
         r = analyse(sess)
         # The measured re-read multiplier for THIS session, not the assumed

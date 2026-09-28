@@ -98,7 +98,12 @@ class Setup:
     inline: bool = True
     summary_tokens: int = 400
     # What it costs the main session to notice the failure and dispatch again.
+    # Zero here only for a library caller pricing the arithmetic; `main` sets it
+    # to the routing turn, which re-reads the whole context.
     retry_overhead: float = 0.0
+    # Where `p_fail` came from, so the report cannot call a prior a
+    # measurement: "given", "prior" or "measured over N runs".
+    p_fail_basis: str = "given"
 
     def __post_init__(self) -> None:
         for name in ("p_fail", "false_negative", "false_positive"):
@@ -162,25 +167,47 @@ def carry_cost(tokens: int, setup: Setup) -> float:
     return tokens * setup.remaining_turns * read / M
 
 
+INFEASIBLE = float("inf")
+
+# What `best` names when no strategy holds the task.
+NONE_FEASIBLE = "none feasible"
+
+
 def strategies(setup: Setup) -> list[Strategy]:
-    """Price every strategy on the same task, so they can be compared at all."""
+    """Price every strategy on the same task, so they can be compared at all.
+
+    Every row is feasibility-gated, not only the cascade. "Always strong" used
+    to be priced unconditionally, so `--context 1500000` on a 1M-window strong
+    model recommended it -- a run that is a 400 error, named as the safe
+    choice. A row whose model cannot hold the context and the answer is priced
+    at `INFEASIBLE`, and a cascade needs both models: its escalation lands on
+    the strong one.
+    """
+    need = setup.ctx_tokens + setup.est_out_tokens
+    weak_fits = fits(setup.weak_model, need)
+    strong_fits = fits(setup.strong_model, need)
     weak = run_cost(setup.weak_model, setup.ctx_tokens, setup.est_out_tokens)
     strong = run_cost(setup.strong_model, setup.ctx_tokens, setup.est_out_tokens)
     verify = weak * setup.verify_share
 
+    def too_big(model: str) -> str:
+        return f"{model} cannot hold {need:,} tokens"
+
     out = [
-        Strategy("always strong", strong, 0.0,
-                 f"one run of {setup.strong_model}"),
-        Strategy("always weak", weak, setup.p_fail,
-                 f"one run of {setup.weak_model}, no check"),
+        Strategy("always strong", strong if strong_fits else INFEASIBLE, 0.0,
+                 f"one run of {setup.strong_model}" if strong_fits
+                 else too_big(setup.strong_model)),
+        Strategy("always weak", weak if weak_fits else INFEASIBLE, setup.p_fail,
+                 f"one run of {setup.weak_model}, no check" if weak_fits
+                 else too_big(setup.weak_model)),
     ]
 
-    if not fits(setup.weak_model, setup.ctx_tokens):
+    if not (weak_fits and strong_fits):
         # Feasibility gates profitability. A model that cannot hold the context
         # is not a cheap option, it is not an option.
         out.append(Strategy(
-            "cascade", float("inf"), 0.0,
-            f"{setup.weak_model} cannot hold {setup.ctx_tokens:,} tokens"))
+            "cascade", INFEASIBLE, 0.0,
+            too_big(setup.weak_model if not weak_fits else setup.strong_model)))
         return out
 
     # The dead end is only carried if it happened inline. In a subagent the
@@ -229,8 +256,14 @@ def best(setup: Setup) -> Strategy:
     """
     rows = strategies(setup)
     safe = next(s for s in rows if s.name == "always strong")
-    eligible = [s for s in rows if s.p_broken <= 0.01 and s.cost < float("inf")]
-    return min(eligible or [safe], key=lambda s: s.cost)
+    eligible = [s for s in rows if s.p_broken <= 0.01 and s.cost < INFEASIBLE]
+    if eligible:
+        return min(eligible, key=lambda s: s.cost)
+    if safe.cost < INFEASIBLE:
+        return safe
+    return Strategy(NONE_FEASIBLE, INFEASIBLE, 1.0,
+                    f"neither {setup.weak_model} nor {setup.strong_model} holds "
+                    f"{setup.ctx_tokens + setup.est_out_tokens:,} tokens")
 
 
 def breakeven_p_fail(setup: Setup, *, tol: float = 1e-4) -> float:
@@ -250,6 +283,10 @@ def breakeven_p_fail(setup: Setup, *, tol: float = 1e-4) -> float:
         strong = next(s for s in rows if s.name == "always strong")
         casc = min((s for s in rows if s.name.startswith("cascade")),
                    key=lambda s: s.cost)
+        if casc.cost == INFEASIBLE or strong.cost == INFEASIBLE:
+            # No boundary to find when a side of it cannot run; `inf - inf`
+            # is nan, and bisection over nan returns whatever it started with.
+            return 0.0
         return strong.cost - casc.cost
 
     if cascade_saving(0.0) <= 0:
@@ -287,7 +324,7 @@ def report(setup: Setup) -> str:
     out.append(render.kv("task", f"{setup.ctx_tokens:,} tok context, "
                                  f"{setup.est_out_tokens:,} tok answer"))
     out.append(render.kv("weak / strong", f"{setup.weak_model} / {setup.strong_model}"))
-    out.append(render.kv("p_fail (weak)", f"{setup.p_fail:.0%}"))
+    out.append(render.kv("p_fail (weak)", f"{setup.p_fail:.0%} ({setup.p_fail_basis})"))
     out.append(render.kv("check misses / fires",
                          f"{setup.false_negative:.0%} / {setup.false_positive:.0%}"))
     out.append(render.kv("session", f"{setup.remaining_turns} turns remaining"))
@@ -305,8 +342,22 @@ def report(setup: Setup) -> str:
     out.append("")
     out += render.heading("where the boundary is")
     be = breakeven_p_fail(setup)
-    out.append(render.kv("cascade wins below", f"p_fail = {be:.0%}"))
-    out.append(render.kv("measured p_fail", f"{setup.p_fail:.0%}"))
+    # 0.0 is the function's stand-in for "no boundary", and printed as a
+    # percentage it read as one: "cascade wins below p_fail = 0%".
+    runnable = any(s.cost != INFEASIBLE for s in rows if s.name.startswith("cascade"))
+    if not runnable:
+        where = "n/a (the cascade cannot run at this context)"
+    elif be <= 0.0:
+        where = "never, at any p_fail"
+    else:
+        where = f"p_fail = {be:.0%}"
+    out.append(render.kv("cascade wins below", where))
+    # The empty-log 0.5 was printed here as "measured p_fail". The basis goes
+    # beside the value: as the label it ran past the column into the number.
+    measured = setup.p_fail_basis.startswith("measured")
+    out.append(render.kv("measured p_fail" if measured else "p_fail (not measured)",
+                         f"{setup.p_fail:.0%}" + ("" if measured
+                                                  else f"  ({setup.p_fail_basis})")))
     out.append(render.kv("check may miss", f"{max_false_negative(setup):.0%} of failures"))
 
     inline_row = next((s for s in rows if s.name == "cascade"), None)
@@ -323,8 +374,12 @@ def report(setup: Setup) -> str:
                 "cascade in a subagent.")
 
     out.append("")
-    out += render.wrap(f"Cheapest strategy that is no less reliable than always "
-                       f"using {setup.strong_model}: **{pick.name}**.")
+    if pick.name == NONE_FEASIBLE:
+        out += render.wrap(f"No strategy is feasible: {pick.detail}. Shrink the "
+                           "context or split the task before pricing a cascade.")
+    else:
+        out += render.wrap(f"Cheapest strategy that is no less reliable than always "
+                           f"using {setup.strong_model}: **{pick.name}**.")
     out += render.wrap(
         "MODELLED: the verifier error rates and the failure rate are inputs, not "
         "measurements. `adder calib` scores whether this machine's p_fail can be "
@@ -341,6 +396,8 @@ def to_json(setup: Setup) -> dict:
             "false_negative": setup.false_negative,
             "false_positive": setup.false_positive,
             "remaining_turns": setup.remaining_turns,
+            "retry_overhead": setup.retry_overhead,
+            "p_fail_basis": setup.p_fail_basis,
             "p_escalate": setup.p_escalate,
             "p_ships_broken": setup.p_ships_broken,
         },
@@ -381,11 +438,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
-    p_fail = args.p_fail
+    p_fail, basis = args.p_fail, "given"
     if p_fail is None:
-        from adder.decide.track.outcomes import p_fail as measured
+        from adder.decide.track.outcomes import evidence
 
-        p_fail = measured("T0")
+        ev = evidence("T0")
+        p_fail = ev.p_fail
+        basis = (f"measured over {ev.n} runs" if ev.informative
+                 else "prior: the outcome log has too little T0 history")
+
+    # A failed attempt is caught by a main-session turn that re-reads the
+    # context and dispatches again. That is the routing turn `policy` charges,
+    # and left at its zero default the escalation branch was priced as if
+    # noticing a bad answer were free.
+    from adder.decide.route.policy import routing_overhead
+
+    session_model = _settings.session_model()
 
     try:
         setup = Setup(
@@ -397,7 +465,10 @@ def main(argv: list[str] | None = None) -> int:
             false_negative=args.miss,
             false_positive=args.over_fire,
             remaining_turns=max(0, args.turns),
+            session_model=session_model,
             inline=not args.delegated,
+            retry_overhead=routing_overhead(max(0, args.context), session_model),
+            p_fail_basis=basis,
         )
     except ValueError as exc:
         print(f"adder cascade: {exc}", file=sys.stderr)

@@ -9,6 +9,9 @@ subtree makes about exceptions and makes here about names.
 from __future__ import annotations
 
 import importlib
+import io
+
+import pytest
 
 from adder.decide.auto import HOOKS
 from adder.decide.hooks.run import HOOKS as NAMES
@@ -47,8 +50,17 @@ class TestFailingOpen:
         assert capsys.readouterr().out == ''
 
     def test_no_arguments_is_a_usage_error_rather_than_a_traceback(self, capsys):
-        assert main([]) == 2
+        # 0, not 2. To Claude Code exit 2 is "block": a settings line with the
+        # name missing denied every guarded call and erased every prompt.
+        assert main([]) == 0
         assert 'usage' in capsys.readouterr().err.lower()
+
+    @pytest.mark.parametrize('argv', [['read-guard', 'extra'], ['--foo'],
+                                      ['read-guard', '--foo']])
+    def test_any_bad_argument_fails_open(self, argv, capsys, monkeypatch):
+        monkeypatch.setattr('sys.stdin', io.StringIO('{}'))
+        assert main(argv) == 0
+        assert capsys.readouterr().out == ''
 
     def test_help_lists_every_hook(self, capsys):
         # argparse raises SystemExit(0) for `--help`, like every other command

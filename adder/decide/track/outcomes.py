@@ -21,15 +21,16 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime
 from pathlib import Path
+
+from adder.util.homepath import HomeDefault
+from adder.util.when import parse_iso
 
 # The built-in location. `log_path()` is what callers should use: it lets an
 # explicitly-configured `log` setting win, which this constant alone cannot,
 # because it is read once at import.
-DEFAULT_LOG = Path(
-    os.environ.get("ADDER_LOG", Path.home() / ".claude" / "adder-outcomes.jsonl")
-)
+_HOME_LOG = HomeDefault(".claude", "adder-outcomes.jsonl")
+DEFAULT_LOG = Path(os.environ.get("ADDER_LOG", _HOME_LOG.at_import))
 
 
 def log_path(log: Path | str | None = None) -> Path:
@@ -38,7 +39,7 @@ def log_path(log: Path | str | None = None) -> Path:
         return Path(log)
     from adder.core.settings import configured_path
 
-    return configured_path("log", DEFAULT_LOG)
+    return configured_path("log", _HOME_LOG.live(DEFAULT_LOG))
 
 # Beta(1,1) prior: with no evidence, p_fail = 0.5 (maximally cautious).
 PRIOR_FAIL = 1.0
@@ -109,7 +110,7 @@ def _coerce_ts(v: object) -> float | None:
         return float(v)
     if isinstance(v, str):
         try:
-            return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+            return parse_iso(v).timestamp()
         except ValueError:
             return None
     return None

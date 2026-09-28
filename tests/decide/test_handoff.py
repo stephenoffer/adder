@@ -243,3 +243,40 @@ class TestTheBudgetReadsTheConversation:
                             sidechain=True))
         assert handoff.budget(s, remaining=200).context > 100_000
         assert handoff.budget(s, remaining=200).model == "claude-opus-5"
+
+
+class TestHypotheticalFlags:
+    """Both flags were read by truthiness: `--remaining 0` became 300 and
+    `--context 0` fell through to the live session."""
+
+    def _run(self, capsys, *argv):
+        rc = handoff.main([*argv, "--model", "claude-opus-5"])
+        return rc, capsys.readouterr().out
+
+    def test_zero_remaining_is_zero_not_the_default(self, capsys):
+        rc, out = self._run(capsys, "--context", "500000", "--remaining", "0", "--json")
+        d = json.loads(out)
+        assert rc == 0 and d["remaining"] == 0 and d["budget_tokens"] == 0
+        assert d["viable"] is False
+
+    def test_a_zero_budget_says_do_not_restart(self, capsys):
+        rc, out = self._run(capsys, "--context", "500000", "--remaining", "0")
+        assert rc == 0 and "do not restart" in out
+        assert "carry up to 0 tokens" not in out
+
+    def test_zero_context_is_priced_not_replaced_by_the_live_session(self, capsys):
+        rc, out = self._run(capsys, "--context", "0", "--json")
+        d = json.loads(out)
+        assert rc == 0 and d["context"] == 0 and d["budget_tokens"] == 0
+
+    def test_the_default_horizon_still_applies_when_unset(self, capsys):
+        rc, out = self._run(capsys, "--context", "500000", "--json")
+        assert rc == 0 and json.loads(out)["remaining"] == handoff.HYPOTHETICAL_REMAINING
+
+    @pytest.mark.parametrize("flag,value", [("--remaining", "-5"), ("--context", "-1"),
+                                            ("--remaining", "nan")])
+    def test_negatives_are_rejected_at_the_flag(self, capsys, flag, value):
+        with pytest.raises(SystemExit) as exc:
+            handoff.main(["--context", "1000", flag, value])
+        assert exc.value.code == 2
+        assert "zero or more" in capsys.readouterr().err

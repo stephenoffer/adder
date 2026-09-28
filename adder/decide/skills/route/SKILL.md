@@ -1,18 +1,30 @@
 ---
 description: Pick the cheapest capable model and the cheapest place to run a task (inline vs delegated subagent), using a cache-aware cost model. Use when explicitly asked to route, delegate, or minimise cost for a specific task.
 argument-hint: [task description]
-allowed-tools: Bash(adder:*), Bash(./scripts/adder:*), Agent, Read, Grep, Glob
+allowed-tools: Bash(adder policy:*), Bash(adder outcomes record:*), Agent, Read, Grep, Glob
 disable-model-invocation: true
 ---
 
 # Route: $ARGUMENTS
 
-The recommendation below was computed locally before this prompt was assembled.
-It cost **zero model tokens**. Do not recompute or second-guess the arithmetic.
+## Get the plan
 
+Run this with the Bash tool, with the task between the two `ADDER_TASK` lines
+exactly as the user wrote it:
+
+```bash
+adder policy -- "$(cat <<'ADDER_TASK'
+the task, verbatim
+ADDER_TASK
+)"
 ```
-!`adder policy "$ARGUMENTS"`
-```
+
+The quoted heredoc is the point. The task is the user's own words, and words
+like `` `make clean` `` or `$(...)` inside double quotes are run by the shell,
+not passed along. That is why this is not pre-computed into the prompt: Claude
+Code inserts the arguments into a pre-run command unescaped. The arithmetic is
+done locally and costs no model tokens beyond this one call. Do not recompute
+or second-guess it.
 
 ## Act on it
 

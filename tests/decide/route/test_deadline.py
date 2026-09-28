@@ -212,3 +212,32 @@ class TestCli:
 
     def test_a_bad_horizon_is_a_usage_error(self, capsys, isolated_home):
         assert dl.main(["--horizon", "0"]) == 2
+
+
+class TestTheCheapPathFinishes:
+    """`round(1 * 0.34) == 0`: the last unit never arrived on the cheap path, so
+    a 500-step window with no stalls reported always-cheap missing every time."""
+
+    def test_a_stall_free_cheap_path_meets_a_long_deadline(self):
+        w = _w(horizon=500, stall_rate=0.0)
+        assert dl.evaluate(w, "cheap", trials=5).met_rate == 1.0
+
+    def test_a_stall_still_returns_nothing(self):
+        import random
+
+        w = _w(stall_rate=1.0)
+        assert dl._step_cheap(1, w, random.Random(0)) == 0
+
+    def test_a_zero_throughput_path_returns_nothing(self):
+        import random
+
+        w = _w(batch_throughput=0.0, stall_rate=0.0)
+        assert dl._step_cheap(5, w, random.Random(0)) == 0
+
+    def test_the_docstring_figures_are_what_the_code_produces(self):
+        """The module docstring quotes these; they are re-derived here so a
+        change to the simulation cannot leave the prose behind again."""
+        got = {o.policy: o for o in dl.compare(Workload(units=200, horizon=24))}
+        assert got["greedy"].cost_mean == pytest.approx(100.10, abs=0.005)
+        assert got["uniform"].cost_mean == pytest.approx(135.54, abs=0.005)
+        assert got["greedy"].met_rate == 1.0 and got["uniform"].met_rate == 1.0

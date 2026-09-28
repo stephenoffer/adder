@@ -139,7 +139,10 @@ class TestBest:
         assert cas.best(_setup(p_fail=0.3, false_negative=1.0)).name == "always strong"
 
     def test_an_infeasible_weak_model_falls_back_to_strong(self):
-        assert cas.best(_setup(ctx_tokens=100_000_000)).name == "always strong"
+        # 500K: over Haiku's window, inside Opus's. This used 100M, which no
+        # model holds -- and "always strong" was the answer only because that
+        # row was never feasibility-gated. See TestEveryRowIsFeasibilityGated.
+        assert cas.best(_setup(ctx_tokens=500_000)).name == "always strong"
 
 
 class TestBreakeven:
@@ -199,6 +202,18 @@ class TestReport:
 
     def test_it_reports_the_boundary(self):
         assert "cascade wins below" in cas.report(_setup())
+
+    def test_no_boundary_is_not_printed_as_zero(self):
+        """`breakeven_p_fail` returns 0.0 for "no boundary"; printed, it read
+        as "cascade wins below p_fail = 0%"."""
+        text = cas.report(_setup(ctx_tokens=500_000))      # over the weak window
+        assert "p_fail = 0%" not in text and "cannot run" in text
+
+    def test_a_long_basis_does_not_run_into_the_value(self):
+        text = cas.report(_setup(p_fail_basis="prior: the outcome log has too "
+                                              "little T0 history"))
+        line = next(ln for ln in text.splitlines() if "not measured" in ln)
+        assert "history)" in line and "history)20%" not in line
 
     def test_json_is_finite_and_complete(self):
         payload = cas.to_json(_setup())
@@ -292,3 +307,57 @@ class TestCarryIsPricedByTheProvider:
 
     def test_no_turns_left_means_no_carry(self):
         assert carry_cost(100_000, self._setup("claude-opus-5", remaining_turns=0)) == 0.0
+
+
+class TestEveryRowIsFeasibilityGated:
+    """`--context 1500000 --weak claude-sonnet-5` picked "always strong" on a
+    strong model that cannot hold 1.5M: only the cascade row was ever gated."""
+
+    def test_no_row_is_priced_when_neither_model_holds_the_context(self):
+        s = _setup(weak_model="claude-sonnet-5", ctx_tokens=1_500_000, p_fail=0.1)
+        rows = cas.strategies(s)
+        assert all(r.cost == cas.INFEASIBLE for r in rows)
+        assert cas.best(s).name == cas.NONE_FEASIBLE
+        assert cas.breakeven_p_fail(s) == 0.0
+
+    def test_the_report_and_json_say_none_is_feasible(self, capsys):
+        rc = cas.main(["--context", "1500000", "--weak", "claude-sonnet-5",
+                       "--p-fail", "0.1", "--json"])
+        assert rc == 0
+        d = json.loads(capsys.readouterr().out)
+        assert d["best"] == cas.NONE_FEASIBLE
+        assert all(r["cost_usd"] is None for r in d["strategies"])
+        s = _setup(weak_model="claude-sonnet-5", ctx_tokens=1_500_000)
+        assert "No strategy is feasible" in cas.report(s)
+
+    def test_a_cascade_needs_its_escalation_target_to_fit(self):
+        s = _setup(weak_model="claude-sonnet-5", strong_model=WEAK, ctx_tokens=500_000)
+        casc = next(r for r in cas.strategies(s) if r.name == "cascade")
+        assert casc.cost == cas.INFEASIBLE
+
+    def test_the_answer_counts_against_the_window(self):
+        from adder.pricing.registry import context_window
+
+        s = _setup(ctx_tokens=context_window(WEAK) - 100, est_out_tokens=1_200)
+        weak = next(r for r in cas.strategies(s) if r.name == "always weak")
+        assert weak.cost == cas.INFEASIBLE
+
+
+class TestTheCliPricesTheRetryAndLabelsThePrior:
+    def test_retry_overhead_is_the_routing_turn(self, capsys):
+        from adder.core import settings
+        from adder.decide.route.policy import routing_overhead
+
+        assert cas.main(["--p-fail", "0.2", "--context", "200000", "--json"]) == 0
+        d = json.loads(capsys.readouterr().out)
+        want = routing_overhead(200_000, settings.session_model())
+        assert d["setup"]["retry_overhead"] == pytest.approx(want) and want > 0
+
+    def test_an_empty_log_is_reported_as_a_prior(self, capsys):
+        """The 0.5 an empty outcome log returns was printed as "measured"."""
+        assert cas.main([]) == 0
+        out = capsys.readouterr().out
+        assert "measured p_fail" not in out and "prior" in out
+        assert cas.main(["--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["setup"]["p_fail_basis"].startswith(
+            "prior")

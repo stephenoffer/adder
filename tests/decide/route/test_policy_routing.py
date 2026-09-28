@@ -379,7 +379,7 @@ class TestLiveExpiryNotice:
                                 False, ts=f"2026-08-15T10:{i:02d}:00Z"))
         return s
 
-    def test_it_warns_inside_the_window(self):
+    def test_it_warns_inside_the_window(self, scheduled_intro):
         from datetime import date
 
         from adder.measure.session.live import render

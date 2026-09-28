@@ -269,6 +269,16 @@ class Step:
     # Folded into `write_cost` and scaled by admission, it was untouched by a
     # restart -- $624 of $8,747 here, 7% of the bill, credited to no lever.
     rebuild_cost: float = 0.0
+    # Of `read_cost`, the uncached input; the rest is cache reads. And this
+    # turn's own cache-read and cache-write rates, $/MTok. A different session
+    # model re-prices each part at its own rate. Scaling the whole input bill
+    # by the ratio of input rates is right only between models that read cache
+    # at the same fraction of input: Opus 5 -> Opus 5.5 reads go from 0.10x to
+    # 0.05x, and the swap priced them at 0.8 of what they were instead of 0.4,
+    # on the term that is four fifths of the bill.
+    uncached_cost: float = 0.0
+    read_rate: float = 0.0
+    write_rate: float = 0.0
 
     @property
     def tool_part(self) -> int:
@@ -319,7 +329,10 @@ def prepare(sessions, on: date | None = None,
                               t.output_cost(on),
                               t.context, adm[i], r.inp, r.out, t.model, t.ttl,
                               t.pricing_date(on), dup, side=bool(t.sidechain),
-                              own=min(adm[i], prev_out[i]), rebuild_cost=rebuilt))
+                              own=min(adm[i], prev_out[i]), rebuild_cost=rebuilt,
+                              uncached_cost=t.uncached_in * r.inp / M,
+                              read_rate=r.cache_read,
+                              write_rate=w_rate * M if w_rate else r.cache_write))
         out.append((start_ctx, floor_ctx, steps))
     return out
 
@@ -358,6 +371,27 @@ def cheapest_tier(read_tokens: int, summary_tokens: int, *, p_fail: float,
         if cost < best_cost:
             best, best_cost = tier, cost
     return best
+
+
+def swapped_input(st: Step, cheap: str, *, context_scale: float, kept_frac: float) -> float:
+    """This turn's input bill, as the regime leaves it, at `cheap`'s rates.
+
+    Each part at its own rate: uncached input at the input rate, carried
+    context at the cache-read rate, writes at the cache-write rate. A part
+    whose recorded rate is zero -- a free endpoint, or a turn recorded
+    before the rates were kept -- falls back to the input-rate ratio.
+    """
+    cr = Rates.for_model(cheap, ttl=st.ttl, on=st.on)
+    by_inp = cr.inp / st.inp if st.inp else 1.0
+
+    def ratio(new: float, old: float) -> float:
+        return new / old if old > 0 else by_inp
+
+    cached = max(0.0, st.read_cost - st.uncached_cost)
+    return (st.uncached_cost * context_scale * by_inp
+            + cached * context_scale * ratio(cr.cache_read, st.read_rate)
+            + (st.rebuild_cost * context_scale + st.write_cost * kept_frac)
+            * ratio(cr.cache_write, st.write_rate))
 
 
 def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHARE,
@@ -445,12 +479,17 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
                 ctx = float(max(start_ctx, floor_ctx) + handoff)
                 cost = reopen + handoff * Rates.for_model(
                     st.model, ttl=st.ttl, on=st.on).cache_write / M
-                if (cheap and cheap != st.model and st.inp > 0
+                if (cheap and cheap != st.model and not st.side and st.inp > 0
                         and fits(cheap, int(ctx))):
                     # `st.inp > 0`: the catalog carries free endpoints, and a
                     # recorded turn on one has an input rate of zero. Rescaling
-                    # by a ratio of rates divides by it.
-                    cost *= rate(cheap, st.on).inp / st.inp
+                    # by a ratio of rates divides by it. The opening is
+                    # re-priced part by part, like every other turn below.
+                    s0 = steps[0]
+                    cost = (swapped_input(s0, cheap, context_scale=1.0, kept_frac=1.0)
+                            if s0.model == st.model else reopen * rate(cheap, st.on).inp / st.inp)
+                    cost += handoff * Rates.for_model(cheap, ttl=st.ttl,
+                                                      on=st.on).cache_write / M
                 res.restart += cost
                 res.restarts += 1
 
@@ -557,13 +596,18 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
             # on the recorded accounting -- no cache rebuild, because there was
             # never a prefix on the expensive model to lose. It only applies to
             # turns the cheaper model could actually have held.
-            if (cheap and cheap != st.model and st.inp > 0 and st.out_rate > 0
+            # Main chain only: a subagent's turns run on the model its tier
+            # names, not the session's, and swapping them put Haiku subagent
+            # turns on Opus rates the moment the session model was Opus 5.5.
+            if (cheap and cheap != st.model and not st.side
+                    and st.inp > 0 and st.out_rate > 0
                     and fits(cheap, int(max(ctx, st.real_ctx)))):
                 # Both rates strictly positive: the substitution below is a
                 # ratio, and a turn recorded on a free endpoint (the catalog
                 # carries sixteen) has a rate of zero on one or both sides.
                 cr = rate(cheap, st.on)
-                res.main_input += in_cost * (cr.inp / st.inp)
+                res.main_input += swapped_input(st, cheap, context_scale=scale,
+                                                kept_frac=kept_frac)
                 res.main_out += out_cost * (cr.out / st.out_rate)
                 res.session_rework += regime.session_rework * (in_cost + out_cost)
                 res.reprised += 1

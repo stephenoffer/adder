@@ -35,6 +35,7 @@ from adder.pricing.registry import (
     provider_for,
     resolve,
 )
+from adder.util.render import money
 
 M = 1_000_000.0
 
@@ -143,10 +144,18 @@ def analyse(sessions, on: date | None = None) -> CacheReport:
             if not t.cache_write:
                 rep.missed_tokens += t.rebuilt
             rep.read_cost += t.cache_read * r.cache_read / M
-            rep.write_cost += t.cache_write * r.cache_write / M
-            rep.ttl_tokens[t.ttl] = rep.ttl_tokens.get(t.ttl, 0) + t.cache_write
-            rep.ttl_write_cost[t.ttl] = (rep.ttl_write_cost.get(t.ttl, 0.0)
-                                         + t.cache_write * r.cache_write / M)
+            rep.write_cost += t.cache_write_cost(on)
+            # A turn that wrote both TTLs is split between them, at each rate.
+            if t.cache_write_1h is None:
+                buckets = ((t.ttl, t.cache_write, t.cache_write * r.cache_write / M),)
+            else:
+                five, hour = t.write_split()
+                buckets = (("5m", five, five * t.rates(on, ttl="5m").cache_write / M),
+                           ("1h", hour, hour * t.rates(on, ttl="1h").cache_write / M))
+            for ttl, n, cost in buckets:
+                if n:
+                    rep.ttl_tokens[ttl] = rep.ttl_tokens.get(ttl, 0) + n
+                    rep.ttl_write_cost[ttl] = rep.ttl_write_cost.get(ttl, 0.0) + cost
 
         # Main chain and sidechain walked separately, and each skipped past its
         # OWN first turn. Walking the combined list made the boundary between
@@ -226,17 +235,17 @@ def ttl_recommendation(sessions, on: date | None = None) -> tuple[str, float, st
     if share_1h > 0.9:
         return "1h", 0.0, (
             f"{share_1h:.0%} of cache writes already use the 1h TTL. The remaining "
-            f"${beyond:,.0f} of expiry waste comes from gaps longer than an hour, "
+            f"{money(beyond)} of expiry waste comes from gaps longer than an hour, "
             f"which no TTL setting covers -- that is a session-boundary problem, "
             f"not a cache-configuration one")
     if net > 0:
         return "1h", net, (
-            f"{tokens_5m:,} tok are written at the 5m TTL and ${fixable:,.0f} of "
+            f"{tokens_5m:,} tok are written at the 5m TTL and {money(fixable)} of "
             f"rebuilds would have been covered by a 1h cache; the write premium "
-            f"adds ${extra_write:,.0f}, for a net ${net:,.0f}")
+            f"adds {money(extra_write)}, for a net {money(net)}")
     return "5m", -net, (
-        f"only ${fixable:,.0f} of rebuilds would be covered by a 1h cache, while "
-        f"its write premium would add ${extra_write:,.0f} -- keep the 5m default")
+        f"only {money(fixable)} of rebuilds would be covered by a 1h cache, while "
+        f"its write premium would add {money(extra_write)} -- keep the 5m default")
 
 
 def _models_in(sessions) -> list[str]:
@@ -315,9 +324,12 @@ def report(sessions, on: date | None = None) -> str:
     if not rep.n_turns:
         return "  No priced turns to analyse."
     lines = ["  Cache efficiency", ""]
-    lines.append(f"  cache reads   ${rep.read_cost:>9,.0f}   {rep.read_tokens:>14,} tok  "
+    # Dollars through `render.money`, not `,.0f`: whole dollars printed a $0.40
+    # recoverable rebuild as "$0", which reads as "nothing to fix" on exactly
+    # the small or new workload where the TTL advice is cheapest to act on.
+    lines.append(f"  cache reads   {money(rep.read_cost):>10}   {rep.read_tokens:>14,} tok  "
                  f"@{_read_label(sessions, on)}")
-    lines.append(f"  cache writes  ${rep.write_cost:>9,.0f}   {rep.write_tokens:>14,} tok  "
+    lines.append(f"  cache writes  {money(rep.write_cost):>10}   {rep.write_tokens:>14,} tok  "
                  f"@{_write_label(sessions, on)}")
     lines.append(f"  hit rate      {rep.hit_rate:>9.1%}   of cacheable input tokens served from cache")
     # Labels come from the data, not from Anthropic's menu. A workload with no
@@ -338,13 +350,13 @@ def report(sessions, on: date | None = None) -> str:
         lines.append("  No large cache rebuilds detected.")
         return "\n".join(lines)
 
-    lines.append(f"  {len(rep.misses):,} large rebuilds cost ${rep.waste:,.0f} over what a cache read would have:")
+    lines.append(f"  {len(rep.misses):,} large rebuilds cost {money(rep.waste)} over what a cache read would have:")
     lines.append(f"  {'cause':<34}{'turns':>7}{'wasted':>11}{'':>3}recoverable")
     for cause, (n, w) in rep.by_cause().items():
         rec = "yes" if cause in RECOVERABLE else "no"
-        lines.append(f"  {cause:<34}{n:>7,}{w:>10,.0f}{'':>4}{rec}")
+        lines.append(f"  {cause:<34}{n:>7,}{money(w):>10}{'':>4}{rec}")
     lines.append("")
-    lines.append(f"  Recoverable: ${rep.recoverable:,.0f}")
+    lines.append(f"  Recoverable: {money(rep.recoverable)}")
 
     ttl, _saving, why = ttl_recommendation(sessions, on)
     lines.append("")

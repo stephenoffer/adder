@@ -136,3 +136,26 @@ class TestOpeningFromSession:
         from adder.measure.window.prefix import Opening
 
         assert not Opening.from_session(Session("s", "p")).measured
+
+
+class TestTheFloorIsNotFreed:
+    """Neither a restart nor a compaction gets below the prompt the session
+    started with. Ignoring it priced a restart of a 12.5K context on a 10K floor
+    at $13 when about 500 tokens could be freed."""
+
+    def test_a_restart_frees_only_what_is_above_floor_and_handoff(self, report):
+        r = report(context=12_510, floor=10_010, expected_remaining=500, opening_cost=0.0)
+        floorless = report(context=12_510, floor=0, expected_remaining=500, opening_cost=0.0)
+        assert r.restart_net() < floorless.restart_net() / 10
+        at_floor = report(context=10_000, floor=10_000, opening_cost=0.0)
+        assert at_floor.restart_net() == 0.0
+
+    def test_a_compaction_cannot_shrink_below_the_floor(self, report):
+        r = report(context=12_510, floor=12_000, expected_remaining=500)
+        assert r.compaction_net() < report(context=12_510, floor=0,
+                                           expected_remaining=500).compaction_net()
+        assert report(context=10_000, floor=10_000).compaction_net() <= 0
+
+    def test_analyse_carries_the_sessions_floor(self, make_session):
+        s = make_session(30, base=20_000, growth=2_000)
+        assert live.analyse(s).floor == s.base_context > 0

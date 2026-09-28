@@ -35,6 +35,7 @@ import json
 from dataclasses import dataclass
 from datetime import date
 
+from adder.core.filters import day_of
 from adder.core.trace import Session, Turn, project_name
 
 # Robust-z above which a turn is worth naming. 3.5 on a MAD scale is roughly
@@ -119,6 +120,9 @@ class Report:
     sessions: list[Finding]
     total: float
     n_turns: int
+    # The threshold the turns were judged at, so the report says the one used
+    # rather than the default: `--z 5` found nothing and printed "more than 3.5".
+    turn_z: float = TURN_Z
 
     @property
     def flagged_cost(self) -> float:
@@ -216,7 +220,7 @@ def scan(sessions: dict[str, Session], *, on: date | None = None,
     # `by cause` tally computed over the top 6 rows describes the top 6 rows,
     # not the workload, and reads as though it described the workload.
     return Report(turns=turn_findings, sessions=session_findings,
-                  total=total, n_turns=len(costs), median_turn=med)
+                  total=total, n_turns=len(costs), median_turn=med, turn_z=turn_z)
 
 
 def report(rep: Report, *, top: int = 20) -> str:
@@ -228,15 +232,16 @@ def report(rep: Report, *, top: int = 20) -> str:
 
     if not rep.turns:
         lines.append("  No turn stands out: spend is spread evenly enough that no")
-        lines.append("  single turn is more than 3.5 robust deviations above the median.")
+        lines.append(f"  single turn is more than {rep.turn_z:g} robust deviations above "
+                     "the median.")
     else:
         shown = rep.turns[:top]
         lines.append(f"  {len(rep.turns):,} unusual turns, "
                      f"{money(rep.excess)} of which is above the median turn"
                      f"{f' (showing {len(shown)})' if len(shown) < len(rep.turns) else ''}:")
         lines.append("")
-        rows = [[f.key, f.when[:10], project_name(f.project)[:24], money(f.cost),
-                 f"{f.z:.0f}x", f.cause] for f in shown]
+        rows = [[f.key, _day(f.when), project_name(f.project)[:24], money(f.cost),
+                 f"{f.z:.1f}", f.cause] for f in shown]
         lines += table(rows, ["turn", "date", "project", "cost", "z", "cause"],
                        align="<<<>><")
         lines.append("")
@@ -250,8 +255,8 @@ def report(rep: Report, *, top: int = 20) -> str:
     if rep.sessions:
         lines.append("")
         lines.append("  Sessions whose cost per turn is out of line:")
-        rows = [[f.key, f.when[:10], project_name(f.project)[:28], money(f.cost), f"{f.z:.0f}x"]
-                for f in rep.sessions[:8]]
+        rows = [[f.key, _day(f.when), project_name(f.project)[:28], money(f.cost),
+                 f"{f.z:.1f}"] for f in rep.sessions[:8]]
         lines += table(rows, ["session", "date", "project", "cost", "z"],
                        align="<<<>>")
         lines.append("    A high cost per turn is a context-size problem, not a")
@@ -259,19 +264,30 @@ def report(rep: Report, *, top: int = 20) -> str:
     return "\n".join(lines)
 
 
+def _day(when: str) -> str:
+    """The local day of a finding, the way `sessions` and `export` file it.
+
+    Was `when[:10]`, the UTC date off the ISO string, so an evening turn west
+    of Greenwich was listed a day later here than in every other report.
+    """
+    d = day_of(when)
+    return d.isoformat() if d else "—"
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     from adder.core.filters import add_arguments as add_window
     from adder.core.filters import load as load_window
+    from adder.measure.argtypes import positive_float, positive_int
 
     ap = argparse.ArgumentParser(
         prog="adder anomaly",
         description="Find the turns and sessions that cost far more than the rest.")
     add_window(ap)
-    ap.add_argument("--z", type=float, default=TURN_Z, metavar="N",
+    ap.add_argument("--z", type=positive_float, default=TURN_Z, metavar="N",
                     help="robust-z threshold for a turn (default: %(default)s)")
-    ap.add_argument("--top", type=int, default=20, metavar="N",
+    ap.add_argument("--top", type=positive_int, default=20, metavar="N",
                     help="rows to show (default: %(default)s)")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)

@@ -148,3 +148,18 @@ class TestTheTTLReasonIsTrue:
         ttl, _, why = choose_ttl(100_000, OPUS, turns=10, gap_seconds=600)
         assert ttl == "1h"
         assert "expires every turn" in why
+
+
+class TestReportMoney:
+    """`,.0f` printed a sub-dollar read cost as "$0", which reads as nothing."""
+
+    def test_sub_dollar_costs_do_not_print_as_zero(self, make_sessions):
+        from adder.measure.window.cache import report
+        from adder.util.render import money
+
+        sessions = make_sessions(n=1, n_turns=3)
+        rep = analyse(sessions)
+        assert 0 < rep.read_cost < 1
+        text = report(sessions)
+        assert money(rep.read_cost) in text
+        assert "$0 " not in text

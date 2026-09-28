@@ -59,7 +59,7 @@ from adder.core.filters import root_of as _root_of
 from adder.core.trace import COMPACT_MAX_SURVIVAL as _COMPACT_MAX_SURVIVAL
 from adder.core.trace import COMPACT_TRIGGER_FRACTION as _COMPACT_TRIGGER_FRACTION
 from adder.core.trace import is_compaction
-from adder.pricing.cost import Rates
+from adder.pricing.cost import OPENING_BRIEF_TOKENS, SUBAGENT_OPENING_TOKENS, Rates
 from adder.pricing.prices import CACHE_READ_MULT
 from adder.pricing.registry import provider_for
 
@@ -116,8 +116,14 @@ class Carry:
     survival: float = DEFAULT_SURVIVAL
     compact_every: int = DEFAULT_COMPACT_EVERY
     context_limit: int = 0               # observed compaction trigger, 0 if none
-    sessions: int = 0
+    sessions: int = 0                    # sessions long enough to fit from
     source: str = "prior"
+    # Every session on record, and the length a fit needs. A prior reached
+    # from an empty directory and one reached from a directory of short
+    # sessions are different answers to "why is this not measured", and
+    # `describe` used to give the first for both.
+    observed: int = 0
+    min_turns: int = 20
 
     @property
     def measured(self) -> bool:
@@ -197,7 +203,10 @@ class Carry:
 
     def describe(self) -> str:
         if not self.measured:
-            return ("carry model: prior (no local transcripts); assuming the "
+            why = ("prior (no local transcripts)" if not self.observed else
+                   f"prior, too few sessions (n={self.sessions} of {self.observed}, "
+                   f"need >={MIN_SESSIONS} of >={self.min_turns} turns)")
+            return (f"carry model: {why}; assuming the "
                     f"{self.baseline_read_mult:.2f}x re-read multiplier and no "
                     "compaction")
         comp = (f"compacts every ~{self.compact_every} turns keeping "
@@ -216,7 +225,7 @@ class Carry:
         """Fit the carry parameters to recorded transcripts."""
         rows = [s for s in sessions.values() if len(s.turns) >= min_turns]
         if len(rows) < MIN_SESSIONS:
-            return cls.default()
+            return cls(sessions=len(rows), observed=len(sessions), min_turns=min_turns)
 
         mult = measured_read_mult(sessions, min_turns=min_turns)
         growth, survival, period, trigger = _context_dynamics(rows)
@@ -229,6 +238,8 @@ class Carry:
             context_limit=trigger,
             sessions=len(rows),
             source="measured",
+            observed=len(sessions),
+            min_turns=min_turns,
         )
 
 
@@ -503,19 +514,24 @@ def delegate_threshold(
     Both sides are affine in the read size `x`:
 
         inline(x) = x * r_m * (w + m*E)
-        deleg(x)  = (b + x) * r_s + p*x*r_s_out
+        deleg(x)  = O * r_s * (w_s + m_s) + x * r_s * w_s + p*x*r_s_out
                     + p*x * r_m * (w + m*E)
-                    + p_redo * (x*r_m*(w + m*E) + redo_overhead)
+                    + D + p_redo * (x*r_m*(w + m*E) + D)
 
-    so the break-even is one division rather than a search. Returns `inf` when
+    where `O` is the subagent's opening (`cost.SUBAGENT_OPENING_TOKENS`, which
+    holds the brief) and `D` the main-context turn that dispatches it, taken to
+    be `redo_overhead` -- the same re-read of the same context. So the
+    break-even is one division rather than a search. Returns `inf` when
     delegation never pays -- which happens, and saying so is more useful than
     quoting a threshold nobody will reach.
 
     The reason a threshold is worth having at all, when `policy.decide` can
-    answer the same question per task: applying a threshold costs nothing. There
-    is no routing turn, so there is no overhead to clear, so the advice is
-    cheaper than not taking it by construction. Every other recommendation in
-    this repo has to earn back the turn spent producing it.
+    answer the same question per task: applying one needs no routing turn to
+    decide it. Carrying it out still takes a turn -- the one that issues the
+    Agent call -- and this used to price that at zero along with the subagent's
+    own opening, charging a delegation 400 tokens of brief at the subagent's
+    input rate. It solved to ~400 tokens, a size at which the opening alone
+    costs more than the carry avoided.
     """
     c = carry or Carry.default()
     rm = Rates.for_model(main_model, ttl=ttl, on=on)
@@ -528,17 +544,20 @@ def delegate_threshold(
 
     # Coefficient of x on each side.
     inline_slope = admit
-    deleg_slope = rs.inp / M + p * rs.out / M + p * admit + p_redo * admit
+    deleg_slope = rs.cache_write / M + p * rs.out / M + p * admit + p_redo * admit
     gain = inline_slope - deleg_slope
-    fixed = brief_tokens * rs.inp / M + p_redo * redo_overhead
+    opening = SUBAGENT_OPENING_TOKENS + max(0, brief_tokens - OPENING_BRIEF_TOKENS)
+    fixed = (opening * (rs.cache_write + rs.cache_read) / M
+             + (1.0 + p_redo) * redo_overhead)
     if gain <= 0:
         return float("inf"), (
             "delegation never pays at this horizon: the summary plus the "
             "subagent's own read costs at least as much per token as keeping "
             "the read inline")
     x = fixed / gain
-    return x, (f"delegate reads over ~{x:,.0f} tok: below that the {brief_tokens:,}-token "
-               f"brief and the summary cost more than the {E:,.0f} re-reads they avoid")
+    return x, (f"delegate reads over ~{x:,.0f} tok: below that the subagent's "
+               f"{opening:,}-token opening, the turn that dispatches it and the "
+               f"summary cost more than the {E:,.0f} re-reads they avoid")
 
 
 def _threshold_json(c: Carry, model: str, remaining: int, p_redo: float,
@@ -556,7 +575,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     from adder.core.trace import load_sessions
-    from adder.measure.session.horizon import load as load_horizon
+    from adder.measure.session.horizon import Horizon
 
     ap = argparse.ArgumentParser(
         prog="adder carry",
@@ -577,9 +596,12 @@ def main(argv: list[str] | None = None) -> int:
     # about which transcript directory `adder config` names.
     a.root = str(_root_of(a))
 
-    sessions = load_sessions(Path(a.root))
+    # Fitted from the sessions already loaded, not through `horizon.load`: that
+    # is the hooks' cached entry point and it writes `.adder-horizon.json`,
+    # which a read-only report may not do (CLAUDE.md rule 4).
+    sessions = load_sessions(Path(a.root), use_cache=bool(_settings.get("cache")))
     c = Carry.measure(sessions)
-    h = load_horizon(a.root)
+    h = Horizon.from_sessions(sessions)
     remaining = a.remaining if a.remaining is not None else int(h.mean_remaining(0))
     rates = Rates.for_model(a.model)
     r = rates.inp
@@ -628,9 +650,16 @@ def main(argv: list[str] | None = None) -> int:
         print("  the median only describes it. Using the median under-prices "
               "admission.")
     else:
-        have = f"{len(h.lengths)} session{'s' if len(h.lengths) != 1 else ''}"
-        print(f"  ⚠ Horizon is the shipped flat {remaining}-turn prior, not yours "
-              f"({have} on record).")
+        # Counted against everything on record, not the lengths that passed
+        # the horizon's own filter, which read "0 sessions on record" for a
+        # directory that held sessions too short to count.
+        from adder.measure.session.horizon import MIN_SAMPLES, MIN_TURNS
+
+        have = (f"too few sessions (n={len(h.lengths)} of {len(sessions)}, "
+                f"need >={MIN_SAMPLES} of >={MIN_TURNS} turns)" if sessions
+                else "no local transcripts")
+        print(f"  ⚠ Horizon is the shipped flat {remaining}-turn prior, not yours: "
+              f"{have}.")
         print("  Every dollar below is linear in that number, so read them as "
               "relative, not absolute,")
         print("  until more sessions accumulate (`adder horizon`).")
@@ -673,8 +702,8 @@ def main(argv: list[str] | None = None) -> int:
                                       context_tokens=a.context)
             shown = "never pays" if x == float("inf") else f"{x:,.0f} tok"
             print(f"    {brief:>10,}{p:>9.0%}{shown:>14}")
-    print("    A threshold is the only advice here that is free to apply: no routing")
-    print("    turn to pay for, so it cannot cost more than not asking.")
+    print("    A threshold needs no routing turn to decide it, but carrying one out")
+    print("    still takes the turn that dispatches the subagent; both are priced above.")
     print()
     return 0
 

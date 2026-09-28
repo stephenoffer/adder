@@ -103,6 +103,9 @@ class Opening:
     openings: int = 0
     warm_openings: int = 0
     source: str = "prior"
+    # Sessions on record, for `describe`: a prior fitted from nothing and one
+    # fitted from too few qualifying openings are not the same finding.
+    observed: int = 0
 
     @property
     def measured(self) -> bool:
@@ -142,7 +145,11 @@ class Opening:
 
     def describe(self) -> str:
         if not self.measured:
-            return ("opening model: prior (no local transcripts); assuming a cold "
+            why = ("prior (no local transcripts)" if not self.observed else
+                   f"prior, too few sessions (n={self.openings} of {self.observed} opened "
+                   f"within {DEFAULT_WITHIN:.0f}s of a prior turn, need "
+                   f">={MIN_OPENINGS})")
+            return (f"opening model: {why}; assuming a cold "
                     f"{self.floor_tokens:,}-token rebuild on every restart")
         return (f"opening model from {self.openings} session openings: "
                 f"{self.floor_tokens:,} tok, {self.warm_share:.0%} served from "
@@ -255,7 +262,7 @@ def measure(sessions, *, within: float = DEFAULT_WITHIN,
             warm += 1
 
     if len(rows) < MIN_OPENINGS:
-        return Opening.default()
+        return Opening(openings=len(rows), observed=len(sessions))
 
     floor = int(_median([t.context for t in rows]))
     # Shares, not medians, for the split: three independently-taken medians do
@@ -272,6 +279,7 @@ def measure(sessions, *, within: float = DEFAULT_WITHIN,
         openings=len(rows),
         warm_openings=warm,
         source="measured",
+        observed=len(sessions),
     )
 
 
@@ -385,14 +393,16 @@ def report(root: Path | str = DEFAULT_ROOT, *, model: str | None = None,
     from adder.measure.window.carry import Carry
 
     model = model or _settings.session_model()
-    sessions = load_sessions(root, use_cache=True)
+    sessions = load_sessions(root)
     op = measure(sessions)
     carry = Carry.measure(sessions)
 
     lines = ["  The shared prefix", "", f"  {op.describe()}", ""]
     if not op.measured:
         lines.append("  Nothing below is measured. Point this at a transcript "
-                     "directory to fit it.")
+                     "directory to fit it." if not op.observed else
+                     "  Nothing below is measured: this history has too few "
+                     "qualifying openings to fit.")
         return "\n".join(lines)
 
     lines.append(f"  opening context   {op.floor_tokens:>10,} tok")

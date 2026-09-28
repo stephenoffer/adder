@@ -63,6 +63,7 @@ from pathlib import Path
 
 from adder.core.filters import root_of as _root_of
 from adder.core.trace import DEFAULT_ROOT, load_sessions, transcripts
+from adder.measure.argtypes import positive_int
 from adder.util import render
 from adder.util.records import mapping
 from adder.util.stats import bootstrap_ci, mean, median, quantile, share
@@ -479,7 +480,7 @@ def report(root: Path | str = DEFAULT_ROOT, *, window=None, sessions=None,
     fan = fan_out(sc)
     st = steerability(sc)
     if sessions is None:
-        sessions = load_sessions(root, use_cache=True)
+        sessions = load_sessions(root)
     dollars = redundancy_cost(rep, sessions, on)
 
     out: list[str] = []
@@ -562,7 +563,7 @@ def to_json(root: Path | str = DEFAULT_ROOT, *, window=None, sessions=None,
     fan = fan_out(sc)
     st = steerability(sc)
     if sessions is None:
-        sessions = load_sessions(root, use_cache=True)
+        sessions = load_sessions(root)
     return {
         "probes": sc.n,
         "transcripts": sc.files,
@@ -598,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Characterise agent sessions as search: scale, mix, "
                     "redundancy, and how much a hint is worth.",
     )
-    ap.add_argument("--top", type=int, default=8,
+    ap.add_argument("--top", type=positive_int, default=8,
                     help="how many repeated probes to name (default 8)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     filters.add_arguments(ap)

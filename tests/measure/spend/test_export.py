@@ -136,18 +136,24 @@ class TestPrivacy:
 
 
 class TestWriting:
-    def _root(self, write_jsonl):
+    def _root(self, write_jsonl, tmp_path):
+        # Transcripts in their own subdirectory. They used to be written to
+        # `tmp_path` itself, with the export landing beside them -- inside the
+        # transcript root, which is the destination `export` now refuses
+        # (see test_export_guard.py). The assertions below are unchanged; only
+        # the layout moved so the output is outside the root it reads.
         return write_jsonl([
             {"type": "assistant", "sessionId": "s",
              "timestamp": "2026-08-01T10:00:00Z",
              "message": {"id": "m1", "model": "claude-opus-5",
                          "usage": {"input_tokens": 1, "cache_read_input_tokens": 900,
-                                   "output_tokens": 10}, "content": []}}])
+                                   "output_tokens": 10}, "content": []}}],
+            into=tmp_path / "transcripts")
 
     def test_writes_to_a_named_file(self, write_jsonl, tmp_path):
         from adder.measure.spend.export import main
 
-        root = self._root(write_jsonl)
+        root = self._root(write_jsonl, tmp_path)
         dest = tmp_path / "out" / "turns.csv"
         assert main([str(root), "-o", str(dest)]) == 0
         assert dest.read_text().startswith("timestamp,")
@@ -155,7 +161,7 @@ class TestWriting:
     def test_refuses_to_overwrite_without_force(self, write_jsonl, tmp_path, capsys):
         from adder.measure.spend.export import main
 
-        root = self._root(write_jsonl)
+        root = self._root(write_jsonl, tmp_path)
         dest = tmp_path / "taken.csv"
         dest.write_text("mine")
         assert main([str(root), "-o", str(dest)]) == 1
@@ -165,7 +171,7 @@ class TestWriting:
     def test_force_replaces(self, write_jsonl, tmp_path):
         from adder.measure.spend.export import main
 
-        root = self._root(write_jsonl)
+        root = self._root(write_jsonl, tmp_path)
         dest = tmp_path / "taken.csv"
         dest.write_text("mine")
         assert main([str(root), "-o", str(dest), "--force"]) == 0

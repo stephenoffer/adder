@@ -243,3 +243,65 @@ class TestTheWeightedMedianIsIndexedOnTheMainChain:
         from adder.measure.window.prefix import weighted_median_turns
 
         assert weighted_median_turns(make_sessions(3, 40)) == 40
+
+
+# --- read-only reports and the `cache` setting ------------------------------
+# Counted as files under an isolated HOME, so the test asserts what a user
+# would see on disk rather than which argument reached the reader.
+
+def _write_corpus(root, *, sessions: int = 2, turns: int = 3) -> None:
+    import json
+
+    for s in range(sessions):
+        lines = [{
+            "type": "assistant", "sessionId": f"s{s}",
+            "timestamp": f"2026-08-0{s + 1}T10:{i:02d}:00Z",
+            "message": {"id": f"m{s}-{i}", "model": "claude-opus-5",
+                        "usage": {"input_tokens": 5,
+                                  "cache_read_input_tokens": 1_000 * (i + 1),
+                                  "output_tokens": 50},
+                        "content": []}} for i in range(turns)]
+        d = root / f"-w-{s}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"s{s}.jsonl").write_text("\n".join(json.dumps(r) for r in lines))
+
+
+def _written(home) -> set[str]:
+    return {p.name for p in home.rglob("*") if p.is_file()} - {"adder.json"}
+
+
+def _cache(home, on: bool) -> None:
+    import json
+
+    (home / "adder.json").write_text(json.dumps({"cache": on}))
+
+
+class TestPrefixHonoursTheCacheSetting:
+    """`report` passed `use_cache=True` outright, so `cache: false` did nothing."""
+
+    def test_cache_false_leaves_no_parse_cache(self, isolated_home, tmp_path, capsys):
+        from adder.measure.window.prefix import main
+
+        _write_corpus(tmp_path / "t")
+        _cache(isolated_home, False)
+        assert main([str(tmp_path / "t")]) == 0
+        assert not any("trace-cache" in n for n in _written(isolated_home))
+
+    def test_cache_true_still_uses_it(self, isolated_home, tmp_path, capsys):
+        """The control: without it the test above passes on a report that never
+        reads a transcript at all."""
+        from adder.measure.window.prefix import main
+
+        _write_corpus(tmp_path / "t")
+        _cache(isolated_home, True)
+        assert main([str(tmp_path / "t")]) == 0
+        assert any("trace-cache" in n for n in _written(isolated_home))
+
+
+class TestPrefixSaysWhyItIsThePrior:
+    def test_short_sessions_are_not_called_missing(self, make_sessions):
+        few = measure(make_sessions(n=2, n_turns=5))
+        assert not few.measured
+        assert "too few sessions (n=0 of 2 opened within 300s" in few.describe()
+        assert "need >=5" in few.describe()
+        assert "no local transcripts" in measure({}).describe()

@@ -17,7 +17,7 @@ from datetime import date
 from pathlib import Path
 
 from adder.core import settings as _settings
-from adder.core.trace import DEFAULT_ROOT, Session, iter_file
+from adder.core.trace import DEFAULT_ROOT, Session, default_root, iter_file
 from adder.measure.session.horizon import Horizon
 from adder.measure.session.horizon import load as load_horizon
 from adder.measure.spend.debt import debt_multiple
@@ -73,6 +73,8 @@ def slug_for(cwd: Path | str | None = None) -> str:
 def find_project_dir(cwd: Path | str | None = None, root: Path | str = DEFAULT_ROOT) -> Path | None:
     """Locate the transcript directory, falling back to a case-insensitive match."""
     root = Path(root).expanduser()
+    if root == Path(DEFAULT_ROOT):
+        root = default_root()           # the default argument, as of now
     exact = root / slug_for(cwd)
     if exact.is_dir():
         return exact
@@ -84,13 +86,38 @@ def find_project_dir(cwd: Path | str | None = None, root: Path | str = DEFAULT_R
 
 
 def current_transcript(cwd: Path | str | None = None,
-                       root: Path | str = DEFAULT_ROOT) -> Path | None:
+                       root: Path | str = DEFAULT_ROOT, *,
+                       transcript: Path | str | None = None) -> Path | None:
     """The file this session is being written to, if there is one.
 
     Split out of `current_session` because two callers need the path itself:
     the re-read check reads the tool results out of it, and a hook that wants
     to watch the session needs something to stat.
+
+    `transcript` is the path the harness says it is writing, and when it names
+    a file it is the answer. Every hook payload carries one. Guessing from the
+    directory instead picks the *newest* transcript in the project, which with
+    two sessions open in one repository -- the normal case -- is the other
+    session half the time: a 25-turn session was told it had spent $287 over
+    300 turns, and the guard's quote for the same Read moved with whichever
+    session wrote last. The guess also failed outright from a subdirectory,
+    whose slug names no project at all.
     """
+    found = _current(cwd, root, transcript)
+    return found[0] if found else None
+
+
+def _current(cwd, root, transcript) -> tuple[Path, list] | None:
+    """The transcript and its turns, parsed once.
+
+    Choosing the newest file with any priced turns meant parsing it, and then
+    `current_session` parsed it again: twice per priced hook call, on a file
+    that is routinely tens of megabytes.
+    """
+    if transcript:
+        given = Path(transcript).expanduser()
+        if given.suffix == ".jsonl" and given.is_file():
+            return given, list(iter_file(given))
     d = find_project_dir(cwd, root)
     if d is None:
         return None
@@ -107,23 +134,26 @@ def current_transcript(cwd: Path | str | None = None,
             continue
     files = [f for _, f in sorted(stamped, key=lambda kv: kv[0], reverse=True)]
     for newest in files[:3]:          # skip empty/unpriced files, don't merge them
-        if any(True for _ in iter_file(newest)):
-            return newest
+        turns = list(iter_file(newest))
+        if turns:
+            return newest, turns
     return None
 
 
-def current_session(cwd: Path | str | None = None, root: Path | str = DEFAULT_ROOT) -> Session | None:
-    """Most recently modified transcript for this working directory.
+def current_session(cwd: Path | str | None = None, root: Path | str = DEFAULT_ROOT, *,
+                    transcript: Path | str | None = None) -> Session | None:
+    """The named transcript, else the most recently modified one for `cwd`.
 
     Reads only that one file. An earlier version fell back to parsing every
     transcript in the directory and treating the union as one session, which
     reported the sum of unrelated conversations as "this session".
     """
-    newest = current_transcript(cwd, root)
-    if newest is None:
+    found = _current(cwd, root, transcript)
+    if found is None:
         return None
+    newest, turns = found
     s = Session(newest.stem, newest.parent.name)
-    s.turns = list(iter_file(newest))
+    s.turns = turns
     return s if s.turns else None
 
 
@@ -159,6 +189,10 @@ class LiveReport:
     # What this session's own opening cost, so "restart" can be priced from an
     # observation rather than from a global prior.
     opening_cost: float = 0.0
+    # The smallest context this session ever had: system prompt, tools,
+    # CLAUDE.md. Neither a restart nor a compaction gets below it, because the
+    # next turn re-reads it either way.
+    floor: int = 0
 
     @property
     def carry_turns(self) -> float:
@@ -199,9 +233,13 @@ class LiveReport:
         which is the only moment the decision is still available.
         """
         rr = Rates.for_model(self.model, ttl=self.ttl, on=on)
-        freed = self.context * (1.0 - kept)
+        # A summary cannot be smaller than the prompt it sits under. Keeping
+        # `kept` of a context barely above its floor priced 65% of it as freed
+        # when almost nothing could be.
+        after = min(self.context, max(self.floor, self.context * kept))
+        freed = self.context - after
         saving = freed * rr.inp * self.read_mult * self.carry_turns / M
-        rebuild = self.context * kept * rr.cache_write / M
+        rebuild = after * rr.cache_write / M
         return saving - rebuild
 
     def restart_net(self, *, handoff_tokens: int = 2_000,
@@ -213,7 +251,10 @@ class LiveReport:
         this session already measured on its first turn.
         """
         r = rate(self.model, on).inp
-        keep = min(self.context, handoff_tokens)
+        # The fresh session re-reads its own floor every turn as well as the
+        # handoff. Counting only the handoff called a 12.5K context with a 10K
+        # floor worth $13 to restart, when 500 tokens were all it could free.
+        keep = min(self.context, self.floor + handoff_tokens)
         freed = max(0, self.context - keep)
         saving = freed * r * self.read_mult * self.carry_turns / M
         return saving - self.opening_cost
@@ -304,6 +345,7 @@ def analyse(sess: Session, *, horizon: Horizon | None = None) -> LiveReport:
         read_mult=mult,
         opening_cost=Opening.from_session(sess).cost(
             last.model, ttl=last.ttl, handoff_tokens=2_000),
+        floor=sess.base_context,
     )
 
 

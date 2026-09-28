@@ -158,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from adder.core.filters import add_arguments as add_window
     from adder.core.filters import load as load_window
+    from adder.measure.argtypes import positive_int
 
     ap = argparse.ArgumentParser(
         prog="adder sessions",
@@ -165,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     add_window(ap)
     ap.add_argument("--sort", choices=SORTS, default="cost",
                     help="ranking key (default: %(default)s)")
-    ap.add_argument("--top", type=int, default=20, metavar="N",
+    ap.add_argument("--top", type=positive_int, default=20, metavar="N",
                     help="rows to show (default: %(default)s)")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)
@@ -175,6 +176,15 @@ def main(argv: list[str] | None = None) -> int:
     a.root = str(_root_of(a))
 
     sessions, window = load_window(a)
+    if not sessions and a.json:
+        # JSON even when there is nothing to rank. `--json` printed the prose
+        # "nothing found" block on an empty root, so a script piping it into a
+        # parser failed on the one input it most needs to handle. Same shape
+        # as a full answer, plus the `error` field `trace --json` uses.
+        print(json.dumps({"error": "no sessions", "root": a.root,
+                          "filter": window.describe(), "sessions": 0,
+                          "total": 0.0, "sort": a.sort, "rows": []}))
+        return 1
     if not sessions:
         from adder.core.trace import unread_count
         from adder.util.render import nothing_found

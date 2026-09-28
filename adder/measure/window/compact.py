@@ -58,6 +58,7 @@ from datetime import date
 from adder.core import settings as _settings
 from adder.core.filters import root_of as _root_of
 from adder.core.trace import project_name
+from adder.measure.argtypes import positive_int
 from adder.pricing.cost import Rates
 from adder.pricing.registry import context_window, rate
 
@@ -520,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
         description="What each compaction cost, what it bought, and the turn "
                     "count above which compacting pays for itself.")
     add_window(ap)
-    ap.add_argument("--top", type=int, default=10, metavar="N",
+    ap.add_argument("--top", type=positive_int, default=10, metavar="N",
                     help="rows per section (default: %(default)s)")
     ap.add_argument("--vs-restart", type=int, default=0, metavar="TOK",
                     help="at this context, compare compacting with a fresh session")

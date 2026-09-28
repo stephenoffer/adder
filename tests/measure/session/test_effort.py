@@ -138,3 +138,33 @@ class TestCli:
                                   "usage": {"input_tokens": 1,
                                             "output_tokens": 100}, "content": []}}])
         assert next(iter_file(tmp_path / "s.jsonl")).effort == "xhigh"
+
+
+class TestStepDownProvenance:
+    """The step-down table printed every row alike under a report headed "what
+    was measured", while `multipliers()` fills each unfitted level with its
+    prior. A step is measured only when both of its ends were fitted."""
+
+    def test_rows_with_a_prior_end_are_labelled_modelled(self, make_turn):
+        sessions = _sess(make_turn, {"high": (MIN_TURNS, 1000),
+                                     "medium": (MIN_TURNS, 600)})
+        text = report(fit(sessions), sessions=sessions)
+        rows = {line.split("  ")[1].strip(): line for line in text.splitlines()
+                if "→" in line and "$" in line}
+        assert rows["high → medium"].rstrip().endswith("measured")
+        for step in ("max → xhigh", "xhigh → high", "medium → low"):
+            assert "MODELLED" in rows[step], step
+
+
+class TestModelFlag:
+    def test_unknown_model_is_rejected_like_carry_does(self, tmp_path):
+        """`--model` only priced a table skipped on unlabelled history, so a typo
+        was accepted and ignored. Resolved up front, it raises the error the
+        dispatcher turns into exit status 2."""
+        import pytest
+
+        from adder.measure.session.effort import main
+        from adder.pricing.registry import UnknownModelError
+
+        with pytest.raises(UnknownModelError):
+            main([str(tmp_path), "--model", "bogus-model-x"])

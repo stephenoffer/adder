@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from adder.util.render import (
+    UNKNOWN,
     bar,
     bullet,
     clip_path,
@@ -227,3 +228,44 @@ class TestClipPath:
     def test_a_tool_prefix_survives(self):
         got = clip_path("Read:/Users/me/proj/deep/dir/tree/leaf/file.md", 30, home="/Users/me")
         assert got.startswith("Read:") and got.endswith("/file.md") and len(got) <= 30
+
+    @pytest.mark.parametrize("width", range(12))
+    def test_a_prefix_longer_than_the_width_never_overruns(self, width):
+        """`max(1, ...)` for the rest, then `kept[-0:]`, returned the whole path."""
+        got = clip_path("LongToolName:/a/b/c/file.py", width, home="")
+        assert len(got) <= width
+
+    def test_width_one_is_the_ellipsis(self):
+        assert clip_path("/a/b/c/file.py", 1, home="") == "…"
+
+
+class TestNotANumber:
+    """NaN printed `$0.00` (free) and a full bar; infinity printed `$inf`."""
+
+    @pytest.mark.parametrize("x", [float("nan"), float("inf")])
+    def test_pct_says_unknown_not_nan_percent(self, x):
+        from adder.util.render import pct
+
+        assert pct(x) == UNKNOWN and pct(x, width=6) == UNKNOWN.rjust(6)
+
+    @pytest.mark.parametrize("x", [float("nan"), float("inf"), float("-inf")])
+    def test_money_says_unknown(self, x):
+        assert money(x) == UNKNOWN
+        assert money(x, width=6) == UNKNOWN.rjust(6)
+
+    @pytest.mark.parametrize("x", [float("nan"), float("inf")])
+    def test_tokens_says_unknown(self, x):
+        assert tokens(x) == UNKNOWN
+
+    def test_an_unknown_share_draws_an_empty_bar(self):
+        assert bar(float("nan"), 4) == "····"
+
+
+class TestTokensRoundingBoundaries:
+    @pytest.mark.parametrize("n, expected", [
+        (999_950, "1.0M"), (999_499, "999K"), (9_950, "10K"), (9_949, "9.9K"),
+        (-999_950, "-1.0M"),
+    ])
+    def test_the_unit_follows_the_rounded_figure(self, n, expected):
+        """`999,950` printed as `1000K`."""
+        assert tokens(n) == expected

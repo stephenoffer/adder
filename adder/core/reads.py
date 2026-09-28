@@ -110,12 +110,22 @@ _EDITS_IN_PLACE: dict[str, tuple[str, ...]] = {"sed": ("-i", "--in-place")}
 
 
 def max_bash_output_chars() -> int:
-    """Characters a Bash result carries before the harness truncates it."""
+    """Characters a Bash result carries inline before the harness spills it.
+
+    Past the inline ceiling a result arrives as a file path and a 2,000
+    character preview, so the file is not in the context. `BASH_MAX_OUTPUT_LENGTH`
+    only sizes the read-back window and "doesn't raise the inline ceilings"
+    (tools reference), yet it was read as the ceiling: with it at 100,000 a
+    `cat` of a 49K file was recorded as read in full and the Read after it
+    refused. It may lower the figure used here, never raise it. The setting
+    that really raises it, `bashOutputMaxChars`, is not read, which errs
+    toward claiming less is in the context than is.
+    """
     try:
         n = int(str(os.environ.get("BASH_MAX_OUTPUT_LENGTH")))
     except (TypeError, ValueError):
         return DEFAULT_MAX_BASH_OUTPUT_CHARS
-    return n if n > 0 else DEFAULT_MAX_BASH_OUTPUT_CHARS
+    return min(n, DEFAULT_MAX_BASH_OUTPUT_CHARS) if n > 0 else DEFAULT_MAX_BASH_OUTPUT_CHARS
 
 
 @dataclass(frozen=True, order=True)
@@ -239,6 +249,46 @@ BYTE_READERS: frozenset[str] = frozenset({
     "cat", "bat", "nl", "tac", "head", "tail", "less", "more"})
 
 
+# `sed -n 40,80p` prints lines; any other sed program transforms or searches.
+_SED_PRINT = re.compile(r"(\d+|\$)(,(\d+|\$))?p")
+_SED_QUIET = frozenset({"-n", "--quiet", "--silent"})
+_SED_HARMLESS = _SED_QUIET | {"-E", "-r", "-s", "-u", "--posix"}
+
+
+def _sed_prints_lines(args: list[str]) -> bool:
+    """Is this `sed` call nothing but `-n` and line-range prints?
+
+    The script is judged unquoted and by position. The old test looked at raw
+    words and let anything not ending in `p` through as a filename, so
+    `sed -n 's/a/b/p' f` (its last character is the quote) and
+    `sed -n '/def /p' f` -- a grep -- both counted as printing bytes, and the
+    guard refused them as duplicates of a file already read.
+    """
+    words = [_unquote(a) for a in args]
+    if not _SED_QUIET & set(words):
+        return False
+    scripts: list[str] = []
+    positional: list[str] = []
+    it = iter(words)
+    for w in it:
+        if w in ("-e", "--expression"):
+            scripts.append(next(it, ""))
+        elif w.startswith("--expression="):
+            scripts.append(w.split("=", 1)[1])
+        elif w.startswith("-") and w != "-":
+            if w not in _SED_HARMLESS:
+                return False                  # -i writes, -f reads a script we cannot see
+        else:
+            positional.append(w)
+    if not scripts:
+        if not positional:
+            return False
+        scripts.append(positional.pop(0))
+    return all(
+        _SED_PRINT.fullmatch(part.strip())
+        for sc in scripts for part in sc.split(";") if part.strip())
+
+
 def only_prints_files(command: str) -> bool:
     """Is every program this command runs one that just prints file bytes?
 
@@ -252,10 +302,7 @@ def only_prints_files(command: str) -> bool:
         return False
     for prog, args in stages:
         if prog == "sed":
-            # `sed -n 40,80p` prints lines; any other sed program transforms.
-            if "-n" not in args or not all(
-                    a.startswith("-") or re.fullmatch(r"\d+(,\d+)?p", a) or not a.endswith("p")
-                    for a in args):
+            if not _sed_prints_lines(args):
                 return False
             continue
         if prog not in BYTE_READERS:
@@ -370,16 +417,24 @@ def whole_reads(tool: str, inp: dict | None, *, cwd: str | None = None,
     have got the rest.
     """
     cap = max_bash_output_chars() if max_chars is None else max_chars
+    if tool == "Bash" and isinstance(inp, dict) and inp.get("run_in_background"):
+        # A background command's output goes to a task, not into the result;
+        # the model sees it only if it asks, so nothing is in the context yet.
+        return []
     out = []
+    used = 0
     for t in tool_targets(tool, inp, cwd=cwd):
         if not t.whole:
             continue
         if tool == "Bash":
+            # One result, one ceiling: `cat a b` spills when the two together
+            # pass it, even if neither does alone.
             try:
-                if os.path.getsize(t.path) > cap:
-                    continue
+                used += os.path.getsize(t.path)
             except OSError:
                 continue
+            if used > cap:
+                return []
         elif tool == "Read" and not read_fits(t.path):
             continue
         out.append(t.path)

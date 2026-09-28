@@ -231,6 +231,7 @@ def switch_is_profitable(
     *,
     switch_in_mult: float = 1.0,
     check_context: bool = True,
+    extra_tokens: int = 0,
     on: date | None = None,
 ) -> Decision:
     """Is switching model for ONE turn of a warm conversation worth it?
@@ -246,6 +247,13 @@ def switch_is_profitable(
 
     `check_context=True` additionally refuses switches the target model cannot
     physically hold. Set it False to probe the pure break-even arithmetic.
+
+    What it has to hold is the turn, not the prefix: the context, plus
+    `extra_tokens` (whatever the task will read into it), plus the answer. The
+    check used to be `fits(to_model, ctx_tokens)` alone, so a 199K context on
+    Haiku's 200K window passed while the task was about to add 30K of reads and
+    20K of output to it -- a downgrade to a model that would overflow on the
+    turn it was recommended for.
     """
     if resolve(from_model).id == resolve(to_model).id:
         # Not a switch. The arithmetic below charges the target model a full
@@ -262,10 +270,12 @@ def switch_is_profitable(
     saving = stay - switch
     breakeven = _breakeven_out(ctx_tokens, rf, rt, switch_in_mult)
 
-    if check_context and not fits(to_model, ctx_tokens):
+    need = max(0, ctx_tokens) + max(0, int(extra_tokens)) + max(0, est_out_tokens)
+    if check_context and not fits(to_model, need):
         return Decision(
             False, min(saving, 0.0) if saving < 0 else 0.0,
-            f"impossible: {ctx_tokens:,} tok exceeds {to_model}'s "
+            f"impossible: {need:,} tok ({ctx_tokens:,} context + reads and "
+            f"output) exceeds {to_model}'s "
             f"{_limit_str(to_model)} context limit. Even if it fit, the switch "
             f"needs >{breakeven:,.0f} output tok (est {est_out_tokens:,})",
         )
@@ -296,6 +306,48 @@ def _breakeven_out(ctx: int, rf: Rates, rt: Rates, mult: float) -> float:
     return ctx * (rt.inp * mult - rf.cache_read) / denom
 
 
+# What a subagent reads before it reads anything it was sent for: its system
+# prompt, tool schemas, memory and the brief. Measured as the first turn's
+# context over 258 subagent runs on the author's machine (2026-09): p10 26.7K,
+# median 34.6K, p90 92K, and a median of 3.5K of it served from cache, so it is
+# written rather than read. Placement priced a subagent as the brief plus one
+# uncached pass over the read -- about $0.002 on Haiku for a 2K read -- which
+# made delegation look nearly free and let `guard_enforce=full` refuse reads
+# that were cheaper inline. The median rather than the p10, because that
+# error ran in the tool's favour.
+SUBAGENT_OPENING_TOKENS = 34_600
+# The brief `SUBAGENT_OPENING_TOKENS` already contains.
+OPENING_BRIEF_TOKENS = 400
+
+
+def subagent_run_cost(model: str, tokens_read: int, summary_tokens: int, *,
+                      extra_tokens: int = 0, on: date | None = None) -> float:
+    """A delegated read as a subagent really runs it: two turns at the least.
+
+    The first writes the opening and issues the call; the second reads the
+    opening back, writes what the call returned, and answers. On a provider
+    with no cache discount the same two turns pay full input for both, which
+    is what `Rates` returns there.
+    """
+    r = Rates.for_model(model, ttl="5m", on=on)
+    opening = SUBAGENT_OPENING_TOKENS + max(0, int(extra_tokens))
+    return (opening * (r.cache_write + r.cache_read) + tokens_read * r.cache_write
+            + summary_tokens * r.out) / M
+
+
+def delegation_need(tokens_read: int, summary_tokens: int, *,
+                    brief_tokens: int = OPENING_BRIEF_TOKENS) -> int:
+    """Tokens a subagent's context has to hold to run a delegated read.
+
+    One expression for `placement_cost`'s feasibility check and for a caller
+    that has to ask the same question without pricing anything -- `policy`,
+    when the session itself cannot hold the read and it needs to know whether
+    a subagent could.
+    """
+    return (SUBAGENT_OPENING_TOKENS + max(0, brief_tokens - OPENING_BRIEF_TOKENS)
+            + max(0, tokens_read) + max(0, summary_tokens))
+
+
 def placement_cost(
     *,
     tokens_read: int,
@@ -309,8 +361,14 @@ def placement_cost(
     redo_overhead: float = 0.0,
     carry=None,
     context_tokens: int = 0,
+    dispatch: float = 0.0,
 ) -> tuple[float, float, Decision]:
     """Inline vs. subagent for a read-heavy task. Returns (inline, sub, decision).
+
+    `dispatch` is the main-context turn that issues the delegation, in USD. A
+    caller that already nets a routing overhead off the saving (`policy`) leaves
+    it at zero; the guard, which refuses the read and so forces that turn,
+    passes it.
 
     Inline: everything read lands in the main context and is amortized.
     Subagent: reads happen once in a throwaway context on a cheap model; only
@@ -338,9 +396,9 @@ def placement_cost(
     inline = admitted_token_cost(tokens_read, main_model, remaining_turns, on=on,
                                  carry=carry, context_tokens=context_tokens)
 
-    rs = Rates.for_model(sub_model, on=on)
-    # Subagent reads fresh (uncached) in its own short-lived context.
-    sub_side = (brief_tokens * rs.inp + tokens_read * rs.inp + summary_tokens * rs.out) / M
+    sub_side = subagent_run_cost(sub_model, tokens_read, summary_tokens,
+                                 extra_tokens=brief_tokens - OPENING_BRIEF_TOKENS,
+                                 on=on) + max(0.0, dispatch)
     # Only the returned summary is admitted to the main context.
     sub = sub_side + admitted_token_cost(summary_tokens, main_model, remaining_turns,
                                          on=on, carry=carry,
@@ -350,7 +408,7 @@ def placement_cost(
     sub += p_redo * (inline + redo_overhead)
     saving = inline - sub
 
-    need = brief_tokens + tokens_read + summary_tokens
+    need = delegation_need(tokens_read, summary_tokens, brief_tokens=brief_tokens)
     if not fits(sub_model, need):
         return inline, sub, Decision(
             False, 0.0,

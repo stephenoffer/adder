@@ -16,10 +16,14 @@ Three rules this encodes, none of which are obvious in isolation:
 * **Tables are computed, not typed.** Column widths come from the content, so
   adding a model with a longer id does not silently shift a column into its
   neighbour.
+* **A number that is not a number says so.** `money(nan)` printed `$0.00` --
+  free, again -- and `money(inf)` printed `$inf`. Both render as `n/a`
+  (`UNKNOWN`), as does `tokens` of either, and `bar(nan)` is empty, not full.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from collections.abc import Iterable, Sequence
@@ -35,6 +39,10 @@ _CODES = {
     "yellow": "\033[33m",
     "cyan": "\033[36m",
 }
+
+# What `money` and `tokens` print for NaN or an infinity. One spelling, so a
+# reader learns it once; not `$0.00`, which reads as free.
+UNKNOWN = "n/a"
 
 
 def color_enabled(stream=None) -> bool:
@@ -78,6 +86,8 @@ def money(x: float, *, width: int = 0, sign: bool = False) -> str:
     wants four, and rendering the second as $0.00 is how a real per-turn cost
     becomes "free" in a report.
     """
+    if not math.isfinite(x):
+        return UNKNOWN.rjust(width) if width else UNKNOWN
     a = abs(x)
     if a >= 1:
         s = f"{x:,.2f}"
@@ -100,11 +110,17 @@ def money(x: float, *, width: int = 0, sign: bool = False) -> str:
 
 
 def tokens(n: float, *, width: int = 0) -> str:
-    """Token counts as humans read them: 544K, 1.2M, 900."""
+    """Token counts as humans read them: 544K, 1.2M, 900.
+
+    The thresholds are where the *rounded* figure crosses a unit, not the raw
+    one: 999,950 is 999.95K, which `.0f` prints as `1000K`. It is `1.0M`.
+    """
+    if not math.isfinite(n):
+        return UNKNOWN.rjust(width) if width else UNKNOWN
     a = abs(n)
-    if a >= 1_000_000:
+    if a >= 999_500:
         s = f"{n / 1_000_000:.1f}M"
-    elif a >= 10_000:
+    elif a >= 9_950:
         s = f"{n / 1_000:.0f}K"
     elif a >= 1_000:
         s = f"{n / 1_000:.1f}K"
@@ -115,6 +131,8 @@ def tokens(n: float, *, width: int = 0) -> str:
 
 def pct(x: float, *, digits: int = 0, width: int = 0, sign: bool = False) -> str:
     """A fraction in [0,1] as a percentage. Pass 0.23, not 23."""
+    if not math.isfinite(x):
+        return UNKNOWN.rjust(width) if width else UNKNOWN          # not "nan%"
     s = f"{x:+.{digits}%}" if sign else f"{x:.{digits}%}"
     return s.rjust(width) if width else s
 
@@ -143,9 +161,14 @@ def clip_path(path: str, width: int = 60, *, home: str | None = None) -> str:
 
     A `Tool:` prefix (`Read:/path`) is kept whole and the rest clipped.
     """
+    if width <= 0:
+        return ""
     tool, sep, rest = path.partition(":")
-    if sep and rest.startswith(("/", "~")) and "/" not in tool:
-        return tool + ":" + clip_path(rest, max(1, width - len(tool) - 1), home=home)
+    # The prefix is kept only when it leaves room for at least `…` and one
+    # character. It was kept unconditionally with `max(1, ...)` for the rest,
+    # so a prefix as long as the width returned more than the width.
+    if sep and rest.startswith(("/", "~")) and "/" not in tool and width - len(tool) - 1 >= 2:
+        return tool + ":" + clip_path(rest, width - len(tool) - 1, home=home)
     home = os.path.expanduser("~") if home is None else home
     if home and home != "/" and (path == home or path.startswith(home + "/")):
         path = "~" + path[len(home):]
@@ -158,13 +181,16 @@ def clip_path(path: str, width: int = 60, *, home: str | None = None) -> str:
             break
         kept = seg + "/" + kept
     if len(kept) + 2 > width:
-        return "…" + kept[-(width - 1):]
+        # `kept[-0:]` is the whole string, so width 1 needs its own case.
+        return "…" + (kept[-(width - 1):] if width > 1 else "")
     return "…/" + kept
 
 
 def bar(fraction: float, width: int = 20, *, fill: str = "█", empty: str = "·") -> str:
     """A proportion as a fixed-width bar. Clamped, so a >100% share cannot overflow."""
-    f = max(0.0, min(1.0, fraction))
+    # NaN compares false with everything, so `min(1.0, nan)` is 1.0 and an
+    # unknown share drew as a full bar. Unknown is drawn as nothing.
+    f = 0.0 if math.isnan(fraction) else max(0.0, min(1.0, fraction))
     n = round(f * width)
     return fill * n + empty * (width - n)
 

@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Any
 
 from adder.core.trace import Turn
-from adder.pricing.registry import is_known, provider_for
+from adder.pricing.registry import is_priced, provider_for
 
 # Format identifiers, in the order `sniff` tries them.
 CLAUDE_CODE = "claude-code"
@@ -112,7 +112,10 @@ def admit(t: Turn, *, skip_unknown: bool, unknown: dict[str, int] | None) -> boo
     caller asked for that. Written once because the per-record path here and
     the per-file path in `native` both need it and must not drift.
     """
-    if is_known(t.model):
+    # `is_priced`, not `is_known`: the catalog knows dozens of models it has no
+    # price for, and admitting one only moved the failure to `cost()`, where
+    # it raised out of every report instead of being counted here.
+    if is_priced(t.model):
         return True
     if unknown is not None:
         unknown[t.model] = unknown.get(t.model, 0) + 1
@@ -220,6 +223,7 @@ class Usage:
     __slots__ = (
         "cache_read",
         "cache_write",
+        "cache_write_1h",
         "effort",
         "model",
         "msg_id",
@@ -261,6 +265,8 @@ class Usage:
             msg_id=str(self.msg_id or ""),
             tools=tuple(dict.fromkeys(str(x) for x in (self.tools or ()))),
             effort=str(self.effort or ""),
+            cache_write_1h=(None if self.cache_write_1h is None
+                            else _int(self.cache_write_1h)),
         )
 
 
@@ -351,6 +357,7 @@ def _from_anthropic_api(d: dict) -> Usage | None:
         msg_id=str(d.get("id") or ""),
         ts=_ts(d),
         ttl=_anthropic_ttl(u),
+        cache_write_1h=_anthropic_hour(u),
     )
 
 
@@ -364,6 +371,19 @@ def _anthropic_ttl(u: dict) -> str | None:
     if not five and not hour:
         return None
     return "1h" if hour > five else "5m"
+
+
+def _anthropic_hour(u: dict) -> int | None:
+    """Tokens written at the 1h TTL, so a turn that wrote both is priced at both.
+
+    `_anthropic_ttl` names the larger bucket, and pricing the whole write at it
+    was 22% off on a 100K/90K split. None when the record carries no split.
+    """
+    detail = u.get("cache_creation") if isinstance(u, dict) else None
+    if not isinstance(detail, dict) or not any(
+            k in detail for k in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")):
+        return None
+    return _int(_first(detail, "ephemeral_1h_input_tokens"))
 
 
 def _from_gemini(d: dict) -> Usage | None:

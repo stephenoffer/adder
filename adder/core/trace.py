@@ -36,16 +36,26 @@ from pathlib import Path
 from adder.core.filters import day_of
 from adder.pricing.cost import Rates, turn_cost
 from adder.pricing.prices import is_synthetic
-from adder.pricing.registry import context_limit, is_known, rate
+from adder.pricing.registry import context_limit, is_priced, rate
+from adder.util.homepath import HomeDefault
+from adder.util.when import parse_iso
 
-DEFAULT_ROOT = Path.home() / ".claude" / "projects"
+# Import-time values, kept because tests repoint them by assignment. Read them
+# through `default_root()` and `cache_path()`, which follow `HOME`; see
+# `util.homepath`.
+_ROOT = HomeDefault(".claude", "projects")
+DEFAULT_ROOT = _ROOT.at_import
+_CACHE = HomeDefault(".claude", ".adder-trace-cache")
 # The built-in location. `cache_path()` is what the read/write pair uses: it
 # lets an explicitly-configured `trace_cache` setting win, which this constant
 # alone cannot, because it is read once at import -- so `adder config` reported
 # a path the code never opened.
-CACHE_PATH = Path(
-    os.environ.get("ADDER_TRACE_CACHE", Path.home() / ".claude" / ".adder-trace-cache")
-)
+CACHE_PATH = Path(os.environ.get("ADDER_TRACE_CACHE", _CACHE.at_import))
+
+
+def default_root() -> Path:
+    """Claude Code's transcript directory under the home directory as of now."""
+    return _ROOT.live(DEFAULT_ROOT)
 
 
 def cache_path() -> Path:
@@ -53,10 +63,10 @@ def cache_path() -> Path:
     try:
         from adder.core.settings import configured_path
 
-        return configured_path("trace_cache", CACHE_PATH)
+        return configured_path("trace_cache", _CACHE.live(CACHE_PATH))
     except Exception:
-        return CACHE_PATH
-CACHE_VERSION = 10  # bumped when Codex, Gemini CLI and OpenCode transcripts became readable
+        return _CACHE.live(CACHE_PATH)
+CACHE_VERSION = 12  # 12: turns carry `cache_write_1h`; 11: `final`; bumped when Codex, Gemini CLI and OpenCode transcripts became readable
 
 
 # Directories people keep repositories in. `project_name` drops one of these
@@ -169,6 +179,20 @@ class Turn:
     # subagent run from the next: they share the parent's session id, so
     # grouping them any other way merges them.
     agent_id: str = ""
+    # Whether any record of this message carried a `stop_reason`. Claude Code
+    # writes one when the stream completes, and from mid-September 2026 it
+    # stopped writing that record for most subagent messages: 95% of them on
+    # the author's machine end at the stream-start record, whose output count
+    # is ~10 tokens. Input and cache fields there are already final; output is
+    # not, and nothing in the transcript says what it was. So the turn is kept,
+    # and flagged, and the reports say their subagent output is a lower bound.
+    final: bool = True
+    # Of `cache_write`, how many tokens went to the 1h TTL, when the record
+    # breaks writes down by TTL; None when it does not, and then the whole
+    # write is priced at `ttl`. A turn that wrote both was priced entirely at
+    # whichever bucket was larger: 22% off on 100K at 5m plus 90K at 1h, in a
+    # direction that flipped with which bucket won.
+    cache_write_1h: int | None = None
 
     @property
     def context(self) -> int:
@@ -213,10 +237,10 @@ class Turn:
         A recorded turn was billed on the day it ran, so that is the day it has
         to be priced on. Resolving `None` to *today* -- which is what every rate
         lookup does by default -- makes a measurement of the past change when
-        the price list does: Sonnet 5's introductory $2/$10 reverts to $3/$15
-        after 2026-08-31, and on 1 September every Sonnet turn already on disk
-        would have reported 1.5x what it actually cost, with nothing in the
-        repo having changed. Passing `on` explicitly still overrides this, which
+        the price list does: had Sonnet 5's introductory $2/$10 reverted to
+        $3/$15 after 2026-08-31 as announced, every Sonnet turn already on disk
+        would have reported 1.5x what it actually cost from 1 September, with
+        nothing in the repo having changed. Passing `on` explicitly still overrides this, which
         is what `cost_on` is for -- "what would this history cost at today's
         rates" is a different and legitimate question.
 
@@ -247,17 +271,41 @@ class Turn:
         return Rates.for_model(self.model, ttl=ttl or self.ttl,
                                on=self.pricing_date(on), speed=self.speed)
 
+    def write_split(self) -> tuple[int, int]:
+        """(5m tokens, 1h tokens) of this turn's cache write, when recorded."""
+        hour = min(self.cache_write, max(0, self.cache_write_1h or 0))
+        return self.cache_write - hour, hour
+
+    def cache_write_cost(self, on: date | None = None) -> float:
+        """The cache write, each TTL bucket at its own rate."""
+        if self.cache_write_1h is None:
+            return self.cache_write * self.rates(on).cache_write / 1_000_000
+        five, hour = self.write_split()
+        return (five * self.rates(on, ttl="5m").cache_write
+                + hour * self.rates(on, ttl="1h").cache_write) / 1_000_000
+
     def cost(self, on: date | None = None) -> float:
+        if self.cache_write_1h is None:
+            return turn_cost(
+                self.model,
+                uncached_in=self.uncached_in,
+                cache_read=self.cache_read,
+                cache_write=self.cache_write,
+                out=self.out,
+                ttl=self.ttl,
+                speed=self.speed,
+                on=self.pricing_date(on),
+            )
         return turn_cost(
             self.model,
             uncached_in=self.uncached_in,
             cache_read=self.cache_read,
-            cache_write=self.cache_write,
+            cache_write=0,
             out=self.out,
             ttl=self.ttl,
             speed=self.speed,
             on=self.pricing_date(on),
-        )
+        ) + self.cache_write_cost(on)
 
     def input_cost(self, on: date | None = None) -> float:
         """Everything this turn paid on the input side, at its provider's rates.
@@ -272,8 +320,7 @@ class Turn:
         return (
             self.uncached_in * r.inp
             + self.cache_read * r.cache_read
-            + self.cache_write * r.cache_write
-        ) / 1_000_000
+        ) / 1_000_000 + self.cache_write_cost(on)
 
     def output_cost(self, on: date | None = None) -> float:
         return self.out * rate(self.model, self.pricing_date(on),
@@ -293,7 +340,7 @@ def _parse_ts(ts: str | None) -> datetime | None:
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return parse_iso(str(ts))
     except (ValueError, TypeError, AttributeError):
         return None
 
@@ -519,6 +566,15 @@ def _dominant_ttl(usage: dict) -> str:
     return "1h" if hour > five else "5m"
 
 
+def _hour_bucket(usage: dict) -> int | None:
+    """Tokens written at the 1h TTL, or None when the record has no breakdown."""
+    cc = usage.get("cache_creation")
+    if not isinstance(cc, dict) or not any(
+            k in cc for k in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")):
+        return None
+    return _count(cc.get("ephemeral_1h_input_tokens"))
+
+
 def _speed(msg: dict, usage: dict) -> str:
     s = usage.get("speed") or msg.get("speed")
     return "fast" if s == "fast" else "standard"
@@ -562,7 +618,10 @@ def _turn_from_record(d: dict, path_stem: str, project: str,
         if unknown is not None:
             unknown[str(model)] = unknown.get(str(model), 0) + 1
         return None
-    if not is_known(model):
+    # `is_priced`, not `is_known`: the catalog knows ~70 models it has no
+    # price for, and a turn kept on one raised from `cost()` and took the
+    # whole `adder trace` down with it.
+    if not is_priced(model):
         # Counted, not just dropped. A model missing from `prices.py` -- a launch
         # that shipped after this table was last edited -- makes every total
         # here quietly too small, and a quietly-too-small total is the failure
@@ -587,6 +646,7 @@ def _turn_from_record(d: dict, path_stem: str, project: str,
         sidechain=bool(d.get("isSidechain")),
         ts=d.get("timestamp") if isinstance(d.get("timestamp"), str) else None,
         ttl=_dominant_ttl(usage),
+        cache_write_1h=_hour_bucket(usage),
         speed=_speed(msg, usage),
         msg_id=str(msg.get("id") or d.get("requestId") or d.get("uuid") or ""),
         tools=_tools(msg),
@@ -595,6 +655,7 @@ def _turn_from_record(d: dict, path_stem: str, project: str,
         # `adder effort` re-fits the output-volume priors from it.
         effort=str(d.get("effort") or ""),
         agent_id=str(d.get("agentId") or ""),
+        final=bool(msg.get("stop_reason")),
     )
 
 
@@ -666,9 +727,11 @@ def iter_file(path: Path, *, skip_unknown: bool = True,
                 # Later record completed the stream; keep the full accounting
                 # but merge the tool calls seen across every block record.
                 t.tools = tuple(dict.fromkeys(prev.tools + t.tools))
+                t.final = t.final or prev.final
                 best[t.msg_id] = t
             else:
                 prev.tools = tuple(dict.fromkeys(prev.tools + t.tools))
+                prev.final = prev.final or t.final
 
     merged = [(pos[m], t) for m, t in best.items()]
     merged.extend(anonymous)
@@ -721,6 +784,8 @@ def transcripts(root: Path | str = DEFAULT_ROOT) -> list[Path]:
     of them forgot that a caller may point at a single `.jsonl`.
     """
     root = Path(root).expanduser()
+    if root == _ROOT.at_import:
+        root = default_root()           # the default argument, as of now
     if not root.exists():
         # The commands that bypass `filters.root_of` still take an agent name.
         from adder.core.native import root_for
@@ -735,7 +800,7 @@ def transcripts(root: Path | str = DEFAULT_ROOT) -> list[Path]:
         # somewhere other than the Claude Code transcript directory, because
         # under that directory a `.json` file is configuration rather than a
         # transcript and reading it as one would invent turns.
-        if root != Path(DEFAULT_ROOT):
+        if not _ROOT.is_default(root):
             found += list(root.rglob("*.json"))
         return sorted(found)
     except OSError:
@@ -785,6 +850,21 @@ def _cache_store(files: dict) -> None:
         pass
 
 
+def _prices_unchanged(turns: list[Turn], seen_unknown: dict[str, int]) -> bool:
+    """Are the admission decisions a cached file carries still the right ones?
+
+    A file is cached after its unpriced turns were dropped, keyed on its mtime
+    and size alone. So once a model became priceable -- `adder models refresh`,
+    or the `.adder/catalog.json` the unknown-model error itself tells you to
+    write -- its turns stayed missing until the transcript happened to change:
+    a cached run reported 0 turns and $0 where a cold one found $6. The reverse
+    is worse, a cached turn on a model that has lost its price raising out of
+    `cost()`. `is_priced` is memoised, so this is a handful of lookups a file.
+    """
+    return (not any(is_priced(m) for m in seen_unknown)
+            and all(is_priced(m) for m in {t.model for t in turns}))
+
+
 def load_sessions(root: Path | str = DEFAULT_ROOT, *,
                   use_cache: bool | None = None,
                   unknown: dict[str, int] | None = None) -> dict[str, Session]:
@@ -831,7 +911,12 @@ def load_sessions(root: Path | str = DEFAULT_ROOT, *,
     cache = _cache_load() if use_cache else {}
     dirty = False
     sessions: dict[str, Session] = {}
-    seen: set[tuple[str, str]] = set()
+    # Where each message's kept copy sits, so a later file holding a more
+    # complete record of it can replace it. Forked subagents replay a shared
+    # prefix into sibling files, and the first file in sort order held the
+    # streaming partial for 104 of 137 such messages here: keeping the first
+    # broke the same max-`output_tokens` rule `iter_file` applies in-file.
+    seen: dict[tuple[str, str], tuple[Session, int]] = {}
 
     for path in paths:
         key = str(path)
@@ -841,7 +926,8 @@ def load_sessions(root: Path | str = DEFAULT_ROOT, *,
         except OSError:
             continue
         hit = cache.get(key)
-        if use_cache and hit and tuple(hit[0]) == stamp and len(hit) >= 3:
+        if use_cache and hit and tuple(hit[0]) == stamp and len(hit) >= 3 \
+                and _prices_unchanged(hit[1], hit[2]):
             turns, seen_unknown = hit[1], hit[2]
         else:
             seen_unknown: dict[str, int] = {}
@@ -853,15 +939,22 @@ def load_sessions(root: Path | str = DEFAULT_ROOT, *,
             for m, n in seen_unknown.items():
                 unknown[m] = unknown.get(m, 0) + n
         for t in turns:
-            if t.msg_id:
-                mark = (t.session, t.msg_id)
-                if mark in seen:
-                    continue
-                seen.add(mark)
+            mark = (t.session, t.msg_id) if t.msg_id else None
+            if mark is not None and mark in seen:
+                owner, at = seen[mark]
+                kept = owner.turns[at]
+                if t.out > kept.out:
+                    t.final = t.final or kept.final
+                    owner.turns[at] = t
+                else:
+                    kept.final = kept.final or t.final
+                continue
             s = sessions.get(t.session)
             if s is None:
                 s = sessions[t.session] = Session(t.session, t.project)
             s.turns.append(t)
+            if mark is not None:
+                seen[mark] = (s, len(s.turns) - 1)
 
     if use_cache and dirty:
         live = {str(p) for p in paths}
@@ -890,6 +983,8 @@ class Summary:
     in_tokens: int = 0
     unknown_models: dict[str, int] = field(default_factory=dict)
     synthetic_turns: int = 0
+    # Turns whose output count stopped at a streaming partial; see `Turn.final`.
+    partial_turns: int = 0
 
     @property
     def unknown_turns(self) -> int:
@@ -939,10 +1034,12 @@ def summarize_sessions(sessions: dict[str, Session], *,
             s.input_side += t.input_cost()
             s.output_side += t.output_cost()
             s.cache_read_cost += t.cache_read * r.cache_read / 1_000_000
-            s.cache_write_cost += t.cache_write * r.cache_write / 1_000_000
+            s.cache_write_cost += t.cache_write_cost()
             s.thinking_cost += t.thinking_cost()
             s.by_model[t.model] += c
             s.turns_by_model[t.model] += 1
+            if not t.final:
+                s.partial_turns += 1
             s.n_turns += 1
             s.out_tokens += t.out
             s.thinking_tokens += t.thinking

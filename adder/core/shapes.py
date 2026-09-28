@@ -38,6 +38,7 @@ not a guess -- but it is a measurement of somebody else's workload, which is why
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import re
@@ -266,40 +267,50 @@ def _split_unquoted(text: str, ops: tuple[str, ...]) -> list[str]:
     Hand-written rather than `shlex`, which raises on the unterminated quotes
     real transcripts contain -- and a parser that raises inside a PreToolUse
     hook is a guard that has silently stopped guarding.
+
+    It jumps from one character that matters to the next rather than walking
+    every one. The walk tried each operator at each position, about twenty
+    times per command, and a 2 MB command took 16 seconds -- past the hook's
+    timeout, so the call went through unguarded.
     """
+    return list(_split_cached(text or "", ops))
+
+
+@functools.lru_cache(maxsize=64)
+def _split_cached(text: str, ops: tuple[str, ...]) -> tuple[str, ...]:
+    outside = re.compile("|".join([r"\\.", "['\"]"] + [re.escape(o) for o in ops]),
+                         re.DOTALL)
+    inside = {q: re.compile(r"\\.|" + q, re.DOTALL) for q in ("'", '"')}
     parts: list[str] = []
-    buf: list[str] = []
-    quote = ""
+    start = 0            # where the current part began
     i = 0
-    n = len(text or "")
+    n = len(text)
     while i < n:
-        ch = text[i]
-        if ch == "\\" and i + 1 < n:
-            buf.append(ch)
-            buf.append(text[i + 1])
-            i += 2
+        m = outside.search(text, i)
+        if m is None:
+            break
+        tok = m.group()
+        if tok[0] == "\\" and len(tok) == 2:
+            i = m.end()
             continue
-        if quote:
-            buf.append(ch)
-            if ch == quote:
-                quote = ""
-            i += 1
+        if tok in ("'", '"'):
+            j = m.end()
+            while True:
+                c = inside[tok].search(text, j)
+                if c is None:
+                    j = n
+                    break
+                j = c.end()
+                if c.group() == tok:
+                    break
+            i = j
             continue
-        if ch in ("'", '"'):
-            quote = ch
-            buf.append(ch)
-            i += 1
-            continue
-        hit = next((op for op in ops if text.startswith(op, i)), None)
-        if hit:
-            parts.append("".join(buf))
-            buf = []
-            i += len(hit)
-            continue
-        buf.append(ch)
-        i += 1
-    parts.append("".join(buf))
-    return parts
+        # First listed operator wins at a position, as in the walk this replaced.
+        hit = next(op for op in ops if text.startswith(op, m.start()))
+        parts.append(text[start:m.start()])
+        i = start = m.start() + len(hit)
+    parts.append(text[start:])
+    return tuple(parts)
 
 # A leading `VAR=value` or a `cd somewhere` contributes nothing to output size.
 _ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -321,8 +332,14 @@ def _words(segment: str) -> list[str]:
 
     `shlex.split` raises on `echo "unterminated`, which a real transcript
     contains, and a hook that raises is a hook that has failed open at best.
+    Cached because one guard call splits the same segment dozens of times.
     """
-    return [w for w in re.split(r"\s+", segment.strip()) if w]
+    return list(_words_cached(segment))
+
+
+@functools.lru_cache(maxsize=64)
+def _words_cached(segment: str) -> tuple[str, ...]:
+    return tuple(w for w in segment.split() if w)
 
 
 def _head(segment: str) -> tuple[str, list[str]]:

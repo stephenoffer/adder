@@ -287,3 +287,60 @@ class TestMixedTimezoneStamps:
         s = self._sess()
         assert s.started is not None and s.ended is not None
         assert s.wall_seconds >= 0.0
+
+
+class TestTheSameMessageInTwoFilesKeepsTheCompleteRecord:
+    """Forked subagents replay a shared prefix into sibling files, and the file
+    first in sort order often holds only the streaming partial. Keeping the
+    first copy broke the max-`output_tokens` rule `iter_file` applies in-file."""
+
+    def test_the_higher_output_wins_whichever_file_comes_first(self, tmp_path):
+        _write(tmp_path, [_rec("m1", out=8)], name="a.jsonl")
+        _write(tmp_path, [_rec("m1", out=210)], name="b.jsonl")
+        sessions = load_sessions(tmp_path, use_cache=False)
+        turns = sessions["s"].turns
+        assert len(turns) == 1 and turns[0].out == 210
+
+    def test_a_lower_copy_later_does_not_replace_it(self, tmp_path):
+        _write(tmp_path, [_rec("m1", out=210)], name="a.jsonl")
+        _write(tmp_path, [_rec("m1", out=8)], name="b.jsonl")
+        assert load_sessions(tmp_path, use_cache=False)["s"].turns[0].out == 210
+
+
+class TestAMessageWithNoFinalRecordIsFlagged:
+    """From mid-September 2026 Claude Code stopped writing the completing record
+    for most subagent messages; their output count is the stream-start one."""
+
+    @staticmethod
+    def _done(mid, out):
+        r = _rec(mid, out=out)
+        r["message"]["stop_reason"] = "end_turn"
+        return r
+
+    def test_a_completed_message_is_final(self, tmp_path):
+        p = _write(tmp_path, [_rec("m1", out=3), self._done("m1", 900)])
+        assert [t.final for t in iter_file(p)] == [True]
+
+    def test_one_that_never_completed_is_not(self, tmp_path):
+        p = _write(tmp_path, [_rec("m1", out=3), _rec("m1", out=10)])
+        assert [t.final for t in iter_file(p)] == [False]
+
+    def test_the_summary_counts_them(self, tmp_path):
+        _write(tmp_path, [_rec("m1", out=10), self._done("m2", 900)])
+        s, _ = summarize(tmp_path, use_cache=False)
+        assert s.partial_turns == 1
+
+
+class TestAKnownModelWithNoPriceIsSkippedNotFatal:
+    def test_the_read_survives_it(self, tmp_path):
+        """The catalog knows models it has no price for; a turn kept on one
+        raised from `cost()` and ended the whole report."""
+        from adder.pricing.registry import is_known, is_priced
+
+        assert is_known("devstral-2") and not is_priced("devstral-2")
+        bad = _rec("m1")
+        bad["message"]["model"] = "devstral-2"
+        _write(tmp_path, [bad, _rec("m2")])
+        s, _ = summarize(tmp_path, use_cache=False)
+        assert s.n_turns == 1
+        assert s.unknown_models == {"devstral-2": 1}

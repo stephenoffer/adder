@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from adder.util.when import parse_iso
+
 # Relative windows, because `--since 7d` is what people type.
 _RELATIVE = re.compile(r"^(\d+)\s*([dwmy])$", re.I)
 _UNIT_DAYS = {"d": 1, "w": 7, "m": 30, "y": 365}
@@ -85,11 +87,15 @@ def day_of(ts) -> date | None:
 
     A timestamp with no offset is taken as already local; there is nothing
     better to assume and it is what a naive `.date()` did anyway.
+
+    Read with `parse_iso`, not `fromisoformat`: on Python 3.10 the latter
+    rejects nanosecond fractions, two-digit fractions and `+0000`, so those
+    turns fell out of every window as "undated" on 3.10 and stayed in on 3.11.
     """
     if not ts:
         return None
     try:
-        t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        t = parse_iso(str(ts))
     except (ValueError, TypeError):
         return None
     return (t if t.tzinfo is None else t.astimezone()).date()
@@ -309,7 +315,7 @@ def root_of(a: argparse.Namespace | None = None) -> Path:
     cannot differ between two commands run against the same configuration.
     """
     from adder.core import settings
-    from adder.core.trace import DEFAULT_ROOT
+    from adder.core.trace import default_root
 
     given = getattr(a, "root", None) if a is not None else None
     if given:
@@ -330,7 +336,7 @@ def root_of(a: argparse.Namespace | None = None) -> Path:
     try:
         return Path(str(settings.get("root"))).expanduser()
     except (KeyError, OSError, ValueError):
-        return Path(DEFAULT_ROOT)
+        return default_root()
 
 
 def load(a: argparse.Namespace, *, use_cache: bool | None = None) -> tuple[dict, Window]:

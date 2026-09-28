@@ -4,9 +4,12 @@ Rates are USD per million tokens, first-party Claude API list price.
 
 Three things here are load-bearing and usually omitted from cost models:
 
-1. **Time.** Claude Sonnet 5 ships at an introductory $2/$10 that reverts to
-   $3/$15 after 2026-08-31. Any threshold tuned against the intro rate is wrong
-   the day it expires, so every lookup takes an `on` date.
+1. **Time.** Rates move, and not always the way they were announced. Sonnet 5
+   launched at an "introductory" $2/$10 due to revert to $3/$15 after
+   2026-08-31; the revert was cancelled and $2/$10 became the list price. This
+   table modelled the announced revert and billed every Sonnet 5 turn from
+   1 September at 1.5x. Every lookup still takes an `on` date, because the next
+   introductory rate may well expire as announced.
 
 2. **Context limits.** Haiku 4.5 holds 200K tokens; the measured median session
    context here is 544K. A router that recommends downgrading a 544K
@@ -23,6 +26,7 @@ Three things here are load-bearing and usually omitted from cost models:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import NamedTuple
@@ -83,13 +87,9 @@ MODELS: dict[str, Model] = {
         context=200_000, max_output=64_000, cache_min=4096,
         efforts=(),                      # Haiku 4.5 rejects `effort`
     ),
-    "claude-sonnet-5": Model(
-        "claude-sonnet-5",
-        base=Rate(3, 15),
-        intro=Rate(2, 10),
-        intro_until=date(2026, 8, 31),
-        cache_min=1024,
-    ),
+    # $2/$10 is the list price, not an introductory one: the scheduled move
+    # to $3/$15 on 2026-09-01 was cancelled (pricing page, footnote 3).
+    "claude-sonnet-5": Model("claude-sonnet-5", Rate(2, 10), cache_min=1024),
     "claude-sonnet-4-6": Model("claude-sonnet-4-6", Rate(3, 15), cache_min=1024),
     # Opus 5.5 is cheaper than Opus 5 and was priced as Opus 5 until it had a
     # row: longest prefix resolved `claude-opus-5-5` to `claude-opus-5`, so
@@ -115,6 +115,10 @@ MODELS: dict[str, Model] = {
     "claude-fable-5-1": Model("claude-fable-5-1", Rate(10, 50), cache_min=512,
                               cache_read_mult=0.025),
     "claude-mythos-5": Model("claude-mythos-5", Rate(10, 50), cache_min=512),
+    # Without its own row this resolved to `claude-mythos-5` by prefix and
+    # billed cache reads at 4x, marked verified.
+    "claude-mythos-5-1": Model("claude-mythos-5-1", Rate(10, 50), cache_min=512,
+                               cache_read_mult=0.025),
 }
 
 # Claude Code writes an assistant record with this model id when the *client*
@@ -163,16 +167,34 @@ def resolve(model: str) -> Model:
         return MODELS[model]
     # Transcripts carry dated ids like claude-haiku-4-5-20251001, and Claude
     # Code carries suffixed variants like claude-opus-5[1m]. Longest prefix
-    # wins so claude-sonnet-4-6 never matches as claude-sonnet-5.
+    # wins so claude-sonnet-4-6 never matches as claude-sonnet-5. A prefix
+    # followed by a version number is a different model, not a variant:
+    # `claude-opus-5-5` priced as `claude-opus-5`, and `claude-mythos-5-1` as
+    # `claude-mythos-5`, both silently and both marked verified. An unknown
+    # point release has to surface as unknown.
     best: Model | None = None
     for mid, m in MODELS.items():
-        if model.startswith(mid) and (best is None or len(mid) > len(best.id)):
+        if not model.startswith(mid) or _is_point_release(model[len(mid):]):
+            continue
+        if best is None or len(mid) > len(best.id):
             best = m
     if best is not None:
         return best
     raise UnknownModelError(
         f"unknown model {model!r}; known: {sorted(MODELS) + sorted(ALIASES)}"
     )
+
+
+_POINT_RELEASE = re.compile(r"-\d{1,7}(?!\d)")
+
+
+def _is_point_release(rest: str) -> bool:
+    """Whether what follows a matched prefix names another version.
+
+    `-5`, `-1` and `-1[1m]` do; `-20251001` (a date stamp), `[1m]` and
+    `-fast` do not.
+    """
+    return _POINT_RELEASE.match(rest) is not None
 
 
 def rate(model: str, on: date | None = None, *, speed: str = "standard") -> Rate:

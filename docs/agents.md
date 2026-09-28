@@ -203,7 +203,7 @@ and read as proof that enforcement is on.
 
 ## What you give up without the guard
 
-The measured 3.1x in [benchmark.md](benchmark.md) is activation: the guard
+The measured 1.1x in [benchmark.md](benchmark.md) is activation: the guard
 refusing reads that admit nothing new, plus the routing clause. None of that is
 available without a pre-tool-call hook, so on another harness adder is a
 measurement tool that makes recommendations, and acting on them is yours.

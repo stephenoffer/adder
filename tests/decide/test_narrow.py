@@ -213,7 +213,14 @@ class TestGuardIntegration:
         assert out["hookEventName"] == "PreToolUse"
         assert out["permissionDecision"] == "allow"
         assert out["updatedInput"] == v.narrowed
-        assert out["permissionDecisionReason"], (
+        assert out["permissionDecisionReason"]
+
+    def test_the_model_is_told_through_the_field_it_reads(self):
+        """On `allow` the reason is shown to the user, not to Claude, so it
+        alone left the truncation invisible to the model it was about."""
+        v = self.call(self.cfg())
+        out = v.payload()["hookSpecificOutput"]
+        assert "limit=" in out["additionalContext"], (
             "a substitution the model cannot see is a lie about what it read")
 
     def test_the_reason_names_the_bound(self):

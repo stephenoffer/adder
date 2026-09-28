@@ -312,12 +312,13 @@ def main(argv: list[str] | None = None) -> int:
     from adder.core import settings
     from adder.core.filters import add_arguments as add_window
     from adder.core.filters import load as load_window
+    from adder.measure.argtypes import nonneg_float
 
     ap = argparse.ArgumentParser(
         prog="adder budget",
         description="Burn-down against a spend target, with a robust projection.")
     add_window(ap)
-    ap.add_argument("--limit", type=float, default=None, metavar="USD",
+    ap.add_argument("--limit", type=nonneg_float, default=None, metavar="USD",
                     help="budget for the period (default: the `budget` setting)")
     ap.add_argument("--period", choices=PERIODS, default="month",
                     help="budget period (default: %(default)s)")

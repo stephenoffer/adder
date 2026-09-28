@@ -59,7 +59,7 @@ candidate is optimal under one assumption and bad under another:
 *Greedy* — batch until the slack runs out, then sprint — wins outright when the
 guaranteed path can absorb the whole remaining queue at once, which is true of
 an API you can fan out against. On a 200-unit queue over 24 steps it costs
-$100.52 against the proportional policy's $130.35, and both meet every deadline.
+$100.10 against the proportional policy's $135.54, and both meet every deadline.
 
 *Proportional* — keep completed work on the line `total × t / horizon` — wins
 when the guaranteed path is rate-limited, because greedy concentrates every

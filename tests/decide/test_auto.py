@@ -266,7 +266,31 @@ class TestApplying:
                     # `sys.executable`, not `python3`: see `guard.interpreter`.
                     # A user-scope file never leaves the machine that
                     # interpreter is right for.
-                    assert e['command'].startswith(guard.interpreter() + ' -m ')
+                    # The checkout prefix is optional; the interpreter is not.
+                    cmd = e['command'].partition(' ')[2] \
+                        if e['command'].startswith('PYTHONPATH=') else e['command']
+                    assert cmd.startswith(guard.interpreter() + ' -m ')
+
+    def test_the_written_command_imports_adder_from_any_directory(self, clean_home,
+                                                                  tmp_path):
+        """From a bare checkout, `-m adder...` found the package only while the
+        working directory was the checkout, and every hook elsewhere exited 1
+        with `No module named 'adder'` -- a non-blocking error, so nothing was
+        guarded and `auto status` said ON."""
+        import os
+        import subprocess
+
+        p = plan(cwd=clean_home)
+        apply(p)
+        blob = json.loads(p.settings_path.read_text())
+        cmd = blob['hooks']['PreToolUse'][0]['hooks'][0]['command']
+        env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+        away = tmp_path / 'elsewhere'
+        away.mkdir()
+        r = subprocess.run(cmd, shell=True, cwd=away, env=env, input='{}',
+                           capture_output=True, text=True, timeout=60, check=False)
+        assert 'No module named' not in r.stderr
+        assert r.returncode == 0
 
     def test_the_hook_modules_it_points_at_import(self, clean_home):
         import importlib
@@ -348,12 +372,16 @@ class TestTheAgentFiles:
         assert not again.agent_writes and not again.agent_skips
         assert again.empty
 
-    def test_off_leaves_them_in_place(self, tmp_path):
-        """They cost nothing without the hooks, and one may have been edited."""
+    def test_off_leaves_an_edited_one_in_place(self, tmp_path):
+        """One may have been edited, and then it is the user's. An unedited
+        copy is removed: `Explore.md` pins a built-in to Haiku, which is not
+        "nothing without the hooks" (`test_auto_roundtrip.py`)."""
         p = plan(cwd=tmp_path, user=False)
         apply(p)
+        mine = p.agents_path / 'route-t0.md'
+        mine.write_text(mine.read_text() + '\nedited\n')
         apply(plan_off(cwd=tmp_path, user=False))
-        assert (p.agents_path / 'route-t0.md').is_file()
+        assert mine.is_file()
 
     def test_the_installed_copy_matches_the_source(self, tmp_path):
         from adder.decide.auto import agents_dir

@@ -60,7 +60,6 @@ class Window:
 
 def compare(cutover: date, root: Path | str = DEFAULT_ROOT) -> tuple[Window, Window]:
     before, after = Window("before"), Window("after")
-    seen: dict[str, set[str]] = {"before": set(), "after": set()}
     for s in load_sessions(root).values():
         # Main chain only. Every number this report decomposes is about the
         # conversation's own context: `out_per_turn` x `turns/session` is the
@@ -69,21 +68,23 @@ def compare(cutover: date, root: Path | str = DEFAULT_ROOT) -> tuple[Window, Win
         # and then attributed the drop to verbosity or to session length,
         # which is the report claiming an intervention worked when what
         # actually happened was more delegation.
-        for t in s.main_turns:
-            d = _day(t.ts)
-            if d is None:
-                continue
-            w = before if d < cutover else after
-            key = "before" if w is before else "after"
-            if w.ctx is None:
-                w.ctx = []
+        dated = [(d, t) for t in s.main_turns if (d := _day(t.ts)) is not None]
+        if not dated:
+            continue
+        # A session belongs to the window it started in, whole. Splitting one at
+        # the cutover counted it in both windows with half its turns in each,
+        # so two identical sessions that ran across midnight reported
+        # turns/session -39% and cost/turn +17% with nothing changed -- the
+        # late, large-context turns all landed after the cutover.
+        w = before if min(d for d, _ in dated) < cutover else after
+        if w.ctx is None:
+            w.ctx = []
+        w.sessions += 1
+        for _, t in dated:
             w.turns += 1
             w.out += t.out
             w.cost += t.cost()
             w.ctx.append(t.context)
-            if s.id not in seen[key]:
-                seen[key].add(s.id)
-                w.sessions += 1
     return before, after
 
 
@@ -135,7 +136,9 @@ def report(cutover: date, root: Path | str = DEFAULT_ROOT) -> str:
 
     saved_per_turn = b.cost_per_turn - a.cost_per_turn
     out.append("")
-    if saved_per_turn > 0:
+    if round(saved_per_turn, 4) == 0:
+        out.append("  Cost per turn did not move. Do not claim a saving.")
+    elif saved_per_turn > 0:
         out.append(f"  Cost per turn fell ${saved_per_turn:.4f}. Over the {a.turns:,} turns")
         out.append(f"  since cutover that is ${saved_per_turn * a.turns:,.2f} saved.")
     else:

@@ -10,9 +10,13 @@ session's context trajectory under each intervention and measures the actual
 combined saving, so the approximation can be validated or replaced.
 
 Simulation model (each step grounded in a measured claim):
-  * context_i = baseline + cumulative admitted content       (measured: growth is
-    ~all prior assistant output, ratio 1.02 on non-compacting sessions)
-  * terseness t   -> every turn admits (1-t) as much
+  * context_i = baseline + cumulative admitted content
+  * terseness t   -> every turn admits (1 - t*s) as much, where s is the
+    measured share of growth that is assistant output
+    (`debt.output_share_of_growth`). It used to cut every admission by t, on
+    the retracted claim that growth is ~all output; `savings` prices
+    terseness at t*s, so the "composition never overstates" check was
+    validating a lever `savings` does not use.
   * delegation d  -> a fraction d of admitted content is replaced by a summary
   * splitting M   -> context resets to baseline every M turns
   * cost = sum(context_i) * rate_in * 0.10
@@ -32,6 +36,9 @@ class Intervention:
     delegation: float = 0.0       # fraction of admissions moved to a subagent
     summary_ratio: float = 0.10   # what a delegated chunk returns
     split_turns: int | None = None
+    # Share of admitted content that is assistant output, the only part
+    # terseness touches. `evaluate` fills it from the sessions it is given.
+    output_share: float = 1.0
 
     @property
     def label(self) -> str:
@@ -47,7 +54,8 @@ class Intervention:
     @property
     def pool_fraction(self) -> float:
         """The multiplicative prediction for this intervention."""
-        residual = (1 - self.terseness) * (1 - self.delegation * (1 - self.summary_ratio))
+        residual = ((1 - self.terseness * self.output_share)
+                    * (1 - self.delegation * (1 - self.summary_ratio)))
         return 1 - residual
 
 
@@ -74,8 +82,7 @@ def simulate(sess, iv: Intervention, on: date | None = None) -> float:
     baseline, adm = admissions(sess)
     r = sess.main_turns[0].rates(on).cache_read
 
-    keep = (1 - iv.terseness)
-    keep *= (1 - iv.delegation * (1 - iv.summary_ratio))
+    keep = 1 - iv.pool_fraction
 
     total = 0.0
     cum = 0.0
@@ -90,9 +97,15 @@ def simulate(sess, iv: Intervention, on: date | None = None) -> float:
 def evaluate(sessions, interventions: list[Intervention],
              on: date | None = None) -> list[tuple[Intervention, float, float]]:
     """(intervention, simulated_saving, multiplicative_prediction) per intervention."""
+    import dataclasses
+
+    from adder.measure.spend.debt import output_share_of_growth
+
+    share = output_share_of_growth(sessions)
     base = sum(simulate(s, Intervention(), on) for s in sessions.values())
     out = []
     for iv in interventions:
+        iv = dataclasses.replace(iv, output_share=share)
         sim = base - sum(simulate(s, iv, on) for s in sessions.values())
         # Multiplicative prediction, applied to the same addressable pool.
         from adder.measure.spend.debt import decompose_read_cost

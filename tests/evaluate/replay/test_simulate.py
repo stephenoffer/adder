@@ -103,3 +103,29 @@ class TestCompositionApproximation:
         assert Intervention().label == "baseline"
         assert "terse" in Intervention(terseness=0.3).label
         assert "split@300" in Intervention(split_turns=300).label
+
+
+class TestTersenessOnlyTouchesOutput:
+    """`savings` prices terseness at t x the measured output share of growth.
+    This simulated t x all of it, so the claim that the composition model
+    never overstates was checking a lever `savings` does not use."""
+
+    def test_the_prediction_scales_with_the_share(self):
+        from adder.evaluate.replay.simulate import Intervention
+
+        assert Intervention(terseness=0.3, output_share=0.5).pool_fraction == \
+            pytest.approx(0.15)
+
+    def test_the_simulation_uses_the_measured_share(self, make_sessions, monkeypatch):
+        from adder.evaluate.replay import simulate as sim
+
+        sessions = make_sessions(3, 60)
+        iv = sim.Intervention(terseness=0.3)
+        monkeypatch.setattr("adder.measure.spend.debt.output_share_of_growth",
+                            lambda s: 1.0)
+        (_, all_output, _), = sim.evaluate(sessions, [iv])
+        monkeypatch.setattr("adder.measure.spend.debt.output_share_of_growth",
+                            lambda s: 0.5)
+        (got, half, _), = sim.evaluate(sessions, [iv])
+        assert got.output_share == 0.5
+        assert half == pytest.approx(all_output / 2, rel=1e-6)

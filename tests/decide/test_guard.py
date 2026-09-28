@@ -271,6 +271,21 @@ class TestDuplicateReads:
                    sizes=sizes, state=state, cfg=cfg)
         assert v.kind != "duplicate"
 
+    def test_new_content_under_the_old_mtime_is_not_a_duplicate(self, cfg, sizes, tmp_path):
+        """`cp -p`, `rsync -a` and `touch -r` replace content and keep the
+        mtime, which was the only thing compared."""
+        import os
+
+        f = tmp_path / "a.py"
+        f.write_text(("x" * 79 + "\n") * 500)
+        st = f.stat()
+        state = self._seen(f)
+        f.write_text(("y" * 79 + "\n") * 600)
+        os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+        v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
+                   sizes=sizes, state=state, cfg=cfg)
+        assert v.kind != "duplicate"
+
     def test_a_first_read_is_not_a_duplicate(self, cfg, sizes, tmp_path):
         f = tmp_path / "a.py"
         f.write_text(("x" * 79 + "\n") * 500)
@@ -441,10 +456,12 @@ class TestReadAfterWrite:
     result is "file written", not the content."""
 
     @staticmethod
-    def _wrote(f, when=1_000.0):
+    def _wrote(f, when=1_000.0, content=None):
+        """A Write of `f`, sending what is on disk now unless told otherwise."""
         state = GuardState()
-        observe("Write", {"file_path": str(f)}, state, Verdict(False, "watched"),
-                now=when)
+        body = f.read_text() if content is None else content
+        observe("Write", {"file_path": str(f), "content": body}, state,
+                Verdict(False, "watched"), now=when)
         return state
 
     def test_reading_back_a_file_this_session_wrote_fires(self, cfg, sizes, tmp_path):
@@ -455,6 +472,29 @@ class TestReadAfterWrite:
                    sizes=sizes, state=state, cfg=cfg)
         assert v.fire and v.kind == "duplicate"
         assert "written by this session" in v.message
+
+    def test_a_formatter_rewriting_it_inside_the_window_is_not_our_copy(
+            self, cfg, sizes, tmp_path):
+        """A format-on-write hook lands within seconds of the Write, so the
+        mtime window alone called its output this session's own content and
+        refused the Read that would have shown the model what changed."""
+        f = tmp_path / "new.py"
+        sent = ("x" * 79 + "\n") * 500
+        f.write_text(sent.replace("x", "y", 1))           # what the formatter left
+        state = self._wrote(f, when=f.stat().st_mtime, content=sent)
+        v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
+                   sizes=sizes, state=state, cfg=cfg)
+        assert v.kind != "duplicate"
+
+    def test_a_write_with_no_content_claims_nothing(self, cfg, sizes, tmp_path):
+        f = tmp_path / "new.py"
+        f.write_text(("x" * 79 + "\n") * 500)
+        state = GuardState()
+        observe("Write", {"file_path": str(f)}, state, Verdict(False, "watched"),
+                now=f.stat().st_mtime)
+        v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
+                   sizes=sizes, state=state, cfg=cfg)
+        assert v.kind != "duplicate"
 
     def test_a_file_changed_after_our_write_is_worth_reading(self, cfg, sizes, tmp_path):
         """Something outside the session touched it; the context is stale."""
@@ -1228,3 +1268,181 @@ class TestABoundedReadIsNotAWholeRead:
         st = GuardState()
         observe("Read", {"file_path": str(f), "limit": 50}, st, Verdict(False, ""))
         assert _already_known(str(f), st) == ""
+
+
+class TestParallelHooksDoNotLoseEachOthersState:
+    """A turn's parallel tool calls run their hooks at once. Each loaded the
+    session, changed it and wrote all of it back, so the last writer won: 3 of
+    8 parallel Reads survived."""
+
+    def test_two_interleaved_writers_both_land(self, tmp_path):
+        from adder.decide.guard import save_state
+
+        p = tmp_path / "g.json"
+        a, b = load_state("s", p), load_state("s", p)
+        a.reads["/x"] = 1.0
+        a.fires += 1
+        b.reads["/y"] = 2.0
+        b.fires += 1
+        save_state("s", a, p)
+        save_state("s", b, p)
+        got = load_state("s", p)
+        assert set(got.reads) == {"/x", "/y"}
+        assert got.fires == 2
+
+    def test_a_removal_is_kept_and_a_concurrent_addition_is_not_lost(self, tmp_path):
+        """PreCompact clears the reads it saw; a read another hook recorded in
+        the meantime is not one it saw."""
+        from adder.decide.guard import save_state
+
+        p = tmp_path / "g.json"
+        seed = load_state("s", p)
+        seed.reads["/old"] = 1.0
+        save_state("s", seed, p)
+        compact, other = load_state("s", p), load_state("s", p)
+        compact.forget_context()
+        other.reads["/new"] = 2.0
+        save_state("s", other, p)
+        save_state("s", compact, p)
+        assert set(load_state("s", p).reads) == {"/new"}
+
+    def test_saving_twice_does_not_count_twice(self, tmp_path):
+        from adder.decide.guard import save_state
+
+        p = tmp_path / "g.json"
+        st = load_state("s", p)
+        st.fires += 1
+        save_state("s", st, p)
+        save_state("s", st, p)
+        assert load_state("s", p).fires == 1
+
+    def test_eight_processes_at_once(self, tmp_path):
+        import subprocess
+        import sys
+
+        p = tmp_path / "g.json"
+        code = ("import sys; from adder.decide.guard import load_state, save_state; "
+                "p=sys.argv[1]; st=load_state('s', p); "
+                "st.reads[sys.argv[2]]=1.0; st.fires+=1; save_state('s', st, p)")
+        procs = [subprocess.Popen([sys.executable, "-c", code, str(p), f"/f{i}"])
+                 for i in range(8)]
+        assert all(pr.wait(timeout=60) == 0 for pr in procs)
+        got = load_state("s", p)
+        assert len(got.reads) == 8 and got.fires == 8
+
+
+class TestAReadCountsOnceItHasLanded:
+    """PreToolUse runs before the permission prompt and the tool. A read the
+    user rejected, a rule blocked, or the harness spilled to a file was
+    remembered as in the context. Response shapes are Claude Code 2.1.283's."""
+
+    @staticmethod
+    def _file(tmp_path, lines=500):
+        f = tmp_path / "a.py"
+        f.write_text(("x" * 79 + "\n") * lines)
+        return f
+
+    @staticmethod
+    def _read_resp(f, num, total, capped=False):
+        return {"type": "text", "file": {"filePath": str(f), "content": "...",
+                                         "numLines": num, "startLine": 1,
+                                         "totalLines": total,
+                                         "truncatedByTokenCap": capped}}
+
+    def _issued(self, f, *, post_seen=1):
+        state = GuardState(post_seen=post_seen)
+        observe("Read", {"file_path": str(f)}, state, Verdict(False, "first read"))
+        return state
+
+    def test_issued_is_pending_not_read_once_the_post_hook_runs(self, tmp_path):
+        f = self._file(tmp_path)
+        state = self._issued(f)
+        assert str(f) in state.pending and str(f) not in state.reads
+
+    def test_a_whole_read_that_landed_is_promoted(self, tmp_path):
+        from adder.decide.guard import confirm
+
+        f = self._file(tmp_path)
+        state = self._issued(f)
+        confirm("Read", {"file_path": str(f)}, self._read_resp(f, 500, 500), state)
+        assert str(f) in state.reads and not state.pending
+
+    def test_a_token_capped_read_is_not(self, tmp_path):
+        from adder.decide.guard import confirm
+
+        f = self._file(tmp_path)
+        state = self._issued(f)
+        confirm("Read", {"file_path": str(f)},
+                self._read_resp(f, 300, 500, capped=True), state)
+        assert str(f) not in state.reads and not state.pending
+
+    def test_a_read_that_never_landed_is_never_refused(self, cfg, sizes, tmp_path):
+        """Rejected at the prompt: no PostToolUse, so nothing is promoted."""
+        f = self._file(tmp_path)
+        state = self._issued(f)
+        v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
+                   sizes=sizes, state=state, cfg=cfg)
+        assert v.kind != "duplicate"
+
+    def test_without_the_post_hook_the_old_behaviour_holds(self, cfg, sizes, tmp_path):
+        """An install from before this hook must not silently stop catching
+        duplicates."""
+        f = self._file(tmp_path)
+        state = self._issued(f, post_seen=0)
+        v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
+                   sizes=sizes, state=state, cfg=cfg)
+        assert v.fire and v.kind == "duplicate"
+
+    @pytest.mark.parametrize("extra", [{"persistedOutputPath": "/x", "persistedOutputSize": 9},
+                                       {"backgroundTaskId": "b1"},
+                                       {"interrupted": True}])
+    def test_a_cat_whose_output_did_not_come_back_inline_is_not_promoted(
+            self, tmp_path, extra):
+        from adder.decide.guard import confirm
+
+        f = tmp_path / "s.txt"
+        f.write_text("hello")
+        state = GuardState(post_seen=1)
+        cmd = {"command": f"cat {f}"}
+        observe("Bash", cmd, state, Verdict(False, "watched"))
+        resp = {"stdout": "hello", "stderr": "", "interrupted": False,
+                "isImage": False, "noOutputExpected": False, **extra}
+        confirm("Bash", cmd, resp, state)
+        assert str(f) not in state.reads
+
+    def test_a_cat_that_came_back_inline_is_promoted(self, tmp_path):
+        from adder.decide.guard import confirm
+
+        f = tmp_path / "s.txt"
+        f.write_text("hello")
+        state = GuardState(post_seen=1)
+        cmd = {"command": f"cat {f}"}
+        observe("Bash", cmd, state, Verdict(False, "watched"))
+        confirm("Bash", cmd, {"stdout": "hello", "stderr": "", "interrupted": False,
+                              "isImage": False, "noOutputExpected": False}, state)
+        assert str(f) in state.reads
+
+    def test_a_file_changed_between_issue_and_landing_is_not_promoted(self, tmp_path):
+        import os
+
+        from adder.decide.guard import confirm
+
+        f = self._file(tmp_path)
+        state = self._issued(f)
+        os.utime(f, (1, 1))
+        confirm("Read", {"file_path": str(f)}, self._read_resp(f, 500, 500), state)
+        assert str(f) not in state.reads
+
+
+class TestAFreshSessionKnowsThePostHookIsInstalled:
+    def test_another_sessions_confirmation_is_enough(self, tmp_path):
+        from adder.decide.guard import save_state
+
+        p = tmp_path / "g.json"
+        other = load_state("old", p)
+        other.post_seen = 1
+        save_state("old", other, p)
+        assert load_state("new", p).post_seen
+
+    def test_no_evidence_keeps_the_fallback(self, tmp_path):
+        assert not load_state("new", tmp_path / "g.json").post_seen

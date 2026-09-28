@@ -546,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     filters.add_arguments(ap)
     args = ap.parse_args(argv)
 
-    sessions, _window = filters.load(args, use_cache=True)
+    sessions, _window = filters.load(args)
     if not sessions:
         msg = {"simulated": True, "requests": 0} if args.json else \
             filters.nothing_found(args, _window)

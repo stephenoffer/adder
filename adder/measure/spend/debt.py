@@ -24,8 +24,11 @@ generation, and then again as cached input on every remaining turn:
 On Opus 5 that is $25/MTok + $0.50/MTok per remaining turn, so the multiple over
 sticker price is `1 + R/50`:
 
-    R=50    2.0x      R=340   7.8x  (measured median session)
-    R=759  16.2x      R=1854 38.1x  (measured p90 and worst session)
+    R=50    2.0x      R=340   7.8x  (median session, on the corpus this was built on)
+    R=759  16.2x      R=1854 38.1x  (p90 and longest session, same corpus)
+
+Those lengths describe one person's history. `adder debt` prints the same rows
+at this machine's own median, p90 and longest session.
 
 Every cost tool in existence reports the generation cost and misses the rest.
 
@@ -42,6 +45,7 @@ from datetime import date
 
 from adder.core import settings as _settings
 from adder.pricing.cost import Rates
+from adder.util.render import money
 
 M = 1_000_000.0
 
@@ -191,6 +195,29 @@ def verbosity_saving(sessions, *, reduction: float = 0.30,
                            gen, accumulated * reduction * output_share)
 
 
+def session_lengths(sessions) -> list[int]:
+    """Main-chain turns per session, sorted: what "remaining turns" is at turn 0."""
+    return sorted(len(s.main_turns) for s in sessions.values() if s.main_turns)
+
+
+def _rows(sessions, be: int) -> list[tuple[int, str]]:
+    """The table's rows: break-even, then this machine's own session lengths.
+
+    The rows were 200, 340, 759 and 1,854 -- the median, p90 and longest
+    session of the history this tool was built on -- printed on every machine
+    as if they described it. With enough sessions they are measured here.
+    """
+    rows = [(0, ""), (be, "break-even")]
+    n = session_lengths(sessions)
+    if len(n) >= 5:
+        rows += [(n[len(n) // 2], "median session here"),
+                 (n[min(len(n) - 1, int(0.9 * len(n)))], "p90 session here"),
+                 (n[-1], "longest session here")]
+    else:
+        rows += [(r, "illustrative") for r in (200, 500, 1_000)]
+    return rows
+
+
 def report(sessions, on: date | None = None) -> str:
     """Human-readable context-debt analysis."""
     lines: list[str] = []
@@ -198,12 +225,12 @@ def report(sessions, on: date | None = None) -> str:
     lines.append("  Context debt: what an output token really costs")
     lines.append("")
     lines.append(f"  {'remaining turns':>16}{'multiple of sticker price':>28}")
-    for R in (0, be, 200, 340, 759, 1854):
+    for R, label in _rows(sessions, be):
         # On the same date as `be` above. `debt_multiple(R)` with no date
         # priced the table at *today* while the break-even beside it was
         # priced at `on`, so the row for `be` did not sit at the 2.0x the
         # break-even is defined as.
-        lines.append(f"  {R:>16,}{debt_multiple(R, on=on):>27.1f}x")
+        lines.append(f"  {R:>16,}{debt_multiple(R, on=on):>27.1f}x  {label}".rstrip())
     lines.append("")
     lines.append(f"  Past {be} remaining turns, re-reading an output token costs more")
     lines.append("  than generating it did.")
@@ -216,15 +243,21 @@ def report(sessions, on: date | None = None) -> str:
 
     lines.append("")
     lines.append(f"  This dataset: {total_out:,} output tokens")
-    lines.append(f"    generation cost           ${gen_cost:>9,.0f}   (what cost tools report)")
-    lines.append(f"    measured cache-read       ${total_read:>9,.0f}")
-    lines.append(f"      irreducible baseline    ${baseline:>9,.0f}   (system prompt, tools, CLAUDE.md)")
-    lines.append(f"      accumulated prior output${accumulated:>9,.0f}   <- what verbosity controls")
+    lines.append(f"    generation cost           {money(gen_cost, width=10)}   (what cost tools report)")
+    lines.append(f"    measured cache-read       {money(total_read, width=10)}")
+    lines.append(f"      irreducible baseline    {money(baseline, width=10)}   "
+                 "(system prompt, tools, CLAUDE.md)")
+    # The pool is everything the context accumulated -- prior output, tool
+    # results and user input -- and it was labelled "accumulated prior output
+    # <- what verbosity controls", which credited terseness with the whole of
+    # it. Only the output share is verbosity's; the arrow sits on that line.
+    lines.append(f"      accumulated context     {money(accumulated, width=10)}   "
+                 "(prior output, tool results, user input)")
     share = output_share_of_growth(sessions)
     if gen_cost:
         attributable = accumulated * share
-        lines.append(f"    of which attributable to output ${attributable:>9,.0f}   "
-                     f"({100*share:.0f}% measured output share)")
+        lines.append(f"    of which attributable to output {money(attributable, width=10)}   "
+                     f"({100*share:.0f}% measured output share) <- what verbosity controls")
         lines.append(f"    true cost of output is {(gen_cost + attributable)/gen_cost:.1f}x "
                      f"the reported figure")
 
@@ -236,8 +269,9 @@ def report(sessions, on: date | None = None) -> str:
     lines.append(f"  {'cut':>6}{'generation':>13}{'re-read':>12}{'total':>11}{'leverage':>11}")
     for red in (0.10, 0.20, 0.30, 0.50):
         v = verbosity_saving(sessions, reduction=red, on=on)
-        lines.append(f"  {red:>5.0%}${v.generation_saved:>12,.0f}${v.reread_saved:>11,.0f}"
-                     f"${v.total:>10,.0f}{v.leverage:>10.1f}x")
+        lines.append(f"  {red:>5.0%}{money(v.generation_saved, width=13)}"
+                     f"{money(v.reread_saved, width=12)}"
+                     f"{money(v.total, width=11)}{v.leverage:>10.1f}x")
     lines.append("")
     lines.append("  Leverage = downstream dollars saved per dollar of generation saved.")
     return "\n".join(lines)
@@ -268,7 +302,8 @@ def main(argv: list[str] | None = None) -> int:
             "model": a.model,
             "breakeven_remaining_turns": breakeven_remaining_turns(a.model),
             "debt_multiple": {str(r): round(debt_multiple(r, a.model), 3)
-                              for r in (0, 50, 200, 340, 759, 1854)},
+                              for r, _ in _rows(sessions, breakeven_remaining_turns(
+                                  a.model))},
             "measured_cache_read": round(total, 4),
             "irreducible_baseline": round(baseline, 4),
             "accumulated_pool": round(accumulated, 4),

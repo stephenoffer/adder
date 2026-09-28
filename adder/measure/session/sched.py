@@ -428,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
     filters.add_arguments(ap)
     args = ap.parse_args(argv)
 
-    sessions, _w = filters.load(args, use_cache=True)
+    sessions, _w = filters.load(args)
     if not sessions:
         msg = filters.nothing_found(args, _w)
         print(json.dumps({"sessions": 0}, indent=2) if args.json else msg)

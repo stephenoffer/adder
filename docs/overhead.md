@@ -41,9 +41,13 @@ recommendation has to clear moves with it.
 
 ## The tool keeps its own books
 
-`adder ledger` records the guaranteed saving of every recommendation acted on
-against the overhead it cost, and measures the gap between what predictions
-promised and what they delivered. If they have been delivering 60% of face
+`adder ledger` records every routing turn, declined ones included, and holds
+the account over all of them: the expected saving of the advice acted on
+against the overhead of every turn spent giving advice. The worst-case figure
+is reported beside it, not as the verdict, because the gate emits on the
+expected saving. An accepted entry whose own expected saving did not clear its
+overhead is the one thing reported as a bug. The ledger also measures the gap
+between what predictions promised and what they delivered. If they have been delivering 60% of face
 value, every future prediction is scaled by 0.6 before it meets its gate. A model
 that over-promises raises its own bar until it stops.
 

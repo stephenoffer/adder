@@ -268,3 +268,16 @@ class TestAReplayedRecordIsNotMoreGrowth:
         g = scan(write_jsonl([use, res, second_use, second_res]))
         assert g.tool_calls["Bash"] == 2
         assert g.tool_results == 2 * 1_000
+
+
+class TestOverAttribution:
+    """Over 100% was explained as "the shortfall is ...", a gap the wrong way."""
+
+    def test_over_100_percent_is_not_called_a_shortfall(self, tmp_path):
+        from adder.measure.window.context import report
+
+        # 100 tokens of measured growth, 1,000 of billed output attributed.
+        out = report(tmp_path, {"s": _sess([1_000, 1_100], [500, 500])})
+        assert "Accounted for by the sources above: 1000%" in out
+        assert "shortfall" not in out
+        assert "over-attributed" in out

@@ -102,6 +102,32 @@ def output_drives_context(sessions, min_turns: int = 30) -> Claim:
                  f"{r:.2f}x", "0.35-0.75x", f"{n} non-compacting sessions")
 
 
+def the_carry_exceeds_the_sum(sessions, min_multiple: float = 5.0) -> Claim:
+    """Claim: the carry is at least five times the sum, as the README says.
+
+    The project's name and thesis (`docs/naming.md`): the carry, not the sum.
+    It quotes 5.7x on the corpus the tool was built against and nothing
+    re-measured it. The carry here is the accumulated re-read cost scaled to
+    output's measured share of growth, as `adder debt` prints it, against the
+    generation cost of the same tokens.
+
+    The README quotes 5.4x, measured on 2026-09-28; the bar is 5.0x so the
+    claim fails when the figure it prints has stopped being true, not when a
+    new month of history moves it a few tenths.
+    """
+    from adder.measure.spend.debt import decompose_read_cost, output_share_of_growth
+
+    gen = sum(t.out * t.rates().out / 1e6 for s in sessions.values() for t in s.turns)
+    if not gen:
+        return untestable("the carry exceeds the sum", "no data", f">={min_multiple:.1f}x")
+    _, _, accumulated = decompose_read_cost(sessions)
+    carry = accumulated * output_share_of_growth(sessions)
+    r = carry / gen
+    return Claim("the carry exceeds the sum", r >= min_multiple, f"{r:.1f}x",
+                 f">={min_multiple:.1f}x",
+                 "README quotes 5.4x (2026-09-28); docs/naming.md 5.7x on the build corpus")
+
+
 def input_side_dominates(sessions) -> Claim:
     inp = outp = 0.0
     for s in sessions.values():
@@ -489,23 +515,33 @@ def the_target_reduction_is_reachable(sessions, target: float = 10.0) -> Claim:
 
 
 def the_tool_has_paid_for_itself(sessions) -> Claim:
-    """Claim: cumulative guaranteed saving covers cumulative routing overhead.
+    """Claim: the saving advice was expected to bring covers what asking cost.
 
     `cost_with_adder = baseline - savings + overhead`, so the tool is cheaper
     than not having it exactly when savings cover overhead. The ledger records
-    both sides; this asserts the invariant over whatever it holds. An empty
-    ledger passes, because a tool that has never been asked anything has never
-    charged for an answer.
+    both sides, in expectation: `promised` over accepted entries against
+    `spent`, which counts the overhead of declined entries too -- asking still
+    cost a turn when the answer was "just do it". A ledger holding only
+    declines is therefore not empty, and used to be skipped as if it were.
+    Any accepted entry whose prediction did not clear its own overhead is a
+    gate bug, and fails this regardless of the totals.
+
+    Reads the user's ledger, not the corpus `validate` was pointed at: the
+    ledger is where `policy --record` writes, and it has no per-corpus copy.
     """
     from adder.decide.track.ledger import current
 
     led = current()
-    if not led.accepted:
+    if not led.entries:
         return Claim("advice has been worth more than the asking", True,
-                     "nothing spent", "banked >= spent",
+                     "nothing spent", "promised >= spent",
                      "no recommendations recorded; the invariant holds trivially")
-    return Claim("advice has been worth more than the asking", led.solvent,
-                 f"${led.margin:,.2f}", "banked >= spent", led.describe())
+    bad = led.gate_violations
+    note = led.describe() + (f"; {len(bad)} accepted below their own overhead"
+                             if bad else "")
+    return Claim("advice has been worth more than the asking",
+                 led.solvent and not bad,
+                 f"${led.margin:,.2f}", "promised >= spent", note)
 
 
 def an_opening_is_mostly_a_cache_read(sessions, min_share: float = 0.40) -> Claim:
@@ -589,7 +625,7 @@ def _bench(sessions):
     return _BENCH_MEMO[1]
 
 
-def installing_adder_pays_by_itself(sessions, min_mult: float = 1.3) -> Claim:
+def installing_adder_pays_by_itself(sessions, min_mult: float = 1.05) -> Claim:
     """Claim: the mechanisms that act without being obeyed are worth having alone.
 
     Two things here can save money with nobody following any advice: the
@@ -597,7 +633,10 @@ def installing_adder_pays_by_itself(sessions, min_mult: float = 1.3) -> Claim:
     which decide what a delegated step runs on. Everything else is a report, and
     a report saves nothing until someone acts on it.
 
-    This is deliberately the *small* number. If it ever fails, the honest
+    This is deliberately the *small* number, and it is smaller than it was
+    quoted: 1.6x came from a replay that delegated the model's own output along
+    with its tool results. Corrected, it measured 1.07x on 69 sessions
+    (2026-09-28). If it ever fails, the honest
     consequence is not to look for a better lever -- it is that the README's
     "install it and change nothing" line has to come down, because the only
     remaining case for the tool would be one that asks the reader to work
@@ -612,11 +651,13 @@ def installing_adder_pays_by_itself(sessions, min_mult: float = 1.3) -> Claim:
                  "guard at its shipped defaults plus the agent tiers; no behaviour change")
 
 
-def the_benchmark_headline_holds(sessions, min_mult: float = 5.0) -> Claim:
-    """Claim: following the threshold and cadence the reports solve reaches 5x.
+def the_benchmark_headline_holds(sessions, min_mult: float = 2.0) -> Claim:
+    """Claim: following the threshold and cadence the reports solve reaches 2x.
 
     This is the number quoted in the README, so it is re-measured here rather
-    than remembered. It is quoted at the nominal assumptions and the note
+    than remembered. It was 5x, against a README that said 6.4x, and neither
+    survived correcting the replay's delegation model: 2.5x on 69 sessions
+    (2026-09-28), nearly all of it the restart cadence. It is quoted at the nominal assumptions and the note
     carries the worst corner of the sweep, because the two are far apart and
     printing only the first is how a benchmark becomes marketing.
 
@@ -909,9 +950,11 @@ def the_guard_is_worth_more_than_it_costs(sessions, root=None) -> Claim:
                           measured="n/a", expected="saving > advice cost",
                      note="no local tool calls to replay")
     if not r.fires:
-        return Claim("the guard pays for the advice it gives", ok=True,
-                     measured="never speaks", expected="saving > advice cost",
-                     note=f"{r.calls:,} calls replayed, nothing cleared the gates")
+        # Not a pass. A guard that never spoke has shown nothing about whether
+        # speaking pays, and a PASS here read as evidence for the default.
+        return untestable("the guard pays for the advice it gives",
+                          measured="never speaks", expected="saving > advice cost",
+                          note=f"{r.calls:,} calls replayed, nothing cleared the gates")
     ratio = r.saving / r.overhead if r.overhead else float("inf")
     return Claim(
         "the guard pays for the advice it gives",
@@ -927,11 +970,15 @@ def the_guard_is_worth_more_than_it_costs(sessions, root=None) -> Claim:
     )
 
 
-def activating_it_pays_more_than_installing_it(sessions, min_mult: float = 2.5) -> Claim:
+def activating_it_pays_more_than_installing_it(sessions, min_mult: float = 1.08) -> Claim:
     """Claim: `adder auto on --full` beats the advisory install, hands off.
 
-    The README quotes 1.6x for installing and 3.1x for activating, and the
-    second is the number this whole mechanism exists to produce, so it is
+    The README quoted 1.6x for installing and 3.1x for activating. Both came
+    from a replay that let a refused read delegate the model's own output,
+    delegated turns already inside subagents, and priced a subagent at about
+    $0.002. Corrected: 1.07x and 1.10x on 69 sessions (2026-09-28), with the
+    duplicate refusal, which this bench leaves out, adding about 0.02x to each.
+    The second is still the number this mechanism exists to produce, so it is
     re-measured here rather than remembered.
 
     It is priced with the ladder told to enforce **and at the thresholds
@@ -1002,9 +1049,14 @@ def enforcement_removes_the_assumption(sessions, root=None,
                      state_path=base.state_path, enforce='full')
     r = guard_replay(root, cfg=cfg)
     if not r.calls or not r.fires:
+        # Two different reasons, and the note used to give the first for both:
+        # "no local tool calls" on a history of 1,600 calls none of which fired.
+        why = ("no local tool calls to replay" if not r.calls else
+               f"{r.calls:,} calls replayed and none fired at the enforcing "
+               "thresholds, so there is no refusal to measure")
         return untestable("enforcing removes the uptake assumption",
                           measured="n/a", expected=f">={min_prevented_share:.0%} prevented",
-                     note="no local tool calls to replay")
+                          note=why)
     share = 1.0 - r.assumed_share
     return Claim(
         "enforcing removes the uptake assumption",
@@ -1021,6 +1073,7 @@ CHECKS = (
     output_drives_context,
     input_side_dominates,
     debt_pool_is_addressable,
+    the_carry_exceeds_the_sum,
     sessions_are_long,
     model_routing_is_marginal,
     attribution_is_bounded,

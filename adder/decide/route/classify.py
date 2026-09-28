@@ -746,14 +746,21 @@ def main(argv: list[str] | None = None) -> int:
     text = " ".join(a.task) if a.task else sys.stdin.read()
 
     v = classify(text)
+    # The effort the tier *asks for* is not the effort the model will take:
+    # Haiku 4.5 rejects the parameter outright, and `policy.choose_effort`
+    # sends "default" there. This printed `effort=low` for it -- a setting
+    # that is a 400 on the model it was printed next to.
+    from adder.pricing.registry import supports_effort
+
+    effort = v.tier.effort if supports_effort(v.tier.model, v.tier.effort) else "default"
     if a.json:
         print(json.dumps({
-            "tier": v.tier.name, "model": v.tier.model, "effort": v.tier.effort,
+            "tier": v.tier.name, "model": v.tier.model, "effort": effort,
             "agent": v.tier.agent, "confidence": v.confidence,
             "read_only": v.read_only, "abstained": v.abstained, "reasons": v.reasons,
         }))
     else:
-        print(f"{v.tier.name} ({v.tier.model}, effort={v.tier.effort}) "
+        print(f"{v.tier.name} ({v.tier.model}, effort={effort}) "
               f"confidence={v.confidence:.2f}{' ABSTAINED' if v.abstained else ''}")
         for r in v.reasons:
             print(f"  - {r}")

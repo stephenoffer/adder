@@ -12,7 +12,9 @@ That is the whole thesis of the project stated in one word. An output token is
 billed once when it is written, then again as cached input on every turn that
 follows it. The write is the sum. The 340 re-reads are the carry. On the
 transcripts this was built against, the carry was **5.7x** the sum, and no
-dashboard anywhere showed it.
+dashboard anywhere showed it. On the September 2026 history it was 5.4x, which
+`adder validate` re-measures. `adder debt` measures it on yours, and
+`adder validate` checks that it is still more than the sum.
 
 The name is also a snake, which is the traditional entry fee for a Python
 project.

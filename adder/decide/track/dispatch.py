@@ -40,13 +40,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 
 from adder.core.trace import DEFAULT_ROOT, transcripts
 from adder.util.records import mapping
+from adder.util.when import parse_iso
 
 # Tools that dispatch work to a fresh context. `Task` is the older name.
 DISPATCH_TOOLS = ("Agent", "Task")
@@ -73,12 +74,15 @@ def tier_for_model(model: str) -> str:
     rebinds a rung gets the tier it configured instead of the one that was true
     when this was written.
 
-    Exact id first, then equal list price. A tier here is a *cost* tier -- that
-    is the whole reason the escalation gate exists -- so a run on
+    Exact id first, then the nearest list price. A tier here is a *cost* tier
+    -- that is the whole reason the escalation gate exists -- so a run on
     `claude-opus-4-8` belongs on the same rung as one on `claude-opus-5`: same
     $5/$25, same arithmetic, same decision. Matching ids alone left every run on
     a previous generation untiered and therefore uncounted, which is how a log
-    stays empty while the evidence sits on disk.
+    stays empty while the evidence sits on disk. Matching *equal* prices did the
+    same one step later: Opus 5.5 ($4) and Sonnet 4.6 ($3) sit between rungs
+    rather than on one, so the model most sessions ran on was never counted.
+    Nearest is measured as a ratio, since a rung is a price multiple.
 
     Base rates are compared, never dated ones. An introductory price makes a
     model temporarily cheaper without moving it to a different rung, and a tier
@@ -98,13 +102,16 @@ def tier_for_model(model: str) -> str:
                 return tier
         except Exception:
             continue
+    best, best_gap = "", math.inf
     for tier, mid in LADDER.items():
         try:
-            if resolve(mid).base == target.base:
-                return tier
+            inp = resolve(mid).base.inp
         except Exception:
             continue
-    return ""
+        gap = abs(math.log(target.base.inp / inp))
+        if gap < best_gap:
+            best, best_gap = tier, gap
+    return best
 
 
 @dataclass
@@ -151,9 +158,8 @@ class Dispatch:
     @property
     def epoch(self) -> float:
         try:
-            return datetime.fromisoformat(
-                self.ts.replace("Z", "+00:00")).timestamp()
-        except (ValueError, AttributeError):
+            return parse_iso(self.ts).timestamp()
+        except (ValueError, TypeError, AttributeError):
             return 0.0
 
 

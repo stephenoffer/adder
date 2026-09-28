@@ -31,13 +31,16 @@ happen.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
+import shlex
 import shutil
+import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from adder.core.settings import PROJECT_FILE, USER_FILE, project_file
+from adder.core.settings import PROJECT_FILE, project_file, user_file
 from adder.decide import guard
 
 # The three hooks, in the order they matter. `event` is the Claude Code hook
@@ -52,6 +55,10 @@ HOOKS: tuple[dict, ...] = (
      'module': 'adder.decide.hooks.pretooluse_read_guard', 'event': 'PreToolUse',
      'matcher': '|'.join(guard.OBSERVED),
      'does': 'prices, and can refuse, a call before its result lands in context'},
+    {'script': 'posttooluse_confirm.py', 'name': 'read-confirm',
+     'module': 'adder.decide.hooks.posttooluse_confirm', 'event': 'PostToolUse',
+     'matcher': 'Read|Bash',
+     'does': 'counts a read as in context only once its whole result has landed'},
     {'script': 'precompact_learn.py', 'name': 'compact-learn',
      'module': 'adder.decide.hooks.precompact_learn', 'event': 'PreCompact',
      'matcher': '',
@@ -213,6 +220,25 @@ def skill_removals(target: Path, *, repo: Path | None = None) -> list[str]:
     return out
 
 
+def agent_removals(target: Path, *, repo: Path | None = None) -> list[str]:
+    """Installed agent files that are still exactly what we shipped.
+
+    They used to stay behind on `off` as costing "nothing without the hooks".
+    That was not true of `Explore.md`: it overrides a built-in and pins every
+    exploration to Haiku, which is a change of model, hooks or no hooks, and
+    `off` is documented as reversing `on`. A copy that differs is somebody's
+    now and stays, by the same rule as the skills.
+    """
+    out = []
+    for name in AGENTS:
+        try:
+            if (target / name).read_bytes() == (agents_dir(repo) / name).read_bytes():
+                out.append(name)
+        except OSError:
+            continue
+    return out
+
+
 def plugin_enabled(cwd: Path | str | None = None) -> bool:
     """Is the adder Claude Code plugin enabled here? Read-only; never raises.
 
@@ -313,8 +339,45 @@ def hook_command(h: dict, repo: Path | None = None, *, portable: bool = False) -
     which is why it is not what user scope gets.
     """
     if portable:
-        return f"{ADDER_EXE} hook {h['name']}"
-    return f"{guard.interpreter()} -m {h['module']}"
+        # `|| true` because this line gets committed and then run by whatever
+        # adder each contributor has. One from before `adder hook` existed exits
+        # 2 on the unknown command, and to Claude Code 2 is "block": every Read
+        # and Bash refused, every prompt erased. No hook here signals through its
+        # exit status -- a refusal is JSON on stdout -- so nothing is lost.
+        return f"{ADDER_EXE} hook {h['name']} || true"
+    interp = guard.interpreter()
+    return f"{_pythonpath_prefix(interp)}{interp} -m {h['module']}"
+
+
+# `adder/decide/auto.py` -> the directory `import adder` has to find.
+_PACKAGE_PARENT = Path(__file__).resolve().parents[2]
+
+
+@functools.lru_cache(maxsize=4)
+def _pythonpath_prefix(interp: str) -> str:
+    """`PYTHONPATH=<checkout> ` when `interp` cannot find this package alone.
+
+    `-m adder...` imports from the interpreter's own path, plus the working
+    directory. From a checkout with no `pip install`, which CLAUDE.md says must
+    work, that finds the package only while Claude Code runs in the checkout
+    itself. Everywhere else every hook exited 1 with `No module named 'adder'`,
+    a non-blocking error, so no call was ever guarded and `auto status` still
+    said ON. Asked once, at install time, of a fresh interpreter started away
+    from the checkout -- and a different copy of adder counts as not found,
+    since the hooks have to run the one that wrote them.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    probe = ("import adder, os; "
+             "print(os.path.dirname(os.path.dirname(os.path.abspath(adder.__file__))))")
+    try:
+        r = subprocess.run([interp, "-c", probe], cwd=os.path.abspath(os.sep), env=env,
+                           capture_output=True, text=True, timeout=20, check=False)
+        found = Path(r.stdout.strip()).resolve() if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        found = None
+    if found == _PACKAGE_PARENT:
+        return ""
+    return f"PYTHONPATH={shlex.quote(str(_PACKAGE_PARENT))} "
 
 
 def _is_ours(command: str) -> bool:
@@ -375,9 +438,18 @@ def merge(settings: dict, *, repo: Path | None = None,
         groups = hooks.setdefault(event, [])
         if not isinstance(groups, list):
             continue
-        if any(_is_ours(entry.get('command', ''))
-               for g in groups if isinstance(g, dict)
-               for entry in (g.get('hooks') or []) if isinstance(entry, dict)):
+        mine = [entry for g in groups if isinstance(g, dict)
+                for entry in (g.get('hooks') or [])
+                if isinstance(entry, dict) and _is_ours(entry.get('command', ''))]
+        if mine:
+            # A committed portable line from before `|| true` is upgraded in
+            # place: skipping it as already installed left exactly the installs
+            # that fix was for still able to exit 2 and block every call.
+            bare = f"{ADDER_EXE} hook {h['name']}"
+            for entry in mine:
+                if portable and str(entry.get('command', '')).strip() == bare:
+                    entry['command'] = hook_command(h, repo, portable=True)
+                    changed.append(f"{event}: {h['script']} (now fails open)")
             continue
         group: dict = {'hooks': [{'type': 'command',
                                   'command': hook_command(h, repo, portable=portable),
@@ -396,10 +468,15 @@ def unmerge(settings: dict) -> tuple[dict, list[str]]:
     hooks = out.get('hooks')
     if not isinstance(hooks, dict):
         return out, []
+    # Only what this removal emptied is deleted. An event list, or a `hooks`
+    # object, that was already empty is the user's, and deleting it too meant
+    # `on` then `off` did not give back the file that was there before.
+    emptied = False
     for event, groups in list(hooks.items()):
         if not isinstance(groups, list):
             continue
         kept_groups = []
+        removed_here = False
         for g in groups:
             if not isinstance(g, dict):
                 kept_groups.append(g)
@@ -413,14 +490,19 @@ def unmerge(settings: dict) -> tuple[dict, list[str]]:
             for e in entries:
                 if isinstance(e, dict) and _is_ours(e.get('command', '')):
                     changed.append(f"{event}: {Path(str(e.get('command'))).name}")
+            if len(kept) == len(entries):
+                kept_groups.append(g)
+                continue
+            removed_here = True
             if not kept:
                 continue                      # the group held nothing else
             kept_groups.append({**g, 'hooks': kept})
-        if kept_groups:
+        if kept_groups or not removed_here:
             hooks[event] = kept_groups
         else:
             hooks.pop(event)                  # do not leave an empty event behind
-    if not hooks:
+            emptied = True
+    if not hooks and emptied:
         out.pop('hooks', None)
     return out, changed
 
@@ -506,6 +588,7 @@ class Plan:
     skill_writes: list[str] = field(default_factory=list)
     skill_skips: list[str] = field(default_factory=list)
     skill_removes: list[str] = field(default_factory=list)
+    agent_removes: list[str] = field(default_factory=list)
     # The plugin supplies the hooks, the tier agents and the skills, so `on`
     # writes only what a plugin cannot: the level, and the `Explore` override.
     plugin: bool = False
@@ -530,7 +613,7 @@ class Plan:
     def empty(self) -> bool:
         return not self.hook_changes and not self.config_changes \
             and not self.agent_writes and not self.skill_writes \
-            and not self.skill_removes
+            and not self.skill_removes and not self.agent_removes
 
 
 def _override_warnings(env: dict[str, str] | None = None) -> list[str]:
@@ -676,7 +759,7 @@ def plan(*, cwd: Path | str | None = None, level: str = 'certain', user: bool = 
         plugin = plugin_enabled(base)
     settings_path = ((Path.home() / '.claude' / 'settings.json') if user
                      else base / '.claude' / 'settings.json')
-    config_path = USER_FILE if user else (project_file(base) or base / PROJECT_FILE)
+    config_path = user_file() if user else (project_file(base) or base / PROJECT_FILE)
     current = _read_json(settings_path)
     after, changes = (unmerge(current) if plugin
                       else merge(current, repo=repo, portable=not user))
@@ -743,29 +826,47 @@ def plan_off(*, cwd: Path | str | None = None, user: bool = True) -> Plan:
     base = Path(cwd or os.getcwd()).resolve()
     settings_path = ((Path.home() / '.claude' / 'settings.json') if user
                      else base / '.claude' / 'settings.json')
-    config_path = USER_FILE if user else (project_file(base) or base / PROJECT_FILE)
+    config_path = user_file() if user else (project_file(base) or base / PROJECT_FILE)
     after, changes = unmerge(_read_json(settings_path))
     config = _read_json(config_path)
     # Only the level is reset. The thresholds `--full` wrote are left where
     # they are: they are measurements of this workload, they are meaningful to
     # an advisory guard too, and silently reverting a number the user may since
     # have tuned by hand is not what "off" should mean.
-    # The agent files are not removed. They are ordinary configuration a user
-    # may have come to rely on, they cost nothing when the hooks are gone, and
-    # deleting a file somebody may have edited is not something `off` should
-    # do quietly. The report says they are staying.
+    # Agent and skill files are removed only while they are byte-identical to
+    # what we shipped (an edited one is the user's), and only when this `off`
+    # is reversing an install: it removes our hooks, or `on` set the level.
+    # Identical is not proof we wrote them. A team can commit the same files,
+    # and this repository tracks a mirror of them in `.claude/`, which a bare
+    # `auto off --project` here would have deleted with no hook in sight.
     agents_path = settings_path.parent / 'agents'
     skills_path = settings_path.parent / 'skills'
+    was = str(config.get('guard_enforce', 'off'))
+    ours = bool(changes) or was != 'off'
     return Plan(settings_path=settings_path, config_path=config_path,
                 hook_changes=changes, agents_path=agents_path, level='off',
-                skills_path=skills_path, skill_removes=skill_removals(skills_path),
+                skills_path=skills_path,
+                skill_removes=skill_removals(skills_path) if ours else [],
+                agent_removes=agent_removals(agents_path) if ours else [],
                 plugin=plugin_enabled(base),
-                was_level=str(config.get('guard_enforce', 'off')),
+                was_level=was,
                 settings_after=after, config_after={**config, 'guard_enforce': 'off'},
                 config_before=config, user=user)
 
 
-def _write(path: Path, blob: dict) -> None:
+def _indent_of(path: Path) -> int | str:
+    """The indent the file already uses, so a rewrite is a diff of our lines."""
+    try:
+        for line in path.read_text(encoding='utf-8').splitlines()[1:]:
+            lead = line[:len(line) - len(line.lstrip())]
+            if lead:
+                return '\t' if lead[0] == '\t' else len(lead)
+    except OSError:
+        pass
+    return 2
+
+
+def _write(path: Path, blob: dict, *, backup_first: bool = True) -> None:
     """Write JSON, keeping one backup of whatever was there before.
 
     Atomic, and unique per writer, for the same reason every other write in
@@ -775,11 +876,22 @@ def _write(path: Path, blob: dict) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     backup = path.with_name(path.name + BACKUP_SUFFIX)
-    if path.exists() and not backup.exists():
+    # `off` never makes one. Everything it rewrites is a file `on` touched, so
+    # a backup made then held adder's own content -- `adder.json.adder.bak` for
+    # a config `on` had created from nothing -- under a name that promises the
+    # user's original.
+    if backup_first and path.exists() and not backup.exists():
         backup.write_text(path.read_text(encoding='utf-8'), encoding='utf-8')
+    text = json.dumps(blob, indent=_indent_of(path), ensure_ascii=False) + '\n'
+    # `off` that lands back on the pre-adder content writes the pre-adder bytes:
+    # a re-serialisation is the same JSON and a noisy diff of a file the user
+    # formatted by hand.
+    with contextlib.suppress(OSError, ValueError):
+        if backup.exists() and json.loads(backup.read_text(encoding='utf-8')) == blob:
+            text = backup.read_text(encoding='utf-8')
     tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
     try:
-        tmp.write_text(json.dumps(blob, indent=2) + '\n', encoding='utf-8')
+        tmp.write_text(text, encoding='utf-8')
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -791,10 +903,10 @@ def apply(p: Plan) -> list[str]:
         raise ValueError(p.blocked)
     done: list[str] = []
     if p.hook_changes:
-        _write(p.settings_path, p.settings_after)
+        _write(p.settings_path, p.settings_after, backup_first=p.level != 'off')
         done.append(f'{p.settings_path}: {len(p.hook_changes)} hook(s)')
     if p.config_changes:
-        _write(p.config_path, p.config_after)
+        _write(p.config_path, p.config_after, backup_first=p.level != 'off')
         done.append(f'{p.config_path}: {", ".join(p.config_changes)}')
     if p.agent_writes:
         p.agents_path.mkdir(parents=True, exist_ok=True)
@@ -818,6 +930,12 @@ def apply(p: Plan) -> list[str]:
             d.rmdir()                 # only if nothing of the user's is in it
     if p.skill_removes:
         done.append(f'{p.skills_path}: removed {len(p.skill_removes)} skill(s)')
+    for name in p.agent_removes:
+        (p.agents_path / name).unlink(missing_ok=True)
+    if p.agent_removes:
+        with contextlib.suppress(OSError):
+            p.agents_path.rmdir()             # only if nothing of the user's is in it
+        done.append(f'{p.agents_path}: removed {len(p.agent_removes)} agent(s)')
     return done
 
 
@@ -953,9 +1071,11 @@ def _render_plan(p: Plan, *, off: bool = False) -> list[str]:
     if off and p.plugin:
         out += ['', '    (the adder plugin is still enabled, so its hooks go on '
                 'advising; `/plugin` disables it)']
-    if off:
-        out += ['', '    (agent files are left in place; they cost nothing '
-                'without the hooks)']
+    if off and p.agent_removes:
+        out.append('')
+        for name in p.agent_removes:
+            out.append(f'    remove {name}')
+        out.append(f'    in     {p.agents_path}')
     if not off:
         out += ['', '  What each hook does:', '']
         for h in HOOKS:

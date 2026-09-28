@@ -159,7 +159,7 @@ class TestHonestDegradation:
 
 
 class TestChecks:
-    def test_price_expiry_is_flagged_inside_the_window(self):
+    def test_price_expiry_is_flagged_inside_the_window(self, scheduled_intro):
         from datetime import date
 
         c = check_prices(date(2026, 8, 15))         # Sonnet 5 intro ends 08-31

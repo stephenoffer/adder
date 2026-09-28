@@ -180,6 +180,30 @@ class TestWholeReads:
         monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", "1234")
         assert reads.max_bash_output_chars() == 1234
 
+    def test_the_read_back_window_cannot_raise_the_inline_ceiling(self, monkeypatch,
+                                                                    tmp_path):
+        """`BASH_MAX_OUTPUT_LENGTH` sizes the read-back window; a result past
+        the inline ceiling still arrives as a path and a preview."""
+        monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", "100000")
+        assert reads.max_bash_output_chars() == reads.DEFAULT_MAX_BASH_OUTPUT_CHARS
+        f = tmp_path / "mid.log"
+        f.write_text("x" * 49_000)
+        assert reads.whole_reads("Bash", {"command": f"cat {f}"}) == []
+
+    def test_a_background_command_admits_nothing(self, tmp_path):
+        f = tmp_path / "a.py"
+        f.write_text("x")
+        cmd = {"command": f"cat {f}", "run_in_background": True}
+        assert reads.whole_reads("Bash", cmd) == []
+
+    def test_two_files_share_one_ceiling(self, tmp_path):
+        a, b = tmp_path / "a.log", tmp_path / "b.log"
+        a.write_text("x" * 600)
+        b.write_text("x" * 600)
+        cmd = {"command": f"cat {a} {b}"}
+        assert reads.whole_reads("Bash", cmd, max_chars=1_000) == []
+        assert reads.whole_reads("Bash", cmd, max_chars=2_000) == [str(a), str(b)]
+
     @pytest.mark.parametrize("value", ["", "not-a-number", "0", "-5"])
     def test_an_unusable_ceiling_falls_back(self, monkeypatch, value):
         monkeypatch.setenv("BASH_MAX_OUTPUT_LENGTH", value)
@@ -203,7 +227,12 @@ class TestWholeReads:
         ("head -50 a.py b.py", True), ("sed s/a/b/ a.py", False),
         ("sed -n /foo/p a.py", False), ("grep -n foo a.py", False),
         ("cat a.py && pytest", False), ("diff a.py b.py", False),
-        ("tail -f log", False), ("awk 1 a.py", False), ("", False)])
+        ("tail -f log", False), ("awk 1 a.py", False), ("", False),
+        # Quoted, the script's last character is the quote, not `p`.
+        ("sed -n 's/foo/bar/p' a.py", False), ("sed -n '/def /p' a.py", False),
+        ("sed -n '1,20p' a.py", True), ("sed -n -e 5p -e '10,12p' a.py", True),
+        ("sed -n '/a/,/b/{p}' a.py", False), ("sed -n -i 1p a.py", False),
+        ("sed -n '1,5p;9p' a.py", True)])
     def test_only_prints_files(self, command, want):
         assert reads.only_prints_files(command) is want
 

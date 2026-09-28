@@ -26,8 +26,9 @@ and bad under another**, and which you are in decides the answer:
 * If the guaranteed path can absorb the entire remaining queue at once (true of
   an API you can fan out against), greedy wins outright. It collects the whole
   discount and the last-step sprint always rescues it. Measured on a 200-unit
-  queue over 24 steps, greedy costs $100.52 against the proportional policy's
-  $130.35, and both meet every deadline.
+  queue over 24 steps at the default rates (`compare(Workload(200, 24))`),
+  greedy costs $100.10 against the proportional policy's $135.54, and both
+  meet every deadline.
 * If the guaranteed path is rate-limited -- a quota, a concurrency cap, a human
   in the loop -- greedy concentrates every expensive unit into the window where
   it has the least capacity to place them, and it starts missing deadlines.
@@ -159,10 +160,17 @@ class Run:
 
 
 def _step_cheap(remaining: int, w: Workload, rng: random.Random) -> int:
-    """Units the cheap path returns this step. Zero on a stall."""
-    if rng.random() < w.stall_rate:
+    """Units the cheap path returns this step. Zero on a stall.
+
+    At least one unit on a step that does not stall, as `_step_guaranteed`
+    already had it. Rounding a share of a short queue took the last unit to
+    `round(1 * 0.34) == 0`, so the cheap path could never finish: a 500-step
+    window with no stalls at all reported the always-cheap policy meeting its
+    deadline 0% of the time.
+    """
+    if rng.random() < w.stall_rate or w.batch_throughput <= 0 or remaining <= 0:
         return 0
-    return min(remaining, round(remaining * w.batch_throughput))
+    return min(remaining, max(1, round(remaining * w.batch_throughput)))
 
 
 def _step_guaranteed(remaining: int, w: Workload) -> int:

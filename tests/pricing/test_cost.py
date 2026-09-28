@@ -27,7 +27,7 @@ OPUS, HAIKU, SONNET = "claude-opus-5", "claude-haiku-4-5", "claude-sonnet-5"
 
 
 class TestPricing:
-    def test_sonnet5_intro_expires(self):
+    def test_sonnet5_intro_expires(self, scheduled_intro):
         assert rate(SONNET, date(2026, 8, 31)) == (2, 10)
         assert rate(SONNET, date(2026, 9, 1)) == (3, 15)
 
@@ -323,7 +323,7 @@ class TestOneSharedExpression:
         got = admitted_cost(1_000, Rates(5, 25, 0.5, 6.25), reads=-50)
         assert got.reads == 0.0 and got.total == got.write
 
-    def test_claude_rates_come_from_the_dated_table(self):
+    def test_claude_rates_come_from_the_dated_table(self, scheduled_intro):
         from adder.pricing.cost import Rates
 
         early = Rates.claude("claude-sonnet-5", on=date(2026, 8, 31))

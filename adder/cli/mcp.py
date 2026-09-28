@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,12 +83,21 @@ class Tool:
                 'additionalProperties': False}
 
     def argv(self, args: dict[str, Any]) -> list[str]:
+        """The child's argv, with no way for a value to become a flag.
+
+        Values come from the calling agent, which means from whatever text it
+        was handed. Passed bare, `{"task": "--record"}` reached `policy` as the
+        flag and wrote the ledger through a server that promises to be read-only;
+        `{"root": "--help"}` returned usage. Options are joined to their value
+        with `=`, and the positional sits after `--`, so argparse reads each one
+        as data whatever it starts with.
+        """
         out: list[str] = []
-        if self.positional and args.get(self.positional):
-            out.append(str(args[self.positional]))
         for k in self.params:
             if k != self.positional and args.get(k):
-                out += [f'--{k}', str(args[k])]
+                out.append(f'--{k}={args[k]}')
+        if self.positional and args.get(self.positional):
+            out += ['--', str(args[self.positional])]
         return out
 
 
@@ -246,7 +256,7 @@ def config_snippet(agent: str, exe: str | None = None) -> str:
         return f'// ~/.gemini/settings.json\n{blob}\n'
     if agent == 'cursor':
         return f'// ~/.cursor/mcp.json\n{blob}\n'
-    return f"claude mcp add adder -- {' '.join([command, *args])}\n"
+    return f"claude mcp add adder -- {shlex.join([command, *args])}\n"
 
 
 def main(argv: list[str] | None = None) -> int:

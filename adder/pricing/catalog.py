@@ -48,6 +48,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from adder.util.when import parse_iso
+
 SCHEMA = 1
 
 # Boards carried from the arena, in the order a coding router should trust them.
@@ -304,7 +306,7 @@ class Entry:
         if not self.fetched_at:
             return None
         try:
-            t = datetime.fromisoformat(str(self.fetched_at).replace("Z", "+00:00"))
+            t = parse_iso(str(self.fetched_at))
         except (ValueError, TypeError):
             return None
         if t.tzinfo is None:
@@ -614,10 +616,10 @@ def first_party(on: date | None = None) -> Catalog:
     one a human checked against the published list.
 
     The rate is taken **as of a date**, not from `base`. `prices.py` exists
-    because Claude rates move -- Sonnet 5 ships at an introductory $2/$10 that
-    reverts to $3/$15 after 2026-08-31 -- and every other consumer of that table
-    honours it. This layer did not, so `adder pick` priced Sonnet 5 at $3/$15
-    while `adder trace` and `adder policy` priced the same model at $2/$10, and
+    because Claude rates move -- Sonnet 5 launched at an introductory $2/$10
+    announced to revert to $3/$15 after 2026-08-31 -- and every other consumer
+    of that table honours it. This layer did not, so `adder pick` priced Sonnet 5
+    at $3/$15 while `adder trace` and `adder policy` priced it at $2/$10, and
     the cross-vendor comparison quietly carried a 50% penalty against it. Two
     halves of one tool disagreeing about the price of one model is worse than
     either number on its own.

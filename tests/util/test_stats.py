@@ -130,8 +130,20 @@ class TestConcentration:
         """A single session cannot be unequal with itself."""
         assert gini([42]) == 0.0
 
-    def test_gini_ignores_non_positive(self):
-        assert gini([0, 0, 5, 5]) == pytest.approx(gini([5, 5]))
+    def test_gini_counts_zeros(self):
+        """One session holding the whole bill is not "even" because the rest cost 0.
+
+        This replaces `test_gini_ignores_non_positive`, which asserted the bug:
+        dropping zeros made `[0, 0, 0, 10]` score 0.0.
+        """
+        assert gini([0, 0, 0, 10]) == pytest.approx(0.75)
+        assert gini([0, 0, 5, 5]) == pytest.approx(0.5)
+
+    def test_gini_ignores_values_that_cannot_be_a_cost(self):
+        assert gini([-3, float("nan"), float("inf"), 5, 5]) == pytest.approx(gini([5, 5]))
+
+    def test_gini_of_all_zeros_is_zero(self):
+        assert gini([0, 0, 0]) == 0.0
 
 
 class TestMeans:

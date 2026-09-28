@@ -335,6 +335,15 @@ def format_report(rep: Report) -> str:
             "Almost none of this queue is shared prefix, so no ordering can "
             "help. That is a property of the work, not a failure of the "
             "schedule.")
+    elif (rep.arrival is not None and rep.grouped is not None
+          and rep.arrival.prefix_reads >= rep.grouped.prefix_reads > 0):
+        # The other side of the window. This branch used to say "the prefix
+        # has expired" for both, including a queue whose arrival order already
+        # read every prefix warm -- the opposite of what happened.
+        out += render.wrap(
+            "Ordering does not help here: at this TTL the prefix survives the "
+            "interleaving, so arrival order already reads it warm and grouping "
+            "has nothing left to save.")
     else:
         out += render.wrap(
             "Ordering does not help here: at this TTL the prefix has expired "

@@ -72,7 +72,7 @@ class TestCacheMinimums:
 
 
 class TestRates:
-    def test_intro_rate_expires(self):
+    def test_intro_rate_expires(self, scheduled_intro):
         assert rate(SONNET, date(2026, 8, 31)) == (2, 10)
         assert rate(SONNET, date(2026, 9, 1)) == (3, 15)
         assert intro_expiry(SONNET) == date(2026, 8, 31)
@@ -107,10 +107,29 @@ class TestPointReleasesHaveTheirOwnRows:
 
     @pytest.mark.parametrize("model,per_m", [
         ("claude-opus-5-5", 0.20), ("claude-fable-5-1", 0.25), ("claude-opus-5", 0.50),
+        ("claude-mythos-5-1", 0.25), ("claude-mythos-5", 1.00),
     ])
     def test_cache_reads_bill_at_the_published_rate(self, model, per_m):
         from adder.pricing.cost import turn_cost
         assert turn_cost(model, cache_read=1_000_000) == pytest.approx(per_m)
+
+    @pytest.mark.parametrize("model", ["claude-sonnet-5-1", "claude-opus-5-7[1m]",
+                                       "claude-haiku-4-5-1"])
+    def test_an_unlisted_point_release_is_unknown_not_its_parent(self, model):
+        with pytest.raises(UnknownModelError):
+            resolve(model)
+
+
+class TestSonnetFiveKeptItsLaunchPrice:
+    """The announced revert to $3/$15 on 2026-09-01 was cancelled; modelling it
+    billed every Sonnet 5 turn from that date at 1.5x."""
+
+    @pytest.mark.parametrize("on", [date(2026, 8, 15), date(2026, 9, 1), date(2027, 1, 1)])
+    def test_it_is_two_and_ten_on_either_side_of_the_old_date(self, on):
+        assert rate(SONNET, on) == (2, 10)
+
+    def test_it_has_no_expiry_to_warn_about(self):
+        assert intro_expiry(SONNET) is None
 
 
 class TestEffort:

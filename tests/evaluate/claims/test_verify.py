@@ -33,10 +33,10 @@ class TestWindow:
 
 class TestReport:
     def _sessions(self, before_out, after_out, before_ctx, after_ctx):
-        s = Session("s", "p")
-        s.turns = [_turn("2026-07-01T00:00:00Z", before_out, before_ctx) for _ in range(50)]
-        s.turns += [_turn("2026-09-01T00:00:00Z", after_out, after_ctx) for _ in range(50)]
-        return {"s": s}
+        b, a = Session("b", "p"), Session("a", "p")
+        b.turns = [_turn("2026-07-01T00:00:00Z", before_out, before_ctx, "b") for _ in range(50)]
+        a.turns = [_turn("2026-09-01T00:00:00Z", after_out, after_ctx, "a") for _ in range(50)]
+        return {"b": b, "a": a}
 
     def test_reports_a_real_improvement(self, monkeypatch):
         sess = self._sessions(2000, 500, 400_000, 100_000)
@@ -78,3 +78,37 @@ class TestReport:
         sess = self._sessions(2000, 500, 400_000, 100_000)
         monkeypatch.setattr("adder.evaluate.claims.verify.load_sessions", lambda root: sess)
         assert "not an A/B" in report(date(2026, 8, 1))
+
+
+class TestASessionIsNotSplitAtTheCutover:
+    """Two identical sessions, each running past midnight, straddling the cutover.
+
+    Split per turn, the late large-context turns of the first one landed after
+    the cutover: turns/session -39% and cost/turn +17% with nothing changed.
+    """
+
+    def _pair(self):
+        out = {}
+        for sid, day in (("x", "2026-08-01"), ("y", "2026-08-02")):
+            s = Session(sid, "p")
+            s.turns = [_turn(f"{day}T23:{i // 2:02d}:00Z" if i < 100 else
+                             f"{day[:-2]}{int(day[-2:]) + 1:02d}T00:{(i - 100) // 2:02d}:00Z",
+                             400, 10_000 + 1_000 * i, sid) for i in range(150)]
+            out[sid] = s
+        return out
+
+    def test_identical_sessions_compare_equal(self, monkeypatch, tz):
+        tz("UTC")
+        sess = self._pair()
+        monkeypatch.setattr("adder.evaluate.claims.verify.load_sessions", lambda root: sess)
+        b, a = compare(date(2026, 8, 2))
+        assert (b.sessions, a.sessions) == (1, 1)
+        assert b.turns == a.turns == 150
+        assert b.cost_per_turn == pytest.approx(a.cost_per_turn)
+
+    def test_no_change_is_not_reported_as_a_rise(self, monkeypatch, tz):
+        tz("UTC")
+        sess = self._pair()
+        monkeypatch.setattr("adder.evaluate.claims.verify.load_sessions", lambda root: sess)
+        text = report(date(2026, 8, 2), root="/nonexistent")
+        assert "ROSE" not in text and "did not move" in text

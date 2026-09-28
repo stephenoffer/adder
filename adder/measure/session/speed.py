@@ -346,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
     filters.add_arguments(ap)
     args = ap.parse_args(argv)
 
-    sessions, _w = filters.load(args, use_cache=True)
+    sessions, _w = filters.load(args)
     if not sessions:
         print(json.dumps({"total_turns": 0}, indent=2) if args.json
               else filters.nothing_found(args, _w))

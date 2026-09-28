@@ -22,6 +22,7 @@ from adder.core.trace import (
     project_name,
     summarize_sessions,
 )
+from adder.measure.argtypes import nonneg_int
 
 
 def _pct(a, p: float) -> int:
@@ -54,8 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-cache", action="store_true", help="ignore the parse cache")
     ap.add_argument("--by", choices=GROUPINGS, default=None,
                     help="break the total down by one dimension")
-    ap.add_argument("--top", type=int, default=3, metavar="N",
-                    help="how many rows to show in each ranking (default: %(default)s)")
+    ap.add_argument("--top", type=nonneg_int, default=3, metavar="N",
+                    help="how many rows to show in each ranking; 0 shows them all "
+                         "(default: %(default)s)")
     ap.add_argument("--strict", action="store_true",
                     help="exit non-zero if any turn used a model with no known price")
     a = ap.parse_args(argv)
@@ -107,31 +109,35 @@ def main(argv: list[str] | None = None) -> int:
     groups = group_by(sessions, a.by) if a.by else []
 
     if a.json:
+        # Dollars at 4dp, the precision `sessions --json` already uses. At 2dp
+        # a sub-cent corpus exported a total of 0.0, and two reports over the
+        # same turns disagreed in the third decimal for no reason but rounding.
         payload = {
-            "total": round(s.total, 2),
+            "total": round(s.total, 4),
             "sessions": s.n_sessions,
             "turns": s.n_turns,
             "cost_per_turn": round(s.cost_per_turn, 6),
-            "input_side": round(s.input_side, 2),
-            "output_side": round(s.output_side, 2),
-            "cache_read": round(s.cache_read_cost, 2),
-            "cache_write": round(s.cache_write_cost, 2),
-            "thinking": round(s.thinking_cost, 2),
-            "sidechain": round(s.sidechain_cost, 2),
+            "input_side": round(s.input_side, 4),
+            "output_side": round(s.output_side, 4),
+            "cache_read": round(s.cache_read_cost, 4),
+            "cache_write": round(s.cache_write_cost, 4),
+            "thinking": round(s.thinking_cost, 4),
+            "sidechain": round(s.sidechain_cost, 4),
             "fast_turns": s.fast_turns,
-            "by_model": {k: round(v, 2) for k, v in s.by_model.items()},
+            "by_model": {k: round(v, 4) for k, v in s.by_model.items()},
             "turns_p50": _pct(lens, 0.5), "turns_p90": _pct(lens, 0.9),
             "ctx_p50": _pct(ctxs, 0.5), "ctx_p90": _pct(ctxs, 0.9),
             "concentration": round(gini(costs), 3),
             "filter": window.describe(),
             "unknown_models": s.unknown_models,
             "synthetic_turns": s.synthetic_turns,
+            "partial_turns": s.partial_turns,
         }
         if groups:
             payload["by_" + a.by] = [
-                {"key": g.key, "cost": round(g.cost, 2), "turns": g.turns}
+                {"key": g.key, "cost": round(g.cost, 4), "turns": g.turns}
                 for g in groups[: a.top] if a.top > 0
-            ] or [{"key": g.key, "cost": round(g.cost, 2), "turns": g.turns}
+            ] or [{"key": g.key, "cost": round(g.cost, 4), "turns": g.turns}
                   for g in groups]
         print(json.dumps(payload))
         return 1 if (a.strict and s.unknown_models) else 0
@@ -141,24 +147,24 @@ def main(argv: list[str] | None = None) -> int:
         if window.dropped_undated:
             print(f"  {window.dropped_undated:,} turns had no timestamp and were dropped")
     print(f"\n  {s.n_sessions} sessions · {s.n_turns:,} turns · "
-          f"${s.total:,.2f} list-equivalent · {money(s.cost_per_turn)}/turn\n")
+          f"{money(s.total)} list-equivalent · {money(s.cost_per_turn)}/turn\n")
     print(f"  {'model':<28}{'turns':>8}{'cost':>11}{'share':>8}")
     for m, c in sorted(s.by_model.items(), key=lambda kv: -kv[1]):
-        print(f"  {m:<28}{s.turns_by_model[m]:>8,}{c:>11,.2f}{100*share(c, s.total):>7.1f}%")
+        print(f"  {m:<28}{s.turns_by_model[m]:>8,}{money(c):>11}{100*share(c, s.total):>7.1f}%")
 
-    print(f"\n  input-side   ${s.input_side:>9,.2f}  ({100*share(s.input_side, s.total):.0f}%)")
-    print(f"  output-side  ${s.output_side:>9,.2f}  ({100*share(s.output_side, s.total):.0f}%)")
-    print(f"  cache-read   ${s.cache_read_cost:>9,.2f}  "
+    print(f"\n  input-side   {money(s.input_side):>10}  ({100*share(s.input_side, s.total):.0f}%)")
+    print(f"  output-side  {money(s.output_side):>10}  ({100*share(s.output_side, s.total):.0f}%)")
+    print(f"  cache-read   {money(s.cache_read_cost):>10}  "
           f"({100*share(s.cache_read_cost, s.total):.0f}% of all spend)")
-    print(f"  cache-write  ${s.cache_write_cost:>9,.2f}  "
+    print(f"  cache-write  {money(s.cache_write_cost):>10}  "
           f"({100*share(s.cache_write_cost, s.total):.0f}%)")
     if s.thinking_tokens:
-        print(f"  thinking     ${s.thinking_cost:>9,.2f}  "
+        print(f"  thinking     {money(s.thinking_cost):>10}  "
               f"({s.thinking_tokens:,} tok, {100*s.thinking_tokens/max(1,s.out_tokens):.0f}% of output)")
-    print(f"  subagents    ${s.sidechain_cost:>9,.2f}  "
+    print(f"  subagents    {money(s.sidechain_cost):>10}  "
           f"({100*share(s.sidechain_cost, s.total):.1f}%, {s.sidechain_turns:,} turns)")
     if s.fast_turns:
-        print(f"  fast mode    ${s.fast_cost:>9,.2f}  "
+        print(f"  fast mode    {money(s.fast_cost):>10}  "
               f"({s.fast_turns:,} turns billed at 2x)")
 
     print(f"\n  turns/session   p50={_pct(lens,.5):,}  p90={_pct(lens,.9):,}  max={max(lens):,}")
@@ -166,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ranked = sorted(sessions.values(), key=lambda x: -x.cost)
     top = sum(x.cost for x in ranked[: max(1, len(ranked) // 4)])
-    print(f"  top 25% of sessions = ${top:,.0f} ({100*share(top, s.total):.0f}% of spend)"
+    print(f"  top 25% of sessions = {money(top)} ({100*share(top, s.total):.0f}% of spend)"
           f"  ·  concentration {gini(costs):.2f}")
 
     if groups:
@@ -199,12 +205,12 @@ def main(argv: list[str] | None = None) -> int:
         if len(groups) > len(shown):
             seen = {id(g) for g in shown}
             rest = sum(g.cost for g in groups if id(g) not in seen)
-            print(f"    … {len(groups) - len(shown):,} more, ${rest:,.2f}")
+            print(f"    … {len(groups) - len(shown):,} more, {money(rest)}")
 
     if a.top > 0:
         print("\n  most expensive sessions:")
         for x in ranked[: a.top]:
-            print(f"    ${x.cost:>8,.0f}  {x.n_turns:>5,} turns  "
+            print(f"    {money(x.cost):>10}  {x.n_turns:>5,} turns  "
                   f"avg ctx {x.avg_context:>9,}  {project_name(x.project)[:44]}")
 
     if s.synthetic_turns:
@@ -219,6 +225,14 @@ def main(argv: list[str] | None = None) -> int:
         for m, n in sorted(s.unknown_models.items(), key=lambda kv: -kv[1])[:5]:
             print(f"      {n:>7,}  {m}")
         print("    Every figure in this report is therefore a lower bound.")
+
+    if s.partial_turns:
+        print()
+        print(f"  ⚠ {s.partial_turns:,} turns never got a final usage record — nearly "
+              f"all of them subagent")
+        print("    turns — so their output is counted at the streaming partial, "
+              "~10 tokens each.")
+        print("    Input and cache are complete; subagent output is a lower bound.")
 
     if a.verify:
         # Structural invariants, not a pinned dollar figure. The absolute total

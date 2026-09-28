@@ -267,6 +267,24 @@ class TestDaysAreLocalDays:
         assert not Window(since=date(2026, 8, 2)).keeps_turn(t)
 
 
+class TestTimestampsPython310Rejected:
+    """3.10's `fromisoformat` rejects these, so the record fell out of every window."""
+
+    @pytest.mark.parametrize("ts", [
+        "2026-08-02T02:00:00.123456789Z",
+        "2026-08-02T02:00:00.12Z",
+        "2026-08-02T02:00:00+0000",
+    ])
+    def test_day_of_reads_them(self, tz, ts):
+        tz("UTC")
+        assert day_of(ts) == date(2026, 8, 2)
+
+    def test_a_windowed_record_scan_keeps_them(self, tz):
+        tz("UTC")
+        w = Window(since=date(2026, 8, 2), until=date(2026, 8, 3))
+        assert w.keeps_record({"timestamp": "2026-08-02T02:00:00.123456789Z"})
+
+
 class TestNothingFound:
     """An empty report names where it looked and what emptied it."""
 

@@ -224,6 +224,19 @@ class TestUnknownModels:
         assert got == []
         assert seen == {"frobnicator-7": 1}
 
+    def test_a_known_model_without_a_price_is_tallied_too(self, tmp_path):
+        # The catalog lists models it has no price for. Admitting one only
+        # moved the failure to `cost()`, which raised out of the report.
+        from adder.pricing import registry
+
+        unpriced = next(e.id for e in registry.catalog() if registry.is_known(e.id)
+                        and not registry.is_priced(e.id))
+        f = tmp_path / "s.jsonl"
+        f.write_text(json.dumps(_openai(100, 0, model=unpriced)))
+        seen: dict[str, int] = {}
+        assert list(ingest.iter_turns(f, unknown=seen)) == []
+        assert seen == {unpriced: 1}
+
 
 class TestItPlugsIntoTheExistingReports:
     def test_iter_file_falls_back_to_the_adapters(self, tmp_path):

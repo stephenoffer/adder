@@ -69,21 +69,33 @@ class TestRoundTrip:
 class TestSolvency:
     def test_worth_more_than_the_asking_is_solvent(self):
         led = Ledger(_entries(5, worst=0.5, overhead=0.2))
-        assert led.solvent and led.margin == pytest.approx(1.5)
+        assert led.solvent and led.margin == pytest.approx(4.0)
+        assert led.guaranteed_margin == pytest.approx(1.5)
 
-    def test_overhead_beyond_the_guarantee_is_insolvent(self):
-        led = Ledger(_entries(5, worst=0.05, overhead=0.2))
+    def test_overhead_beyond_the_expectation_is_insolvent(self):
+        led = Ledger(_entries(5, predicted=0.1, worst=0.05, overhead=0.2))
         assert not led.solvent and led.margin < 0
 
-    def test_solvency_uses_the_worst_case_not_the_expectation(self):
-        """The point of the invariant: an expectation can be wrong in the
-        direction that costs money, and a worst case cannot."""
+    def test_solvency_is_stated_over_what_the_gate_guarantees(self):
+        """`decide` emits on `Guarantee.safe` -- expected above overhead -- and
+        never promised the worst case. Holding the ledger to the worst case
+        called every ordinary recommendation a bug; the worst case is still
+        reported, as the margin nothing could take back."""
         led = Ledger(_entries(3, predicted=10.0, worst=0.01, overhead=1.0))
-        assert led.promised > led.spent and not led.solvent
+        assert led.solvent and led.gate_held
+        assert led.guaranteed_margin < 0
 
-    def test_declined_recommendations_cost_nothing(self):
+    def test_declined_recommendations_still_pay_their_overhead(self):
+        """A decline costs the routing turn exactly as a recommendation does."""
         led = Ledger(_entries(4, worst=0.0, overhead=5.0, accepted=False))
-        assert led.spent == 0.0 and led.solvent
+        assert led.spent == pytest.approx(20.0) and not led.solvent
+        # Declining is not the gate misbehaving.
+        assert led.gate_held
+
+    def test_an_accepted_entry_below_its_own_overhead_is_a_gate_violation(self):
+        led = Ledger(_entries(2, predicted=1.0, overhead=0.2)
+                     + _entries(1, predicted=0.1, overhead=0.2))
+        assert not led.gate_held and len(led.gate_violations) == 1
 
     def test_an_empty_ledger_holds_trivially(self):
         assert Ledger([]).solvent and "nothing has been spent" in Ledger([]).describe()
@@ -128,10 +140,29 @@ class TestReport:
         assert "Nothing recorded yet" in capsys.readouterr().out
 
     def test_insolvent_report_exits_nonzero(self, log, capsys):
-        for e in _entries(3, worst=0.01, overhead=1.0):
+        for e in _entries(3, predicted=0.5, worst=0.01, overhead=1.0):
             record(e, log)
         assert main(["--log", str(log)]) == 1
-        assert "INSOLVENT" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "INSOLVENT" in out and "that is a bug" in out
+
+    def test_declines_alone_are_reported_not_hidden(self, log, capsys):
+        """`policy --record` x3 on a declined task wrote three $0.26 rows, and
+        the report said "Nothing recorded yet"."""
+        for _ in range(3):
+            record(Entry("inline", 0.0, -0.9, 0.26, accepted=False), log)
+        assert main(["--log", str(log)]) == 0
+        out = capsys.readouterr().out
+        assert "Nothing recorded yet" not in out
+        assert "$0.78" in out and "that is a bug" not in out
+
+    def test_a_recommendation_that_cleared_its_bar_is_not_a_bug(self, log, capsys):
+        """What an ordinary `--record` writes: expected above overhead, worst
+        case below it. It used to print INSOLVENT and exit 1."""
+        record(Entry("delegate", 0.40, -0.10, 0.26), log)
+        assert main(["--log", str(log)]) == 0
+        out = capsys.readouterr().out
+        assert "INSOLVENT" not in out and "that is a bug" not in out
 
     def test_json_is_machine_readable(self, log, capsys):
         for e in _entries(3, realized=0.5):

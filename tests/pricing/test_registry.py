@@ -37,7 +37,7 @@ class TestFirstPartyStillWins:
         assert (s.inp, s.out) == (5, 25)
         assert s.source == "first-party:prices.py"
 
-    def test_the_intro_rate_still_expires(self):
+    def test_the_intro_rate_still_expires(self, scheduled_intro):
         """Only the first-party layer has a time dimension, and it keeps it."""
         from datetime import date
         assert registry.rate(SONNET, date(2026, 8, 31)) == (2, 10)

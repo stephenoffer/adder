@@ -240,3 +240,21 @@ class TestTheProjectVocabulary:
         from adder.decide.route.classify import project_terms
 
         assert project_terms()["cheap"] == ("placement group",)
+
+
+class TestTheCliPrintsAnEffortTheModelAccepts:
+    """Haiku 4.5 rejects `effort`; `policy.choose_effort` sends "default" there,
+    and `adder classify` printed `effort=low` beside it."""
+
+    def test_a_model_without_effort_prints_default(self, capsys, monkeypatch):
+        import json
+
+        from adder.decide.route import classify as cl
+        from adder.pricing.registry import supports_effort
+
+        monkeypatch.setattr(cl.Tier, "model", property(lambda self: "claude-haiku-4-5"))
+        assert not supports_effort("claude-haiku-4-5", "low")
+        assert cl.main(["find where the config is loaded"]) == 0
+        assert "effort=default" in capsys.readouterr().out
+        assert cl.main(["--json", "find where the config is loaded"]) == 0
+        assert json.loads(capsys.readouterr().out)["effort"] == "default"

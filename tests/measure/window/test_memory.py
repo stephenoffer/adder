@@ -450,3 +450,15 @@ class TestADuplicateReturnsEveryExtraCopy:
 
     def test_a_line_in_one_file_is_not_a_duplicate(self, tmp_path):
         assert memory.duplicates(self._docs(tmp_path, 1)) == []
+
+
+class TestPricingSaysWhyItIsThePrior:
+    """"no local sessions" was printed for a directory of sessions merely too
+    short to fit from -- the one case the reader can do something about."""
+
+    def test_short_sessions_are_not_called_missing(self, make_sessions):
+        few = memory.Pricing.measure(make_sessions(n=2, n_turns=5))
+        assert not few.measured
+        assert "too few sessions (n=2" in few.describe()
+        assert "no local sessions" not in few.describe()
+        assert "no local sessions" in memory.Pricing.measure({}).describe()

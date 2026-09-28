@@ -224,15 +224,25 @@ def report(f: Fit, *, sessions: dict[str, Session] | None = None,
                      f"with {remaining:,} turns of re-reads ahead:")
         rows = []
         table_mult = f.multipliers()
+        # `multipliers()` fills every unfitted level with its prior, so a step
+        # is only measured when BOTH ends were fitted. The table used to print
+        # every row alike under a report headed "what was measured": on a
+        # history fitted at high/medium only, `max → xhigh` was two priors
+        # multiplied together and read as a finding.
+        fitted = set(f.fittable) | ({BASE_LEVEL} if f.base is not None else set())
         steps = [("max", "xhigh"), ("xhigh", "high"), ("high", "medium"),
                  ("medium", "low")]
         for hi, lo in steps:
             total, _ = effort_saving(out_per_turn, model, from_effort=hi,
                                      to_effort=lo, remaining_turns=remaining,
                                      mult=table_mult, on=on)
-            rows.append([f"{hi} → {lo}", money(total)])
-        lines += table(rows, ["step", "$/turn"], align="<>")
+            basis = "measured" if {hi, lo} <= fitted else "MODELLED (prior)"
+            rows.append([f"{hi} → {lo}", money(total), basis])
+        lines += table(rows, ["step", "$/turn", "multiplier"], align="<><")
         lines.append(f"  At {tokens(out_per_turn)} output per turn, the measured mean.")
+        if any(r[2] != "measured" for r in rows):
+            lines.append("  MODELLED rows use a cost.EFFORT_OUTPUT_MULT prior for at least")
+            lines.append(f"  one end of the step: that level has under {MIN_TURNS} turns here.")
     return "\n".join(lines)
 
 
@@ -251,6 +261,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="model to price the step-down table with")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)
+    if a.model:
+        from adder.pricing.cost import Rates
+
+        # Resolved up front, the way `carry` does. The model only prices the
+        # step-down table, which is skipped on a history with no effort
+        # labels, so `--model bogus` was accepted there and silently ignored.
+        Rates.for_model(a.model)
 
     sessions, _window = load_window(a)
     f = fit(sessions)

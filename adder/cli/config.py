@@ -14,12 +14,13 @@ from pathlib import Path
 from adder.core.settings import (
     PROJECT_FILE,
     SETTINGS,
-    USER_FILE,
     ConfigError,
     ignored_in_files,
+    ignored_in_project,
     project_file,
     resolve,
     template,
+    user_file,
 )
 
 
@@ -51,9 +52,17 @@ def report(*, cwd: Path | str | None = None) -> str:
                      f"reads from a file.")
         names = ", ".join(s.env_var for s in SETTINGS if s.name in ignored)
         lines.append(f"    Export {names} instead.")
+    refused = ignored_in_project(cwd=cwd)
+    if refused:
+        lines.append("")
+        lines.append(f"  ! the project file sets {', '.join(refused)}, which only your "
+                     f"own ~/.claude/adder.json")
+        lines.append("    or the environment may set: a repository must not choose "
+                     "where adder writes.")
     lines.append("")
     pf = project_file(cwd)
-    lines.append(f"  user file     {USER_FILE}{'' if USER_FILE.is_file() else '  (absent)'}")
+    uf = user_file()
+    lines.append(f"  user file     {uf}{'' if uf.is_file() else '  (absent)'}")
     lines.append(f"  project file  {pf if pf else f'./{PROJECT_FILE}  (absent)'}")
     lines.append("")
     lines.append("  Precedence: default < user file < project file < environment.")

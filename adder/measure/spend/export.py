@@ -24,6 +24,13 @@ Writing
 Output goes to stdout unless `-o` names a file, and `-o` refuses to overwrite
 without `--force`. The tool does not delete or replace anything the user did
 not ask it to.
+
+`--force` used to be the whole guard, and it was not enough: `export -o
+<root>/proj/s1.jsonl --force` replaced a transcript with its own CSV, which is
+the one write CLAUDE.md rule 3 forbids outright. So a destination inside the
+transcript root, or inside `~/.claude/projects`, is refused whatever the flags
+say -- compared after resolving symlinks, so a link that points in is caught
+too.
 """
 
 from __future__ import annotations
@@ -152,11 +159,27 @@ def render(columns: tuple[str, ...], rows: list[dict], fmt: str) -> str:
     raise ValueError(f"unknown format {fmt!r}; known: {', '.join(FORMATS)}")
 
 
+def protected_root(dest: Path, roots: list[Path]) -> Path | None:
+    """The transcript directory `dest` would land inside, or None if it is clear.
+
+    Both sides are resolved, which follows symlinks on every component that
+    exists: a link planted outside the root that points at a transcript is
+    the same write as naming the transcript.
+    """
+    target = dest.expanduser().resolve()
+    for root in roots:
+        base = root.expanduser().resolve()
+        if target == base or base in target.parents:
+            return root
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     from adder.core.filters import add_arguments as add_window
     from adder.core.filters import load as load_window
+    from adder.core.filters import root_of
 
     ap = argparse.ArgumentParser(
         prog="adder export",
@@ -171,6 +194,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--force", action="store_true",
                     help="allow -o to overwrite an existing file")
     a = ap.parse_args(argv)
+
+    if a.out:
+        # Checked before anything is read, and before `--force` is consulted:
+        # no flag makes overwriting user transcripts correct. The home path is
+        # resolved here rather than at import so a test's HOME is the one used.
+        guarded = [Path(root_of(a)), Path.home() / ".claude" / "projects"]
+        hit = protected_root(Path(a.out), guarded)
+        if hit is not None:
+            print(f"adder export: refusing to write {a.out}: it is inside the "
+                  f"transcript directory {hit}, which adder never writes to",
+                  file=sys.stderr)
+            return 2
 
     sessions, _window = load_window(a)
 

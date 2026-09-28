@@ -76,6 +76,7 @@ from adder.core.filters import root_of as _root_of
 from adder.core.reads import resolve as _resolve_path
 from adder.core.reads import tool_targets
 from adder.core.trace import DEFAULT_ROOT, transcripts
+from adder.measure.argtypes import positive_int
 from adder.util.records import mapping
 from adder.util.text import est_tokens, flatten_text
 
@@ -822,7 +823,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Content the agent admitted to context more than once, and "
                     "the reads that recur across sessions a note could replace.")
     add_window(ap)
-    ap.add_argument("--top", type=int, default=10, metavar="N",
+    ap.add_argument("--top", type=positive_int, default=10, metavar="N",
                     help="rows per section (default: %(default)s)")
     ap.add_argument("--min-tokens", type=int, default=MIN_RESULT_TOKENS,
                     metavar="TOK",

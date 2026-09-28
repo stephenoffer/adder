@@ -131,13 +131,14 @@ def _flat_text(content) -> str:
 
 
 def scan(root: Path | str, *, since: date | None = None,
-         until: date | None = None, window=None) -> QualityStats:
+         until: date | None = None, window=None,
+         sessions: set[str] | None = None) -> QualityStats:
     """Read quality proxies from transcripts, windowed by date or by `window`.
 
     `window` is a `filters.Window` and supersedes `since`/`until` when given,
     so a caller can scope these proxies to one project or one session the same
-    way every other report does. The bare dates stay because `compare()` is
-    built on them and a cutover is naturally two date-bounded scans.
+    way every other report does. `sessions`, when given, replaces the date
+    bounds with a set of session ids to keep whole; `compare()` uses it.
     """
     from adder.core.trace import transcripts
 
@@ -169,6 +170,9 @@ def scan(root: Path | str, *, since: date | None = None,
                     continue
                 if window is not None:
                     if not window.keeps_record(d, path.parent.name):
+                        continue
+                elif sessions is not None:
+                    if str(d.get("sessionId") or path.stem) not in sessions:
                         continue
                 else:
                     day = _day(d.get("timestamp"))
@@ -244,8 +248,49 @@ def scan(root: Path | str, *, since: date | None = None,
     return q
 
 
+def session_starts(root: Path | str) -> dict[str, date]:
+    """The day each session began: its earliest timestamp across every file.
+
+    Every record is read, not only a file's head: one file can hold several
+    sessions, and a resumed session spans several files.
+    """
+    from adder.core.trace import transcripts
+
+    starts: dict[str, date] = {}
+    for path in transcripts(root):
+        try:
+            fh = path.open(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(d, dict):
+                    continue
+                day = _day(d.get("timestamp"))
+                if day is None:
+                    continue
+                sid = str(d.get("sessionId") or path.stem)
+                if sid not in starts or day < starts[sid]:
+                    starts[sid] = day
+    return starts
+
+
 def compare(root: Path | str, cutover: date) -> tuple[QualityStats, QualityStats]:
-    return scan(root, until=cutover), scan(root, since=cutover)
+    """Proxies before and after `cutover`, each session counted whole where it began.
+
+    Splitting by record put the first half of a session that ran past the
+    cutover in one window and the second in the other, so `turns_per_prompt`
+    moved 22% between two identical sessions and `verify` called it a
+    regression.
+    """
+    starts = session_starts(root)
+    before = {s for s, d in starts.items() if d < cutover}
+    after = set(starts) - before
+    return scan(root, sessions=before), scan(root, sessions=after)
 
 
 def regressions(before: QualityStats, after: QualityStats, *,

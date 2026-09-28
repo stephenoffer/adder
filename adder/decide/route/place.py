@@ -46,6 +46,7 @@ import argparse
 import json
 from dataclasses import dataclass, field
 
+from adder.measure.argtypes import positive_int
 from adder.pricing.catalog import Catalog, Entry
 from adder.util import render
 
@@ -179,6 +180,9 @@ class Options:
     places: list[Placement] = field(default_factory=list)
     considered: int = 0
     infeasible: int = 0
+    # Candidates the runtime cannot run as the main session, whatever they cost.
+    blocked: int = 0
+    harness: str = ""
 
     @property
     def movable(self) -> list[Placement]:
@@ -211,6 +215,8 @@ class Options:
             "affinity_value_usd": self.affinity,
             "considered": self.considered,
             "infeasible": self.infeasible,
+            "blocked_by_harness": self.blocked,
+            "harness": self.harness,
             "best": self.best.id if self.best else None,
             "candidates": [row(p) for p in self.places],
         }
@@ -225,9 +231,21 @@ def evaluate(
     out_tokens: int = 1_200,
     board: str = "webdev",
     require_rating: bool = False,
+    harness: str | None = None,
 ) -> Options:
-    """Price every model in the catalog as a home for this session."""
+    """Price every model in the catalog as a home for this session.
+
+    `harness` is the runtime the session lives in. A move is a change of the
+    *main* conversation's model, and a harness pinned to one vendor cannot
+    make it: under Claude Code the whole catalog was priced and a cheaper
+    vendor's model was recommended as a place to move to, which is advice the
+    user has no way to take. `None` applies no runtime constraint, for a
+    library caller pricing the arithmetic; the CLI passes the configured one.
+    """
+    from adder.core import harness as _harness
     from adder.pricing.registry import UnknownModelError, UnpricedModelError, fits
+
+    rig = _harness.get(harness) if harness is not None else None
 
     opts = Options(
         incumbent=incumbent,
@@ -236,6 +254,7 @@ def evaluate(
         remaining_turns=remaining_turns,
         out_tokens=out_tokens,
         affinity=affinity_value(ctx_tokens, incumbent, remaining_turns),
+        harness=rig.name if rig is not None else "",
     )
 
     for e in cat:
@@ -244,6 +263,11 @@ def evaluate(
         if require_rating and board not in e.elo:
             continue
         opts.considered += 1
+        # The runtime gates before price: a model the harness will not run as
+        # the main session is not a cheaper home, it is not a home.
+        if rig is not None and not rig.allows_main_session(e.org):
+            opts.blocked += 1
+            continue
         # Feasibility gates profitability: a window that cannot hold the
         # context is not a cheap home, it is a 400.
         if e.context is not None and e.context < ctx_tokens:
@@ -303,6 +327,9 @@ def report(opts: Options, *, top: int = 10) -> str:
         out.append("")
         out.append("  No other model in the catalog can hold this context and "
                    "carries a price.")
+        if opts.blocked:
+            out.append(f"  {opts.blocked:,} more were left out because {opts.harness} "
+                       "cannot run them as the main session.")
         return "\n".join(out)
 
     out.append("")
@@ -332,7 +359,7 @@ def report(opts: Options, *, top: int = 10) -> str:
         else:
             out += render.wrap(
                 f"Stay. The cheapest alternative, {cheapest.id}, needs "
-                f"{be:,.0f} turns to repay its migration and this session has "
+                f"{_breakeven_str(be)} turns to repay its migration and this session has "
                 f"{opts.remaining_turns}. Moving now spends "
                 f"{render.money(cheapest.migration)} to save "
                 f"{render.money(cheapest.saving_per_turn(opts.incumbent_per_turn) * opts.remaining_turns)}.")
@@ -341,9 +368,19 @@ def report(opts: Options, *, top: int = 10) -> str:
         net = (best.saving_per_turn(opts.incumbent_per_turn) * opts.remaining_turns
                - best.migration)
         out += render.wrap(
-            f"Move to {best.id}: it repays the migration in {be:,.0f} turns and "
+            # `_breakeven_str`, as the table uses: `{be:,.0f}` printed "repays
+            # the migration in 0 turns" beside a table row that said "<1".
+            f"Move to {best.id}: it repays the migration in {_breakeven_str(be)} "
+            f"turns and "
             f"this session has {opts.remaining_turns} left, for a net "
             f"{render.money(net)}.")
+
+    if opts.blocked:
+        out.append("")
+        out += render.wrap(
+            f"{opts.blocked:,} candidates were left out because {opts.harness} "
+            "cannot run them as the main session; they are reachable as a "
+            "subagent or a tool call at most.")
 
     if any(p.assumed_cache for p in opts.places[:top]):
         out.append("")
@@ -362,6 +399,7 @@ def report(opts: Options, *, top: int = 10) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from adder.core import harness as _harness
     from adder.pricing.catalog import load
 
     ap = argparse.ArgumentParser(
@@ -378,7 +416,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=int, default=1_200, help="tokens per answer")
     ap.add_argument("--rated-only", action="store_true",
                     help="only consider models with a rating on the coding board")
-    ap.add_argument("--top", type=int, default=10)
+    ap.add_argument("--top", type=positive_int, default=10)
+    ap.add_argument("--harness", default=_harness.default(), choices=_harness.names(),
+                    help="agent runtime the session runs in; decides which "
+                         "vendors it can move to (default: %(default)s)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -388,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
         remaining_turns=max(0, args.turns),
         out_tokens=max(0, args.out),
         require_rating=args.rated_only,
+        harness=args.harness,
     )
     if args.json:
         print(json.dumps(opts.to_json(), indent=2, sort_keys=True))

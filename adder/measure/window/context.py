@@ -286,8 +286,17 @@ def report(root: Path | str, sessions=None, *, window=None) -> str:
             lines.append(f"  Measured main-chain context growth: {mg:,} tok")
             lines.append(f"  Assistant output is {100*share:.0f}% of it.")
             lines.append(f"  Accounted for by the sources above: {100*g.total/mg:.0f}%")
-            lines.append("  (the shortfall is tool-result estimation error, system")
-            lines.append("   reminders, and attachments -- read content, not written)")
+            if g.total > mg:
+                # Over 100% is not a shortfall, and calling it one explained a
+                # gap that runs the other way. The attribution is an estimate
+                # (tool results are sized from their text) laid against a
+                # measured total, so an excess means the estimate over-counts
+                # or two sources claim the same tokens. Said as that.
+                lines.append("  (over 100%: the sources above overlap or are over-attributed;")
+                lines.append("   the excess is attribution error, not growth that happened)")
+            else:
+                lines.append("  (the shortfall is tool-result estimation error, system")
+                lines.append("   reminders, and attachments -- read content, not written)")
 
     if g.by_tool:
         lines.append("")

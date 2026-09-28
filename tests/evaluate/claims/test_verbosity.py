@@ -130,6 +130,11 @@ class TestCli:
     def test_a_missing_file_is_an_error(self, tmp_path, capsys):
         assert vb.main([str(tmp_path / "nope.jsonl")]) == 1
 
+    def test_a_directory_is_an_error_not_a_traceback(self, tmp_path, capsys):
+        # Every transcript report takes a directory, so one gets passed here.
+        assert vb.main([str(tmp_path)]) == 1
+        assert "not a file" in capsys.readouterr().err
+
     def test_a_malformed_file_is_a_usage_error(self, tmp_path, capsys):
         p = tmp_path / "b.jsonl"
         p.write_text("nope\n", encoding="utf-8")

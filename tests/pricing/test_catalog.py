@@ -426,12 +426,12 @@ class TestTheCatalogAgreesWithThePriceTable:
         e = first_party(on).get("claude-sonnet-5")
         assert e.out == rate("claude-sonnet-5", on).out
 
-    def test_the_intro_rate_is_cheaper_than_the_reverted_one(self):
+    def test_the_intro_rate_is_cheaper_than_the_reverted_one(self, scheduled_intro):
         """Guards the test itself: if these were equal it would prove nothing."""
         assert first_party(DURING).get("claude-sonnet-5").inp < \
             first_party(AFTER).get("claude-sonnet-5").inp
 
-    def test_cache_rates_are_derived_from_the_dated_input_rate(self):
+    def test_cache_rates_are_derived_from_the_dated_input_rate(self, scheduled_intro):
         during = first_party(DURING).get("claude-sonnet-5")
         after = first_party(AFTER).get("claude-sonnet-5")
         assert during.cache_read < after.cache_read

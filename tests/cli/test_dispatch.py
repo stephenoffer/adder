@@ -133,3 +133,43 @@ class TestShortHelp:
         assert main(["help", "--all"]) == 0
         out = capsys.readouterr().out
         assert all(c.summary in out for c in COMMANDS)
+
+
+class TestHelpTopic:
+    def test_a_misspelt_topic_is_an_unknown_command(self, capsys):
+        """`adder help lve` exited 0 on the short screen; `adder lve` exits 2."""
+        assert main(["help", "lve"]) == 2
+        err = capsys.readouterr().err
+        assert "unknown command 'lve'" in err
+        assert "Did you mean: live" in err
+
+    @pytest.mark.parametrize("word", ["version", "help"])
+    def test_the_words_usage_lists_are_not_unknown(self, word, capsys):
+        assert main(["help", word]) == 0
+        assert "unknown command" not in capsys.readouterr().err
+
+
+class TestBadConfig:
+    """A config file that does not parse is a usage error, not a traceback."""
+
+    @pytest.mark.parametrize("text, needle", [
+        ("{bad", ".adder.json"),
+        ('{"budget": "lots"}', "budget"),
+    ])
+    def test_every_command_names_the_file_and_exits_2(
+            self, isolated_home, text, needle, capsys):
+        (isolated_home.parent / ".adder.json").write_text(text)
+        assert main(["budget", str(isolated_home / "none")]) == 2
+        err = capsys.readouterr().err
+        assert err.startswith("adder budget: ")
+        assert needle in err
+        assert "Traceback" not in err
+
+    def test_hook_still_fails_open(self, isolated_home, monkeypatch, capsys):
+        """2 means "block" to Claude Code; a config typo must not deny a tool call."""
+        import io
+
+        (isolated_home.parent / ".adder.json").write_text("{bad")
+        monkeypatch.setattr("sys.stdin", io.StringIO(
+            '{"tool_name": "Read", "tool_input": {"file_path": "/x"}}'))
+        assert main(["hook", "read-guard"]) == 0

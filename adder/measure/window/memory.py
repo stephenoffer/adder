@@ -58,6 +58,7 @@ from pathlib import Path
 
 from adder.core import settings as _settings
 from adder.core.filters import root_of as _root_of
+from adder.measure.argtypes import positive_int
 from adder.pricing.cost import Rates
 from adder.pricing.prices import CACHE_READ_MULT
 from adder.pricing.registry import rate
@@ -211,7 +212,20 @@ class Pricing:
 
     def describe(self) -> str:
         if not self.measured:
-            return ("pricing: prior (no local sessions); assuming "
+            # "no local sessions" was printed whenever the fit fell back, and
+            # `measure` falls back on a directory full of sessions too short
+            # to fit from -- which is the one case where the reader can do
+            # something about it, by waiting for more history.
+            if self.sessions:
+                from adder.measure.window.carry import MIN_SESSIONS
+                from adder.measure.window.prefix import MIN_OPENINGS
+
+                why = (f"prior, too few sessions (n={self.sessions}, need "
+                       f">={MIN_SESSIONS} of >=20 turns or >={MIN_OPENINGS} "
+                       "openings within the 5m TTL of another turn)")
+            else:
+                why = "prior (no local sessions)"
+            return (f"pricing: {why}; assuming "
                     f"{self.turns:.0f} turns and the {self.read_mult:.2f}x "
                     "re-read multiplier")
         return (f"pricing from {self.sessions} sessions on {self.model}: "
@@ -852,7 +866,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="price the floor on this model (default: your costliest)")
     ap.add_argument("--ttl", choices=("5m", "1h"), default="1h",
                     help="cache TTL to price the opening write at (default: %(default)s)")
-    ap.add_argument("--top", type=int, default=12, metavar="N",
+    ap.add_argument("--top", type=positive_int, default=12, metavar="N",
                     help="files to list (default: %(default)s)")
     ap.add_argument("--what-if", type=int, default=0, metavar="TOK",
                     help="price adding (or removing) this many resident tokens")

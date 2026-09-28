@@ -74,6 +74,7 @@ from adder.decide.track.outcomes import (
     load,
     recency_weight,
 )
+from adder.measure.argtypes import positive_int
 
 # Slots in the sketch. Each is an independent hash function, so the variance of
 # the Jaccard estimate is J(1-J)/SLOTS -- about +/-0.12 at J=0.5. That is coarse
@@ -364,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--log", default=None, help="outcome log (default: the `log` setting)")
     ap.add_argument("--floor", type=float, default=SIM_FLOOR,
                     help=f"minimum similarity to count as a neighbour (default {SIM_FLOOR})")
-    ap.add_argument("--top", type=int, default=NEIGHBOURS, metavar="K",
+    ap.add_argument("--top", type=positive_int, default=NEIGHBOURS, metavar="K",
                     help=f"neighbours to weigh (default {NEIGHBOURS})")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)

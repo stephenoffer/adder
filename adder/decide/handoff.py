@@ -53,6 +53,7 @@ from pathlib import Path
 
 from adder.core import settings as _settings
 from adder.core.filters import root_of as _root_of
+from adder.measure.argtypes import positive_int
 from adder.pricing.cost import Rates
 from adder.pricing.prices import CACHE_READ_MULT
 from adder.pricing.registry import rate
@@ -349,6 +350,41 @@ def _write_cost(b: Budget, *, ttl: str = "1h", on: date | None = None) -> float:
             * CACHE_WRITE_MULT.get(ttl, 1.25) / M)
 
 
+# Turns assumed to remain for a hypothetical `--context` with no `--remaining`.
+HYPOTHETICAL_REMAINING = 300
+
+
+def _nonneg_float(raw: str) -> float:
+    """Argparse type for a turn count. Rejects negatives and non-finite values.
+
+    `--remaining -5` was accepted and priced: the carry side of the equation
+    went negative and the budget clamped to zero, which reads as advice rather
+    than as a typo.
+    """
+    import argparse
+    import math
+
+    try:
+        n = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number, got {raw!r}") from None
+    if not math.isfinite(n) or n < 0:
+        raise argparse.ArgumentTypeError(f"must be zero or more, got {raw}")
+    return n
+
+
+def _nonneg_int(raw: str) -> int:
+    import argparse
+
+    try:
+        n = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a whole number, got {raw!r}") from None
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be zero or more, got {n}")
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -364,13 +400,17 @@ def main(argv: list[str] | None = None) -> int:
                     help="working directory whose session to price")
     ap.add_argument("--root", default=None,
                     help="transcript directory (default: the `root` setting)")
-    ap.add_argument("--remaining", type=float, default=0.0, metavar="N",
+    # `None`, not 0, is "not given". Both flags were read by truthiness, so
+    # `--remaining 0` -- the case the budget exists to answer with "do not
+    # restart" -- was replaced by 300, and `--context 0` fell through to the
+    # live session it was meant to replace.
+    ap.add_argument("--remaining", type=_nonneg_float, default=None, metavar="N",
                     help="turns to assume remain (default: this session's estimate)")
-    ap.add_argument("--context", type=int, default=0, metavar="TOK",
+    ap.add_argument("--context", type=_nonneg_int, default=None, metavar="TOK",
                     help="price a hypothetical context instead of the live one")
     ap.add_argument("--model", default=_settings.session_model(),
                     help="model for --context (default: %(default)s)")
-    ap.add_argument("--top", type=int, default=DEFAULT_ITEMS, metavar="N",
+    ap.add_argument("--top", type=positive_int, default=DEFAULT_ITEMS, metavar="N",
                     help="items to list (default: %(default)s)")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)
@@ -382,18 +422,28 @@ def main(argv: list[str] | None = None) -> int:
     # `root_of`: the argument if one was given, else the `root`
     # setting. Resolved here so two commands cannot disagree.
     a.root = str(_root_of(a))
-    if a.context:
-        tokens_ = max_handoff(context=a.context, remaining=a.remaining or 300,
-                              model=a.model)
+    if a.context is not None:
+        remaining = a.remaining if a.remaining is not None else HYPOTHETICAL_REMAINING
+        tokens_ = max_handoff(context=a.context, remaining=remaining, model=a.model)
         if a.json:
             print(json.dumps({"context": a.context, "model": a.model,
-                              "remaining": a.remaining or 300,
-                              "budget_tokens": tokens_}))
+                              "remaining": remaining,
+                              "budget_tokens": tokens_,
+                              "viable": tokens_ > 0}))
             return 0
         print()
-        print(f"  At {a.context:,} tokens on {a.model} with "
-              f"{a.remaining or 300:,.0f} turns left: carry up to {tokens_:,} "
-              "tokens and the restart still pays.")
+        if tokens_ > 0:
+            print(f"  At {a.context:,} tokens on {a.model} with "
+                  f"{remaining:,.0f} turns left: carry up to {tokens_:,} "
+                  "tokens and the restart still pays.")
+        else:
+            # `max_handoff` returns 0 when a restart never pays. Printing that
+            # as "carry up to 0 tokens and the restart still pays" told the
+            # reader to restart with nothing, which is the expensive answer.
+            print(f"  At {a.context:,} tokens on {a.model} with "
+                  f"{remaining:,.0f} turns left: do not restart. Even an empty "
+                  "brief costs more to open than the context it frees would "
+                  "cost to carry.")
         print()
         return 0
 
@@ -406,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     live = analyse_live(sess)
-    remaining = a.remaining or live.carry_turns
+    remaining = a.remaining if a.remaining is not None else live.carry_turns
     b, items = plan(sess, current_transcript(a.cwd, a.root), remaining=remaining,
                     read_mult=live.read_mult, top=a.top)
     measured = measured_handoffs(load_sessions(Path(a.root).expanduser()))

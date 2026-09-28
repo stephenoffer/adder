@@ -37,6 +37,7 @@ import sys
 # and a rename inside the package must not break a checked-in settings.json.
 HOOKS: dict[str, str] = {
     'read-guard': 'adder.decide.hooks.pretooluse_read_guard',
+    'read-confirm': 'adder.decide.hooks.posttooluse_confirm',
     'compact-learn': 'adder.decide.hooks.precompact_learn',
     'cost-advisor': 'adder.decide.hooks.session_cost_advisor',
 }
@@ -72,16 +73,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f'adder hook: unknown hook {argv[0]!r}; '
               f'expected one of {", ".join(sorted(HOOKS))}', file=sys.stderr)
         return 0
-    a = ap.parse_args(argv)
+    # Every other way the arguments can be wrong fails open too. argparse exits
+    # 2 on an extra word or an unknown flag, and 2 is not "error" to Claude
+    # Code: it is "block". A settings line one argument off denied every Read
+    # and Bash call and erased every prompt the user typed.
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as e:
+        if e.code in (0, None):
+            raise                                  # `--help`, like every command
+        return _complain('bad arguments')
     if not a.name:
         ap.print_usage(sys.stderr)
-        print('adder hook: name is required', file=sys.stderr)
-        return 2
+        return _complain('name is required')
     try:
         return int(importlib.import_module(HOOKS[a.name]).main() or 0)
     except Exception as e:                        # a hook must never break the turn
         print(f'adder hook {a.name}: {e}', file=sys.stderr)
         return 0
+
+
+def _complain(why: str) -> int:
+    print(f'adder hook: {why}; the call proceeds unguarded', file=sys.stderr)
+    return 0
 
 
 if __name__ == '__main__':

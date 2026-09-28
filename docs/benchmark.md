@@ -1,81 +1,86 @@
 # adder vs no adder
 
-*(Figures from one machine's history, taken at $5,846 across 23,922 turns and 90
-sessions. The transcript pool grows with every session, so `adder bench` will
-report slightly different totals than the ones below. The multiples are the
+*(Figures from one machine's history: 103 sessions, 46,687 turns, $8,757 as
+run, measured 2026-09-28. The transcript pool grows with every session, so
+`adder bench` will report slightly different totals. The multiples are the
 stable part; the dollars are not.)*
 
 Every other report here answers "where did the money go". This one answers the
 question that comes before installing anything: **what changes if I install this
 and keep working exactly as I do now?**
 
-That number is smaller than the one `adder plan` quotes, and the gap between
-them is the finding.
-
 ## The result
-
-| configuration | total | vs no adder |
-|---|---|---|
-| no adder (as run) | $5,846 | 1.0x |
-| + the read guard, at its shipped defaults | $3,943 | **1.5x** |
-| + the tier agents in `.claude/agents/` | $3,730 | **1.6x** |
-| + the threshold and cadence the reports solve | $869 | **6.7x** |
-
-The first three rows happen without you doing anything. The fourth is advice,
-and nothing in this repo enforces it.
-
-So the honest one-line summary is two numbers, not one:
-
-- 1.6x for installing it and changing nothing.
-- 6.7x if you then work the way it tells you to, at nominal assumptions, and
-  3.4x at the pessimistic corner of them.
-
-Reporting only the 6.7x would be the more impressive claim and a lie by
-omission. It is not what installing the tool gets you; it is what restructuring
-your work around the tool gets you.
-
-## What moved when the guard learned to refuse
-
-That gap was the tool's own indictment, and `adder auto` is the answer to it.
-An enforcing guard does not advise the delegation threshold, it refuses the
-calls above it, so most of the fourth row crossed the line. Re-run on a later
-and larger corpus (118 sessions, 33,192 turns, $7,888 as run):
 
 | configuration | total | vs no adder | who does it |
 |---|---|---|---|
-| no adder (as run) | $7,888 | 1.0x | — |
-| + the read guard, refusing over 800 tok | $3,186 | **2.5x** | the hook |
-| + the tier agents in `.claude/agents/` | $2,567 | **3.1x** | the agent files |
-| + the threshold it solves for, over 300 tok | $1,667 | 4.7x | you |
-| + restarting every 21 turns | $1,233 | 6.4x | you |
+| no adder (as run) | $8,757 | 1.0x | — |
+| + the guard's duplicate refusal | $8,581 | 1.02x | the hook |
+| + the read guard, refusing over 800 tok | $8,156 | 1.07x | the hook |
+| + the tier agents in `.claude/agents/` | $7,897 | **1.11x** | the agent files |
+| + restarting every 34 turns | $3,131 | **2.8x** | you |
 
-For comparison, the advisory install on that same corpus is $4,954, or **1.6x**.
+That is `adder auto on --full`. The advisory install, which only describes
+what it would refuse, comes to $8,073, or 1.08x.
 
-**1.6x → 3.1x for installing it and changing nothing.** The ladder is longer by
-one row because the delegation threshold and the restart cadence used to be
-bundled, and they are enforceable by different things: a hook can refuse a
-read, and nothing here can restart a session. Bundling them marked the whole
-rung advisory and hid the fact that most of it no longer is.
+So the honest summary is two numbers, and the first is small:
 
-Two rows are still yours, and the larger of the two is the cadence. That is the
-honest ceiling of the automatic number on this workload: session length is the
-biggest single lever in `adder savings` (39% of the addressable pool) and no
-hook event can pull it.
+| | multiple |
+|---|---|
+| installing it and changing nothing | 1.1x |
+| then restarting when it says to | 2.8x nominal, 2.4x at the pessimistic corner |
 
-The third row does not become enforced when you activate, and the reason is
-worth stating: the guard refuses at 800 tokens, the reports solve for ~300, and
-below 800 the hook would parse a transcript on half of all tool calls to find
-money the dollar gate has already found. Crediting activation with the
-difference would be crediting it with money it does not collect.
+Nearly all of the second number is the restart cadence. Session length is the
+biggest lever in `adder savings`, and no hook event can pull it.
+
+## What the earlier 3.1x got wrong
+
+This page used to report 3.1x hands off and 6.4x with restarts, on an older
+corpus. Four errors in the replay produced most of that, and they all ran the
+same way:
+
+1. The delegation gate fired on the whole growth of the context between two
+   turns. More than half of that growth is the model's own output, which no
+   hook can send anywhere. The replay then priced that output at the
+   subagent's rate as well.
+2. Turns already running inside a subagent were delegated again. Claude Code
+   subagents cannot spawn subagents, and those turns were 39% of the
+   delegations.
+3. A subagent was priced as one uncached pass over the read plus a 400-token
+   brief, about $0.002 on Haiku. Measured over 258 real subagent runs, a
+   subagent's first turn carries a median 34.6K tokens of its own system
+   prompt, tools and memory, and most of it is written rather than read from
+   cache.
+4. The turn that dispatches a delegation, which re-reads the whole main
+   context, was only charged when the delegation failed.
+
+The replay now delegates only a tool result, only from the main chain, and only
+where doing so is cheaper than carrying it to the next restart or compaction.
+It uses the session's real remaining turns for that decision, which the live
+guard can only estimate. That makes the hands-off row an upper bound on what
+the hook collects. `placement_cost`, which the guard itself refuses on, got the
+same subagent opening and dispatch turn, so at `guard_enforce=full` it no
+longer refuses reads that would have been cheaper inline.
+
+One lever is only partly measured. The tier agents choose Haiku for nearly
+every delegated read, at the same 15% chance of a redo as every other tier. On
+the kind of work a delegated read is, answering a question from supplied
+source, `adder ab --run --backend cli` scored Haiku 4.5 12/12 against Opus
+5.5's 12/12 at 20% of the cost (2026-09-28). Twelve tasks leave a loss of up
+to 24 points inside the 95% interval, so it is a smoke test, not proof. On
+review work Haiku does worse: `docs/quality.md` has it finding 67% of the
+defects Opus finds. `adder outcomes import --write` records real escalations,
+and they replace the 15% prior once there are enough.
 
 ## Method
 
 `adder bench` replays every recorded turn under each configuration and re-prices
 it. It is the same replay engine `adder plan` uses, and the same fidelity check
 applies: the null configuration must reproduce the measured bill. It does, to
-within 0.0% here, and the report prints that residual first. A benchmark whose
-baseline does not reproduce reality cannot say anything about a ratio taken
-against it.
++0.0% here, and the report prints that residual first. The check is necessary,
+not sufficient: with nothing changed the replay prices every turn at its
+recorded cost by construction, so it proves the bookkeeping and says nothing
+about whether a counterfactual is right. A benchmark whose baseline does not
+reproduce reality cannot say anything about a ratio taken against it.
 
 Rows are **cumulative**, because the levers are substitutes. They all attack the
 same pool (tokens admitted to a context that is then re-read every turn), so
@@ -126,44 +131,36 @@ choose the model by expected cost adds the rest: 1.48x → 1.57x. Placement is
 most of the lever; price is the remainder. That ordering is deliberate, so tier
 choice cannot claim credit for the move.
 
-## What the 6.7x rests on
+## What the 2.6x rests on
 
 Three inputs, none of which a transcript can settle, all swept rather than
 asserted:
 
 | summary ratio | p_fail | handoff | vs no adder |
 |---|---|---|---|
-| 10% | 15% | 2,000 | 6.7x |
-| 10% | 15% | 20,000 | 4.5x |
-| 10% | 30% | 2,000 | 6.0x |
-| 10% | 30% | 20,000 | 4.1x |
-| 30% | 15% | 2,000 | 5.3x |
-| 30% | 15% | 20,000 | 3.8x |
-| 30% | 30% | 2,000 | 4.7x |
-| 30% | 30% | 20,000 | **3.4x** |
-
-The *summary ratio* is what a delegated read hands back. At 10% the content
-stays out of the context; at 30% most of the carry it was supposed to avoid
-comes back. This sets the floor of the range, and `adder ab` is the only thing
-here that can test it.
-
-*p_fail* is how often a delegated step has to be redone on the expensive model.
-Doubling it costs about 0.7x of the multiple, less than either of the other two.
+| 10% | 15% | 2,000 | 2.55x |
+| 10% | 15% | 20,000 | 2.25x |
+| 10% | 30% | 2,000 | 2.55x |
+| 10% | 30% | 20,000 | 2.24x |
+| 30% | 15% | 2,000 | 2.53x |
+| 30% | 15% | 20,000 | 2.23x |
+| 30% | 30% | 2,000 | 2.52x |
+| 30% | 30% | 20,000 | **2.23x** |
 
 *Handoff* is how many tokens a restarted session has to be told, and nothing in
-a transcript records what a person needs to resume. A 10x larger handoff costs
-about 2.2x of the multiple, which makes it the second-softest input here.
+a transcript records what a person needs to resume. It sets the floor of the
+range: a 10x larger handoff costs about 0.3x of the multiple.
 
-At this threshold 99% of admitted tokens are delegated. That is not a tweak to
-how you work. It is the orchestrator pattern, where the main session holds the
-thread and almost every step that would admit content runs somewhere else. It is
-worth being clear that the 6.7x is the price of adopting that pattern, not the
-price of installing a hook.
+The *summary ratio* is what a delegated read hands back, and *p_fail* is how
+often a delegated step has to be redone on the expensive model. Neither moves
+the result by more than a few hundredths any more, because once a subagent is
+priced with its own opening, few reads are worth delegating at all. That is the
+finding behind the small hands-off number, not a flaw in the sweep.
 
 ## Why this is not `adder plan`
 
 `plan` asks the optimiser's question — what is the cheapest way this workload
-could have been run — and reaches 10.7x by adding effort reduction, terseness,
+could have been run — and reaches a larger multiple by adding effort reduction, terseness,
 tool discipline and a cheaper session model on top of everything above. Those
 are real levers and they are priced honestly, but each one is another thing the
 reader has to do, and none of them is something the tool does.

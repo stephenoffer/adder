@@ -72,8 +72,13 @@ def main() -> int:
     # the model cannot satisfy.
     try:
         from adder.decide import guard
+        from adder.decide.hooks.pretooluse_read_guard import context_key
 
-        session_id = str((payload or {}).get("session_id") or "")
+        # The same key the guard remembers under. By `session_id` alone, a
+        # subagent's compaction cleared its parent's memory and left its own,
+        # and its next Read of a file it no longer held was refused as
+        # "already in this context".
+        session_id = context_key(payload) if isinstance(payload, dict) else ""
         if session_id:
             state = guard.load_state(session_id)
             guard.save_state(session_id, state.forget_context())

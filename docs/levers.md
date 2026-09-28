@@ -129,11 +129,11 @@ rather than competes. Composing it into that table would be wrong twice over.
 Measured on the same transcripts, and the reason the distinction matters:
 
 ```
-  + 30% terser, 40% less tool output        $       735         6.8x
-  + start sessions on claude-sonnet-5       $       477        10.5x
+  + 30% terser, 40% less tool output        $     2,434         3.5x
+  + start sessions on claude-sonnet-5       $     1,488         5.8x
 ```
 
-One row, and it nearly halves what four levers had left. It is also the least
+One row, and it cuts what four levers had left by 39%. It is also the least
 certain number in this repo: it is a rate substitution, so it says what the same
 tokens would have cost and not that the cheaper model would have produced them.
 `adder plan --session-rework` is the knob for that doubt, and the default of 20%
@@ -187,9 +187,10 @@ A session opening is not a rebuild. The expensive part of the floor (system
 prompt, tool schemas, `CLAUDE.md`) is byte-identical across sessions, so it is
 still resident and is served at 0.10x. Only the session's own tail is written.
 
-Because the optimum goes as `sqrt(W)`, pricing the restart correctly moves the
-cadence from 33 turns to 19, and per-turn input cost falls **6.1x** against the
-536-turn sessions this workload actually runs:
+Because the optimum goes as `sqrt(W)`, pricing the restart correctly moved the
+cadence from 33 turns to 19 on the 84-session history this page's first tables
+come from, and per-turn input cost fell **6.1x** against the 536-turn sessions
+that workload ran. On the current 78 sessions the solved cadence is 34 turns:
 
 ```
   on the assumed rebuild       33 turns   $ 0.0346 per turn
@@ -197,18 +198,16 @@ cadence from 33 turns to 19, and per-turn input cost falls **6.1x** against the
   as run (536 turns)                      $ 0.1647 per turn
 ```
 
-That is the single largest lever in `adder plan`, and together with the
-delegation threshold it solves, which the same cache arithmetic sets at ~300
-tokens rather than the hand-picked 5,000, it is why the ladder now reaches
-10.5x where it used to reach 5.8x. Note that the table at the top of this
-page still prices splitting at a 300-turn cadence, because `adder savings` prices
+That is the single largest lever in `adder plan`: on its own it takes the
+ladder from 1.0x to 2.5x, and every row after it multiplies a smaller bill.
+Note that the table at the top of this page still prices splitting at a 300-turn cadence, because `adder savings` prices
 each lever in isolation against the read pool and has no restart term to solve.
 `adder plan` is where the cadence is solved and the restart is charged. Two caveats travel with it:
 
 - The handoff is modelled, and it is now the softest input in the tool. A
-  restart every 19 turns only works if 2,000 tokens is enough to carry the
+  restart every 34 turns only works if 2,000 tokens is enough to carry the
   thread. `adder plan --handoff` sweeps it: at 50,000 tokens the cadence
-  stretches to 46 turns and the multiple falls to 5.5x. The direction survives
+  stretches to 56 turns and the multiple falls from 5.8x to 4.2x. The direction survives
   the sweep; the magnitude does not.
 - Warmth is only relied on inside the TTL. Openings here measure warm even
   after gaps of days, which no TTL explains, so that observation is excluded
@@ -229,41 +228,46 @@ adder plan --target 10
 ```
 
 ```
-  Measured spend            $     5,025   20,808 turns, 84 sessions
-  Replay of the same turns  $     5,025   residual -0.0% -- everything below is relative to this
-  Restart cadence, solved rather than assumed: 19 turns: k* = sqrt(2W/(m*r*g)) at a
-  $0.1033 restart [measured], 961 tok/turn of growth and a 0.115x re-read multiplier.
-  A restart is charged what an opening actually costs -- 74% of it is a cache read.
-  Delegation threshold, likewise: delegate reads over ~285 tok: below that the
-  400-token brief and the summary cost more than the 9 re-reads they avoid.
+  Measured spend            $     8,634   45,891 turns, 78 sessions
+  Replay of the same turns  $     8,637   residual +0.0% -- everything below is relative to this
+  Restart cadence, solved rather than assumed: 34 turns: k* = sqrt(2W/(m*r*g)) at a
+  $0.2865 restart [measured], 924 tok/turn of growth and a 0.106x re-read multiplier.
+  A restart is charged what an opening actually costs -- 48% of it is a cache read.
+  Delegation threshold, likewise: delegate reads over ~6,134 tok: below that the
+  subagent's 34,600-token opening, the turn that dispatches it and the summary cost
+  more than the 17 re-reads they avoid.
 
   regime                                          total  vs baseline  tok deleg.
   -----------------------------------------------------------------------------
-  as run                                    $     5,025         1.0x           -
-  delegate reads over 300 tok               $     1,552         3.2x         99%
-  + right-size the subagent                 $     1,039         4.8x         99%
-  + split sessions at 19 turns              $       761         6.6x         99%
-  + effort high -> medium                   $       746         6.7x         99%
-  + 30% terser, 40% less tool output        $       735         6.8x         99%
-  + start sessions on claude-sonnet-5       $       477        10.5x         99%
+  as run                                    $     8,637         1.0x           -
+  delegate reads over 6,100 tok             $     8,434         1.0x          2%
+  + right-size the subagent                 $     8,388         1.0x          3%
+  + split sessions at 34 turns              $     3,494         2.5x          2%
+  + effort high -> medium                   $     2,924         3.0x          2%
+  + 30% terser, 40% less tool output        $     2,434         3.5x          2%
+  + start sessions on claude-sonnet-5       $     1,488         5.8x          2%
 
-  Target 10x means getting $5,025 down to $503.
-  The regime above reaches 10.5x. Target met, on these assumptions;
-  run `adder quality` before and after, because none of this is free.
+  Target 10x means getting $8,637 down to $864.
+  The regime above reaches 5.8x, short by $624.
+  Nothing on the grid reaches it. The hardest setting of every lever reaches 6.6x
+  ($1,316), of which $55 is work that has to happen somewhere at somebody's
+  rate. Getting past that needs a different lever, not a harder setting on these ones.
 ```
 
 ### Both thresholds are solved, not chosen
 
-`19 turns` used to be a round `300`, and `300 tokens` used to be a round
-`5,000`. Both are set by the prompt cache, and both were being guessed. The
-arithmetic is in the two sections above.
+`34 turns` used to be a round `300`, and the delegation threshold used to be
+a round `5,000`. Both are set by the prompt cache, and both were being guessed.
+The arithmetic is in the two sections above.
 
-The delegation threshold is the less intuitive of the two. A shorter restart
-cycle leaves fewer re-reads to avoid, which should *raise* the threshold, and it
-does, but only to ~300 tokens. Admitting a token to an Opus context costs 2.00x
-its input rate as a cache write, while reading it once on Haiku costs 1.00x of a
-rate five times lower. Delegation is not only a carry play, and `5,000` was
-leaving most of it unused.
+The delegation threshold is the one that moved most when it was measured
+properly. Priced as a 400-token brief and one uncached pass, a subagent looked
+nearly free and the threshold solved to ~300 tokens, delegating 99% of what
+the session admitted. A real subagent opens on a median 34.6K tokens of its
+own system prompt, tools and memory, and the turn that dispatches it re-reads
+the whole main context. Charged both, delegation pays only past ~6,000 tokens
+and touches 2% of admitted tokens. On this history it is a small lever, and
+session length is the large one.
 
 Three things make this different from the savings table.
 
@@ -271,7 +275,9 @@ Three things make this different from the savings table.
 
 The second line is the whole guarantee: replay the transcripts with no regime
 applied and the total has to come back as the number you actually paid. It
-does, to −0.0%. Every multiple below it is a ratio against that. `adder
+does, to +0.0%. Every multiple below it is a ratio against that. The check
+proves the bookkeeping, not the counterfactuals: with nothing changed, every
+turn is priced at its recorded cost by construction. `adder
 validate` re-checks it, because two ordering bugs in the replay were caught by
 exactly this line and nothing else would have caught them.
 
@@ -288,7 +294,8 @@ Every earlier estimate here used "assume 25% of turns are delegable", which is
 a guess with a percent sign on it and is not a rule anyone can follow. The
 regime triggers on something the transcript records exactly, which is how many
 tokens a step would pull into context. So "delegate anything over 5,000 tokens"
-is checkable, followable, and the 23% that matches is a measurement.
+is checkable, followable, and the share it matches, 2% of admitted tokens
+at the threshold above, is a measurement.
 
 When no configuration on the grid meets the target, the report says so and names
 the floor, instead of searching until it finds a number that flatters the

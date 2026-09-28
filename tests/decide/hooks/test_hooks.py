@@ -460,7 +460,7 @@ class TestItWatchesWrites:
         f = tmp_path / "new.py"
         f.write_text(("x" * 79 + "\n") * 500)
         _run(guard, {"tool_name": "Write", "session_id": "s1",
-                     "tool_input": {"file_path": str(f), "content": "x"}},
+                     "tool_input": {"file_path": str(f), "content": f.read_text()}},
              monkeypatch, capsys)
         back = _run(guard, {"tool_name": "Read", "session_id": "s1",
                             "tool_input": {"file_path": str(f)}}, monkeypatch, capsys)
@@ -686,6 +686,26 @@ class TestItRemembersBeforeItCanPrice:
         assert _run(guard, payload, monkeypatch, capsys) is None
         assert str(f) in lib.load_state("s1", state_path).reads
 
+    def test_a_duplicate_in_a_short_session_is_still_refused(
+            self, guard, monkeypatch, capsys, tmp_path):
+        """A duplicate needs no price, only memory. In a real headless run the
+        second of two identical Reads landed on turn 2 and went through."""
+        from adder.decide import guard as lib
+
+        _wire(monkeypatch, remaining=400, turns=2)
+        state_path = tmp_path / "guard.json"
+        monkeypatch.setattr(lib.Settings, "resolve",
+                            classmethod(lambda cls, **kw: lib.Settings(
+                                state_path=state_path, enforce="certain")))
+        f = tmp_path / "f.py"
+        f.write_text(("x" * 79 + "\n") * 500)
+        payload = {"tool_name": "Read", "session_id": "s1",
+                   "tool_input": {"file_path": str(f)}}
+        assert _run(guard, payload, monkeypatch, capsys) is None
+        again = _run(guard, payload, monkeypatch, capsys)
+        assert again is not None
+        assert again["hookSpecificOutput"]["permissionDecision"] == "deny"
+
     def test_a_bash_call_in_a_short_session_still_accumulates(
             self, guard, monkeypatch, capsys, tmp_path):
         from adder.decide import guard as lib
@@ -699,3 +719,47 @@ class TestItRemembersBeforeItCanPrice:
                    "tool_input": {"command": "cat /etc/hosts"}}
         _run(guard, payload, monkeypatch, capsys)
         assert lib.load_state("s2", state_path).shape_calls
+
+
+class TestTheRestartVerdictReachesThePerson:
+    """Only the person can restart a session, and on UserPromptSubmit
+    `additionalContext` produces no visible transcript entry: the priced verdict
+    reached the model and nobody else."""
+
+    class _R:
+        spent, context, turns, per_turn = 120.0, 500_000, 900, 0.13
+        next_turn_cost, debt_multiple, model = 0.1, 9.0, "claude-opus-5"
+        carry_turns, context_pressure, ttl = 400, 0.5, "5m"
+
+        def compaction_net(self):
+            return 20.0
+
+        def restart_net(self):
+            return 30.0
+
+    def _run_with(self, monkeypatch, tmp_path, capsys, line):
+        monkeypatch.setenv("ADDER_STATE", str(tmp_path / "advisor.json"))
+        mod = _load("session_cost_advisor")
+        monkeypatch.setattr("adder.measure.session.live.current_session",
+                            lambda *a, **k: _Sess(900))
+        monkeypatch.setattr("adder.measure.session.live.analyse",
+                            lambda s, **k: self._R())
+        monkeypatch.setattr(mod, "_context_verdict", lambda *a, **k: line)
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "s"})))
+        assert mod.main() == 0
+        return json.loads(capsys.readouterr().out)
+
+    def test_a_restart_verdict_is_shown_to_the_user(self, monkeypatch, tmp_path, capsys):
+        out = self._run_with(monkeypatch, tmp_path, capsys,
+                             "[context] restart now: worth ~$30.00 over the ~400 turns "
+                             "expected to remain (the other option is worth ~$20.00).")
+        msg = out["systemMessage"]
+        assert msg.startswith("[adder] $120.00 over 900 turns")
+        assert "Restart now" in msg and "compacting instead is worth ~$20.00" in msg
+        assert "restart now" in out["hookSpecificOutput"]["additionalContext"]
+
+    def test_carrying_on_is_not_worth_interrupting_anyone_for(self, monkeypatch,
+                                                              tmp_path, capsys):
+        out = self._run_with(monkeypatch, tmp_path, capsys,
+                             "Context is not yet worth resetting.")
+        assert "systemMessage" not in out

@@ -287,6 +287,11 @@ class TestCli:
     def test_a_missing_file_is_an_error_not_a_traceback(self, capsys, tmp_path):
         assert re_.main([str(tmp_path / "nope.jsonl")]) == 1
 
+    def test_a_directory_is_an_error_not_a_traceback(self, tmp_path, capsys):
+        # Every transcript report takes a directory, so one gets passed here.
+        assert re_.main([str(tmp_path)]) == 1
+        assert "not a file" in capsys.readouterr().err
+
     def test_bad_targets_are_a_usage_error(self, capsys, tmp_path):
         p = tmp_path / "e.jsonl"
         p.write_text('{"q_strong":1,"q_weak":0,"score":1}\n')

@@ -272,3 +272,44 @@ class TestCli:
         pl.main(["--context", "5000000", "--json"])
         payload = json.loads(capsys.readouterr().out)
         assert payload["infeasible"] > 0
+
+
+class TestTheHarnessGatesTheMove:
+    """Under Claude Code the main session is a Claude model; `place` priced the
+    whole catalog and recommended another vendor's model as a home."""
+
+    def _cat(self):
+        return Catalog([
+            Entry(key="other", id="other", name="other", org="OpenAI",
+                  inp=0.01, out=0.01, cache_read=0.001, cache_write=0.01,
+                  context=1_000_000),
+            Entry(key="mine", id="mine", name="mine", org="Anthropic",
+                  inp=0.5, out=2.0, cache_read=0.05, cache_write=0.625,
+                  context=1_000_000),
+        ])
+
+    def test_a_vendor_the_harness_rejects_is_not_a_destination(self):
+        opts = pl.evaluate(self._cat(), incumbent=OPUS, ctx_tokens=100_000,
+                           remaining_turns=2_000, harness="claude-code")
+        assert [p.id for p in opts.places] == ["mine"]
+        assert opts.blocked == 1 and opts.best is not None and opts.best.id == "mine"
+        assert "cannot run them as the main session" in " ".join(pl.report(opts).split())
+
+    def test_no_harness_means_no_runtime_constraint(self):
+        opts = pl.evaluate(self._cat(), incumbent=OPUS, ctx_tokens=100_000,
+                           remaining_turns=2_000)
+        assert {p.id for p in opts.places} == {"other", "mine"} and opts.blocked == 0
+
+    def test_the_cli_applies_the_default_harness(self, capsys, monkeypatch):
+        monkeypatch.delenv("ADDER_HARNESS", raising=False)
+        monkeypatch.setattr("adder.pricing.catalog.load", lambda *a, **k: self._cat())
+        assert pl.main(["--turns", "2000", "--json"]) == 0
+        d = json.loads(capsys.readouterr().out)
+        assert d["harness"] == "claude-code" and d["best"] == "mine"
+        assert d["blocked_by_harness"] == 1
+
+    def test_a_sub_turn_breakeven_is_not_printed_as_zero(self):
+        opts = pl.evaluate(self._cat(), incumbent=OPUS, ctx_tokens=100_000,
+                           remaining_turns=2_000, harness="any")
+        out = " ".join(pl.report(opts).split())
+        assert "in <1 turns" in out and "in 0 turns" not in out

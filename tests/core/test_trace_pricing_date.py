@@ -33,7 +33,7 @@ class TestATurnIsPricedOnItsOwnDate:
         t = _turn()
         assert t.cost() == pytest.approx(t.cost(INTRO))
 
-    def test_and_does_not_drift_to_the_post_intro_rate(self):
+    def test_and_does_not_drift_to_the_post_intro_rate(self, scheduled_intro):
         t = _turn()
         assert t.cost() < t.cost(AFTER)
 
@@ -45,7 +45,7 @@ class TestATurnIsPricedOnItsOwnDate:
         t = _turn()
         assert t.output_cost() == pytest.approx(t.output_cost(INTRO))
 
-    def test_an_explicit_date_still_wins(self):
+    def test_an_explicit_date_still_wins(self, scheduled_intro):
         """`cost_on` has to keep working: repricing history is a real question."""
         t = _turn()
         assert t.cost(AFTER) == pytest.approx(t.cost(AFTER))
@@ -65,7 +65,7 @@ class TestSessionTotals:
         s.turns = [_turn(), _turn()]
         assert s.cost == pytest.approx(2 * _turn().cost(INTRO))
 
-    def test_cost_on_reprices_the_whole_history_at_one_date(self):
+    def test_cost_on_reprices_the_whole_history_at_one_date(self, scheduled_intro):
         s = Session("s", "p")
         s.turns = [_turn(), _turn()]
         assert s.cost_on(AFTER) > s.cost
@@ -82,7 +82,7 @@ class TestOnePricingPathForARecordedTurn:
     the other. `Turn.rates()` is the single accessor they now share.
     """
 
-    def test_the_accessor_is_dated_like_cost(self):
+    def test_the_accessor_is_dated_like_cost(self, scheduled_intro):
         t = _turn()
         assert t.rates().inp == t.rates(INTRO).inp
         assert t.rates().inp != t.rates(AFTER).inp
@@ -126,3 +126,64 @@ class TestOnePricingPathForARecordedTurn:
                     continue
                 bad.append(f"{p.relative_to(root.parent)}:{line}")
         assert not bad, f"these price a turn without its date; use t.rates(): {bad}"
+
+
+def _mixed_record(five=100_000, hour=90_000):
+    return {"type": "assistant", "sessionId": "s1", "timestamp": "2026-09-01T12:00:00Z",
+            "message": {"id": "m1", "model": "claude-opus-5", "usage": {
+                "input_tokens": 0, "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": five + hour,
+                "cache_creation": {"ephemeral_5m_input_tokens": five,
+                                   "ephemeral_1h_input_tokens": hour},
+                "output_tokens": 0}}}
+
+
+class TestAWriteToBothTtlsIsPricedAtBoth:
+    """Priced whole at the larger bucket, 100K at 5m + 90K at 1h came to
+    $1.1875 on Opus 5 instead of $1.525, and flipped direction with the split."""
+
+    def test_each_bucket_at_its_own_rate(self, tmp_path):
+        import json
+
+        from adder.core.trace import iter_file
+
+        f = tmp_path / "s1.jsonl"
+        f.write_text(json.dumps(_mixed_record()) + "\n")
+        (t,) = list(iter_file(f))
+        assert t.cache_write_1h == 90_000
+        assert t.cost() == pytest.approx(100_000 * 6.25 / 1e6 + 90_000 * 10.0 / 1e6)
+        assert t.input_cost() == pytest.approx(t.cost())
+
+    def test_no_breakdown_prices_the_whole_write_at_its_ttl(self):
+        from adder.core.trace import Turn
+
+        t = Turn("s", "p", "claude-opus-5", uncached_in=0, cache_read=0,
+                 cache_write=100_000, out=0, thinking=0, sidechain=False,
+                 ts="2026-09-01T12:00:00Z", ttl="1h")
+        assert t.cache_write_1h is None
+        assert t.cost() == pytest.approx(100_000 * 10.0 / 1e6)
+
+
+class TestTheParseCacheFollowsThePriceList:
+    """Cached after unpriced turns were dropped and keyed on mtime and size,
+    a file kept its model unknown after `models refresh` or a new
+    `.adder/catalog.json`: cached 0 turns, cold 1 turn at $6."""
+
+    def test_a_newly_priced_model_is_re_read(self, tmp_path, monkeypatch):
+        import json
+
+        from adder.core import trace
+
+        monkeypatch.setenv("ADDER_TRACE_CACHE", str(tmp_path / "cache.pkl"))
+        monkeypatch.setattr(trace, "CACHE_PATH", tmp_path / "cache.pkl")
+        d = tmp_path / "proj"
+        d.mkdir()
+        rec = _mixed_record()
+        rec["message"]["model"] = "claude-opus-5"
+        (d / "s1.jsonl").write_text(json.dumps(rec) + "\n")
+        priced = {"claude-opus-5": False}
+        monkeypatch.setattr(trace, "is_priced", lambda m: priced.get(m, True))
+        assert trace.load_sessions(tmp_path, use_cache=True) == {}
+        priced["claude-opus-5"] = True
+        got = trace.load_sessions(tmp_path, use_cache=True)
+        assert sum(len(s.turns) for s in got.values()) == 1

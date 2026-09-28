@@ -11,6 +11,165 @@ without a stated reason is a regression, not a change.
 
 ## [Unreleased]
 
+- **`adder mcp` is read-only again.** A tool argument reached the child
+  process bare, so `{"task": "--record"}` became the flag and wrote the ledger,
+  and `{"root": "--help"}` returned usage. Options are now `--k=value` and the
+  positional follows `--`.
+- **The `/adder` skill no longer runs the task text in a shell.** Claude Code
+  inserts `$ARGUMENTS` into a pre-run command unescaped, so a task naming
+  `` `make clean` `` ran it. The model now calls `adder policy` itself with the
+  task in a quoted heredoc. The doctor and context skills pre-approve only the
+  reports they run, not `adder auto on --yes`.
+- **The hooks price the session that called them.** Both guessed the newest
+  transcript in the project; with two sessions in one repository a 25-turn
+  session was billed as the other's 300 turns and $287. They now read the
+  payload's `transcript_path`, and parse it once.
+- **A hook can no longer block every call.** `adder hook` exited 2 -- which
+  Claude Code treats as "block" -- on any argument error, and a committed
+  `adder hook X` line run by an older adder did the same. It fails open, and
+  `auto on` writes and upgrades project lines to `adder hook X || true`.
+- **`auto off` gives back what `auto on` found.** It deleted empty events the
+  user already had and re-serialised the file; it now restores the original
+  bytes. It removes the agent files it installed (`Explore.md` pins a built-in
+  to Haiku), only when it is reversing an install, and makes no misleading
+  `.adder.bak`.
+- **Numbers that were wrong.** `doctor`'s tools share left assistant output
+  out of the denominator (78% for ~20%) and its "at stake" summed overlapping
+  levers; it now shows a floor-to-ceiling range. `verify` and `quality`
+  split a session that ran past the cutover, reporting -39%/+17% on identical
+  sessions. A turn that wrote both cache TTLs was priced at the larger one
+  (22% off). The parse cache kept a model unknown after it became priceable.
+  A model the catalog lists without a price crashed every report.
+  `claude-sonnet-4-5[1m]` and other catalog ids with `[1m]` did not resolve.
+  `live` priced restarts and compaction as if the prompt floor could be freed.
+  `simulate` cut all growth by the terseness fraction instead of output's
+  share, so the composition claim tested a model `savings` does not use.
+- **Routing.** Downgrades are priced at the cache-write rate, inline work is
+  checked against the session model's window, a batch amortises the routing
+  turn, a tier with no history keeps its prior instead of borrowing a lower
+  tier's rate, `cascade` gates every row on feasibility, `place` respects the
+  harness, and the ledger counts the overhead of declined advice. `policy`
+  says which inputs it assumed when there is no session to measure.
+- **Reports that wrote or accepted nonsense.** `horizon` and `carry` wrote a
+  cache file; `sched`, `prefix`, `spec`, `speed` and `cachesim` ignored the
+  `cache` setting; `export -o` could overwrite a transcript. Every `--top`
+  and threshold flag rejects negative or non-finite values. `debt` prints this
+  machine's session lengths rather than the author's, and sub-dollar amounts
+  no longer print as `$0`.
+- **Plumbing.** A bad config file is a one-line error, not a traceback. One
+  timestamp parser (`util.when.parse_iso`) behaves the same on 3.10 and 3.11.
+  Home-derived defaults follow `HOME` after import (`util.homepath`).
+  `config --init` prints a template that changes nothing. `gini` counts
+  zero-cost sessions. `make smoke` fails when it checked nothing, the sdist
+  can run its own tests, and shell completion covers subcommands.
+- **The guard's Bash parser is linear.** A 2 MB command took 16s, past the
+  hook timeout; it now takes 0.55s end to end. Quoted `sed -n '/x/p'` is a
+  search, not a byte print, and is no longer refused as a duplicate read.
+- **`adder validate` checks the carry.** `the_carry_exceeds_the_sum` pins the
+  README's 5.4x at >= 5.0x.
+- **Prefix rebuilds now shrink with the context a regime leaves.** Cache
+  writes beyond what a turn admitted are a prefix rewritten after the cache
+  expired, $624 of $8,747 here, and the replay scaled them by admission, so a
+  restart that shrank the context left them untouched. They now scale with
+  context the way reads do. On 103 sessions, $8,757 as run: `auto on --full`
+  1.11x, plus restarts 2.8x (worst corner 2.4x, was 2.6x and 2.2x); `adder
+  plan`'s full regime 6.3x (was 5.8x), 6.9x at the hardest setting of every
+  lever. 10x is reached only with the cheaper session model assumed to need
+  no rework at all, which nothing here measures.
+- **The restart verdict now reaches the person who can act on it.** The
+  prompt hook put its priced "restart now: worth ~$37" into `additionalContext`,
+  which on UserPromptSubmit produces no visible entry, so the largest lever in
+  the tool depended on the model choosing to repeat it. A restart or compact
+  verdict now also goes out as `systemMessage`, which the user sees and the
+  context does not carry.
+- **The README says what the dollars mean on a plan.** On Pro or Max they are
+  list-price equivalents, and the saving is headroom in the five-hour window;
+  `adder limits` reports it in tokens.
+- **Measured:** Haiku 4.5 12/12 against Opus 5.5 12/12 on the comprehension
+  tasks in `adder ab`, at 20% of the cost. A smoke test for the Haiku tier,
+  recorded in `docs/benchmark.md`.
+- **A read counts as in the context once it has landed, not when it is
+  asked for.** The guard recorded reads at PreToolUse, before the permission
+  prompt and the tool, so a Read the permission layer blocked was remembered
+  and the next attempt refused with "use the copy you have". A new PostToolUse
+  hook, `read-confirm`, promotes a read only when the response shows the whole
+  file arrived: a Read's `numLines` against `totalLines` and its
+  `truncatedByTokenCap`, and a Bash result with no `persistedOutputPath` or
+  `backgroundTaskId`. Checked in headless Claude Code 2.1.283: a duplicate is
+  refused, a token-capped read is not, and a blocked read is never recorded. An
+  install without the new hook keeps the old behaviour, so it does not quietly
+  stop catching duplicates. About 60ms per Read or Bash call.
+- **A duplicate in a session's first five turns went through.** The hook
+  returned before deciding anything while there was too little history to
+  price a call, but a duplicate is certain and needs no price. In a headless
+  "read it, then read it again" run the second read landed on turn 2 and cost
+  $0.062 against $0.034 refused.
+- **Parallel tool calls lost each other's guard state.** Each hook wrote its
+  whole session back, so 3 of 8 parallel Reads survived. `save_state` now
+  applies only its own changes, under an advisory lock on the directory, which
+  adds no file under `~/.claude`.
+- **`narrow` truncated a Read without telling the model.** On `allow`, Claude
+  Code shows `permissionDecisionReason` to the user and not to Claude; the
+  message now also goes in `additionalContext`.
+- **The duplicate check trusted mtime alone** and missed content replaced by
+  `cp -p` or `rsync -a`; it now compares size too. `BASH_MAX_OUTPUT_LENGTH` no
+  longer raises the inline ceiling it does not control, a backgrounded `cat`
+  admits nothing, and `cat a b` is held to one ceiling for both files.
+- **The benchmark headline fell from 3.1x to 1.1x hands off, and from 6.4x to
+  2.6x with restarts.** The replay behind it had four errors, all in the
+  tool's favour. Its delegation gate fired on the whole context growth between
+  two turns, more than half of which is the model's own output, and re-priced
+  that output at the subagent's rate. It delegated turns already running inside
+  subagents (39% of its delegations). It priced a subagent at a 400-token brief
+  plus one uncached pass, about $0.002 on Haiku, where 258 measured subagent
+  runs open on a median 34.6K tokens of their own. And it charged the turn that
+  dispatches a delegation only when the delegation failed. The replay now
+  delegates only main-chain tool results, and only where that beats carrying
+  them to the next restart or compaction. On 69 sessions, 45,217 turns and
+  $8,593: `auto on --full` $7,690 (1.12x), plus restarting every 37 turns
+  $3,364 (2.6x, worst corner 2.2x). `validate`'s floors moved with the README:
+  1.05x installed, 1.08x activated, 2x followed.
+- **`placement_cost` and `carry.delegate_threshold` priced a subagent the same
+  way**, so `guard_enforce=full` refused reads that were cheaper inline and the
+  solved threshold came out near 400 tokens. Both now charge the measured
+  subagent opening (`cost.SUBAGENT_OPENING_TOKENS`), and the guard charges the
+  dispatch turn.
+- **Sonnet 5 was billed at $3/$15 from 1 September.** The table modelled the
+  announced end of its introductory $2/$10; the pricing page says that revert
+  was cancelled and $2/$10 is the list price. About $64 of $192 on the author's
+  Sonnet 5 turns was overstatement. The date-aware machinery stays, and its
+  tests now run against the schedule as announced (`scheduled_intro`).
+- **An unlisted point release was priced as its parent.** `claude-mythos-5-1`
+  resolved to `claude-mythos-5` by prefix and billed cache reads at 4x, marked
+  verified. It has a row now, and a prefix followed by a version number
+  (`-1`, `-5`) no longer matches, so the next point release surfaces as unknown.
+- **Opus 5.5 runs were never counted toward a tier.** `tier_for_model` matched
+  only an exact list price, and $4 is on no rung; it now takes the nearest one.
+- **A repository could choose where adder writes.** `.adder.json` is found by
+  walking up from the working directory, and a project file that set
+  `guard_state` had the hook overwrite that path on the next Bash call; one
+  that set `trace_cache` chose a pickle for adder to load; `guard_narrow`
+  turned refusals into approvals that skip the permission prompt. These and
+  every other written path are now read only from `~/.claude/adder.json` and
+  the environment, and `adder config` names a project file that tries.
+- **`adder auto on` from a checkout installed hooks that never ran.** The
+  `-m adder...` command found the package only while Claude Code ran in the
+  checkout itself; everywhere else each hook exited 1, which does not block,
+  so nothing was guarded and `auto status` said ON. The command now carries
+  `PYTHONPATH` when a fresh interpreter cannot import the package alone.
+- **A Read after a Write and a formatter was refused as a duplicate.** The
+  guard took any mtime within five seconds of a Write to be that Write. It now
+  also requires the bytes on disk to match what the Write sent.
+- **Subagent output is a lower bound, and `adder trace` says so.** From
+  mid-September Claude Code stopped writing the completing record for 95% of
+  subagent messages; their output is the ~10-token stream-start count. Turns
+  carry `final`, and `trace` counts those without it (13,070 here).
+- **The same message in two files kept the first copy, not the complete
+  one**, and a transcript naming a catalog model with no price crashed `adder
+  trace`. `adder savings` also added overlapping output levers linearly (167%
+  of spend saved on one workload) and credited an effort cut to turns already
+  at medium.
+
 - **`adder plan` and `adder bench` did not finish on a real history.** Each
   recorded turn looked the ladder up through the settings, and each lookup
   computed every setting's default, including a `root` default that walks

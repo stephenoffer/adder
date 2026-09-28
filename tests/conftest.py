@@ -237,3 +237,28 @@ def tz(monkeypatch):
 
     yield _set
     time.tzset()          # monkeypatch has restored TZ by now
+
+
+@pytest.fixture
+def scheduled_intro(monkeypatch):
+    """Sonnet 5 on the schedule it launched with: $2/$10 through 2026-08-31,
+    then $3/$15.
+
+    The revert was cancelled and $2/$10 became the list price, so nothing in
+    the shipped table carries an introductory rate. The machinery that expires
+    one still has to work the next time a rate is announced, and this is the
+    one schedule that really was announced, so the tests that exercise it
+    restore it here rather than invent a model.
+    """
+    import dataclasses
+    from datetime import date
+
+    from adder.pricing import prices, registry
+
+    m = prices.MODELS[SONNET]
+    monkeypatch.setitem(prices.MODELS, SONNET, dataclasses.replace(
+        m, base=prices.Rate(3, 15), intro=prices.Rate(2, 10),
+        intro_until=date(2026, 8, 31)))
+    registry.reset_cache()
+    yield
+    registry.reset_cache()

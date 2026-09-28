@@ -12,15 +12,31 @@ not a hope. Write the bill out:
 
     cost_with_adder = baseline - savings + overhead
 
-which is below `baseline` exactly when `savings >= overhead`. Two mechanisms
-here keep that true rather than assuming it.
+which is below `baseline` exactly when `savings >= overhead`. That is a
+measurement, not an identity, and the ledger keeps both sides so it can be
+taken after the fact instead of argued for.
 
-**Solvency.** A recommendation is only emitted when its *worst-case* saving --
-the pessimistic vertex from `risk.guarantee`, not its expected value -- exceeds
-the overhead of emitting it. Every emitted recommendation therefore banks a
-non-negative margin under any inputs the estimates admit, and a sum of
-non-negative terms cannot go negative. The ledger records both sides so the
-invariant is checkable after the fact instead of merely argued for.
+**What the gate guarantees, and what it does not.** `policy.decide` emits a
+recommendation when `Guarantee.safe` holds: the saving at the point estimates
+exceeds the overhead, with at least the configured probability. It does not
+require the *worst-case* saving to clear it -- that is `Guarantee.dominant`,
+which is rare by design. So the check this ledger can hold the gate to is the
+expected one: every accepted entry's `predicted` must exceed its `overhead`.
+An entry that does not is the gate emitting advice it should have refused, and
+that is the one result here reported as a bug.
+
+This file used to state solvency over the worst case, which the gate never
+promised, so an ordinary `policy --record` of a recommendation that cleared its
+bar in expectation printed "INSOLVENT ... that is a bug" and exited 1. And it
+summed `overhead` over accepted entries only, so declining -- which still costs
+the routing turn, and is most of what the tool does -- cost nothing: three
+recorded refusals at $0.26 each read "Nothing recorded yet".
+
+**Solvency** is therefore the account over *every* routing turn: the expected
+saving of what was acted on against the overhead of everything that was asked,
+declines included. Falling short is not a bug -- a run of refusals costs turns
+and saves nothing -- but it is the honest answer to "has this been worth
+using", and the guaranteed (worst-case) margin is reported beside it.
 
 **Calibration drift.** Worst-case bounds protect against the parameters being
 wrong. They do not protect against the *model* being wrong -- a systematic bias
@@ -45,12 +61,14 @@ import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from adder.util.homepath import HomeDefault
+from adder.util.when import parse_iso
+
 # The built-in location. `ledger_path()` is what callers should use: it lets
 # an explicitly-configured `ledger` setting win, which this constant alone
 # cannot, because it is read once at import.
-DEFAULT_LEDGER = Path(
-    os.environ.get("ADDER_LEDGER", Path.home() / ".claude" / "adder-ledger.jsonl")
-)
+_HOME_LEDGER = HomeDefault(".claude", "adder-ledger.jsonl")
+DEFAULT_LEDGER = Path(os.environ.get("ADDER_LEDGER", _HOME_LEDGER.at_import))
 
 
 def ledger_path(log: Path | str | None = None) -> Path:
@@ -59,7 +77,7 @@ def ledger_path(log: Path | str | None = None) -> Path:
         return Path(log)
     from adder.core.settings import configured_path
 
-    return configured_path("ledger", DEFAULT_LEDGER)
+    return configured_path("ledger", _HOME_LEDGER.live(DEFAULT_LEDGER))
 
 # Verified entries needed before the haircut is allowed to move off 1.0. Below
 # this, a single unlucky delegation would throttle every later recommendation.
@@ -125,10 +143,9 @@ def _num(v, default: float = 0.0) -> float:
         # `prune` raise on a sort and `promised` raise on a sum -- both from
         # inside handlers that swallow the exception, so the symptom was the
         # ledger silently ceasing to influence anything.
-        from datetime import datetime
 
         try:
-            return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+            return parse_iso(v).timestamp()
         except ValueError:
             return default
     return default
@@ -207,12 +224,16 @@ class Ledger:
         return [e for e in self.accepted if e.realized is not None]
 
     @property
+    def declined(self) -> list[Entry]:
+        return [e for e in self.entries if not e.accepted]
+
+    @property
     def banked(self) -> float:
         """Guaranteed saving across every recommendation acted on.
 
-        The worst-case number, not the expected one. This is the quantity the
-        solvency invariant is stated over, because it is the only one that
-        cannot be wrong in the direction that costs money.
+        The worst-case number, not the expected one. It is reported beside the
+        account rather than being the account, because the gate does not
+        promise it: see the module docstring.
         """
         return sum(e.worst for e in self.accepted)
 
@@ -222,7 +243,11 @@ class Ledger:
 
     @property
     def spent(self) -> float:
-        return sum(e.overhead for e in self.accepted)
+        """Routing overhead across every entry, declined ones included.
+
+        A decline costs the routing turn exactly as a recommendation does.
+        """
+        return sum(e.overhead for e in self.entries)
 
     @property
     def delivered(self) -> float:
@@ -230,12 +255,30 @@ class Ledger:
 
     @property
     def solvent(self) -> bool:
-        """Has the advice been worth more than the asking, guaranteed?"""
-        return self.banked >= self.spent
+        """Has the advice been worth more than all the asking, in expectation?"""
+        return self.promised >= self.spent
 
     @property
     def margin(self) -> float:
+        return self.promised - self.spent
+
+    @property
+    def guaranteed_margin(self) -> float:
+        """The same account at the worst case: what nothing could have taken back."""
         return self.banked - self.spent
+
+    @property
+    def gate_violations(self) -> list[Entry]:
+        """Accepted entries whose expected saving did not clear their own overhead.
+
+        What `decide` guarantees for everything it emits. Any entry here is the
+        gate letting through advice it should have refused.
+        """
+        return [e for e in self.accepted if not e.predicted > e.overhead]
+
+    @property
+    def gate_held(self) -> bool:
+        return not self.gate_violations
 
     def haircut(self, *, now: float | None = None) -> float:
         """Multiplier applied to a prediction before it meets its gate.
@@ -257,14 +300,15 @@ class Ledger:
         return max(MIN_HAIRCUT, min(1.0, num / den))
 
     def describe(self) -> str:
-        if not self.accepted:
+        if not self.entries:
             return "no recommendations acted on yet; nothing has been spent or saved"
         state = "solvent" if self.solvent else "INSOLVENT"
         h = self.haircut()
         tail = "" if h >= 1.0 else f"; predictions haircut to {h:.0%} of face value"
-        return (f"{len(self.accepted)} recommendations: guaranteed ${self.banked:,.2f} "
-                f"against ${self.spent:,.2f} of routing overhead -- {state} "
-                f"by ${self.margin:,.2f}{tail}")
+        return (f"{len(self.accepted)} recommendations and {len(self.declined)} "
+                f"declines: expected ${self.promised:,.2f} against "
+                f"${self.spent:,.2f} of routing overhead -- {state} by "
+                f"${abs(self.margin):,.2f} (guaranteed ${self.banked:,.2f}){tail}")
 
 
 def prune(log: Path | str | None = None, keep: int = MAX_ROWS) -> int:
@@ -323,29 +367,34 @@ def main(argv: list[str] | None = None) -> int:
     if a.json:
         print(json.dumps({
             "recommendations": len(led.accepted),
+            "declined": len(led.declined),
             "verified": len(led.verified),
             "banked": round(led.banked, 4),
             "promised": round(led.promised, 4),
             "delivered": round(led.delivered, 4),
             "spent": round(led.spent, 4),
             "margin": round(led.margin, 4),
+            "guaranteed_margin": round(led.guaranteed_margin, 4),
             "solvent": led.solvent,
+            "gate_held": led.gate_held,
             "haircut": round(led.haircut(), 4),
         }))
         return 0
 
     print()
-    if not led.accepted:
+    if not led.entries:
         print(f"  Nothing recorded yet ({ledger_path(a.log)}).")
         print("  Until adder has emitted a recommendation there is no overhead to")
         print("  have earned back, and the invariant holds trivially.\n")
         return 0
 
     print(f"  {'recommendations acted on':<34}{len(led.accepted):>12,}")
-    print(f"  {'guaranteed saving (worst case)':<34}${led.banked:>11,.2f}")
+    print(f"  {'declined (still paid the turn)':<34}{len(led.declined):>12,}")
     print(f"  {'modelled saving (expected)':<34}${led.promised:>11,.2f}")
+    print(f"  {'guaranteed saving (worst case)':<34}${led.banked:>11,.2f}")
     print(f"  {'routing overhead paid':<34}${led.spent:>11,.2f}")
-    print(f"  {'margin':<34}${led.margin:>11,.2f}")
+    print(f"  {'margin (expected)':<34}${led.margin:>11,.2f}")
+    print(f"  {'margin (worst case)':<34}${led.guaranteed_margin:>11,.2f}")
     print()
     if led.verified:
         h = led.haircut()
@@ -357,10 +406,17 @@ def main(argv: list[str] | None = None) -> int:
         print("  Nothing verified yet, so predictions run at face value.")
     print()
     print(f"  {led.describe()}")
-    if not led.solvent:
-        print("  The gate should be refusing to emit; if it is not, that is a bug.")
+    if not led.gate_held:
+        bad = led.gate_violations
+        print(f"  {len(bad)} accepted recommendation(s) did not clear their own "
+              "overhead in expectation.")
+        print("  The gate should have refused to emit them; that is a bug.")
+    elif not led.solvent:
+        print("  Every recommendation cleared its own bar; the shortfall is the "
+              "turns spent")
+        print("  asking where the answer was to do it inline.")
     print()
-    return 0 if led.solvent else 1
+    return 0 if led.gate_held else 1
 
 
 if __name__ == "__main__":

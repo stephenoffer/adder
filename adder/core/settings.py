@@ -36,7 +36,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-USER_FILE = Path.home() / ".claude" / "adder.json"
+from adder.util.homepath import HomeDefault
+
+_USER = HomeDefault(".claude", "adder.json")
+USER_FILE = _USER.at_import          # repointed by tests; read it via `user_file()`
+
+
+def user_file() -> Path:
+    """`~/.claude/adder.json` under the home directory as of now."""
+    return _USER.live(USER_FILE)
 PROJECT_FILE = ".adder.json"
 
 
@@ -106,6 +114,15 @@ class Setting:
     # `adder config` can say why in one line instead of the reader discovering
     # it by watching a setting have no effect.
     env_only: bool = False
+    # Never read from a project's `.adder.json`, only from the user's file and
+    # the environment. The project file is found by walking up from the working
+    # directory, so it is whatever the repository someone just cloned says it
+    # is. A path here is a file the hook *writes* on every Bash call, and a
+    # project that set `guard_state` to `~/.zshrc` replaced it with guard JSON;
+    # `guard_narrow` turns a refusal into an approval that skips the permission
+    # prompt. `trace_cache` is unpickled, so choosing it is choosing code to
+    # run. None of these is a repository's to decide.
+    user_only: bool = False
 
     @property
     def env_var(self) -> str:
@@ -171,7 +188,7 @@ SETTINGS: tuple[Setting, ...] = (
             "tokens above which the guard asks for confirmation, when blocking"),
     Setting("uptake_cache", _home(".claude", ".adder-uptake.json"), _as_path,
             "cached measurement of how often guard advice was followed; the "
-            "hook reads it, `adder guard --learn` writes it"),
+            "hook reads it, `adder guard --learn` writes it", user_only=True),
     Setting("guard_advice_taken", 0.5, float,
             "share of guard advice that is acted on; discounts the saving "
             "before it is weighed against the cost of saying it. Only a "
@@ -202,19 +219,21 @@ SETTINGS: tuple[Setting, ...] = (
             "denied",
             env="ADDER_GUARD_ENFORCE"),
     Setting("guard_state", _home(".claude", ".adder-guard.json"), _as_path,
-            "per-session guard memory: files read, shapes already advised"),
+            "per-session guard memory: files read, shapes already advised",
+            user_only=True),
     Setting("guard_narrow", False, _as_bool,
             "where the guard would refuse a large Read or Grep, substitute the "
             "bounded call instead of demanding it -- saves the turn spent "
             "re-issuing, but a substitution travels with an approval and can "
             "suppress a permission prompt, so it is off until you say otherwise",
-            env="ADDER_GUARD_NARROW"),
+            env="ADDER_GUARD_NARROW", user_only=True),
     Setting("guard_route", True, _as_bool,
             "on a delegated step, also name the cheapest tier that clears the "
             "task -- advice only, and never a refusal",
             env="ADDER_GUARD_ROUTE"),
     Setting("size_model", _home(".claude", ".adder-sizes.json"), _as_path,
-            "learned result-size quantiles the guard predicts from"),
+            "learned result-size quantiles the guard predicts from",
+            user_only=True),
     Setting("size_max_age", 86_400.0, float,
             "seconds before the learned size model is re-derived"),
     Setting("warn_spend", 15.0, float,
@@ -226,13 +245,17 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("catalog_max_age_days", 21.0, float,
             "age past which the model catalog is reported as stale"),
     Setting("log", _home(".claude", "adder-outcomes.jsonl"), _as_path,
-            "dispatch outcome log that calibrates p_fail", env="ADDER_LOG"),
+            "dispatch outcome log that calibrates p_fail", env="ADDER_LOG",
+            user_only=True),
     Setting("ledger", _home(".claude", "adder-ledger.jsonl"), _as_path,
-            "ledger of recommendations made and verified", env="ADDER_LEDGER"),
+            "ledger of recommendations made and verified", env="ADDER_LEDGER",
+            user_only=True),
     Setting("home", _home(".claude"), _as_path,
-            "base directory for caches and logs", env="ADDER_HOME"),
+            "base directory for caches and logs", env="ADDER_HOME",
+            user_only=True),
     Setting("trace_cache", _home(".claude", ".adder-trace-cache"), _as_path,
-            "parse cache file", env="ADDER_TRACE_CACHE"),
+            "parse cache file", env="ADDER_TRACE_CACHE",
+            user_only=True),
     Setting("catalog", "", str,
             "pin the whole model catalog to one file", env="ADDER_CATALOG",
             env_only=True),
@@ -334,7 +357,8 @@ def resolve(*, cwd: Path | str | None = None,
     per-turn `Tier.model` cost a millisecond.
     """
     env = os.environ if env is None else env
-    user = _read_json(USER_FILE) if USER_FILE.is_file() else {}
+    uf = user_file()
+    user = _read_json(uf) if uf.is_file() else {}
     pf = project_file(cwd)
     proj = _read_json(pf) if pf else {}
 
@@ -347,8 +371,8 @@ def resolve(*, cwd: Path | str | None = None,
         # value nothing will read. See `Setting.env_only`.
         if not s.env_only:
             if s.name in user:
-                value, source = user[s.name], str(USER_FILE)
-            if s.name in proj:
+                value, source = user[s.name], str(user_file())
+            if s.name in proj and not s.user_only:
                 value, source = proj[s.name], str(pf)
         raw = env.get(s.env_var)
         if raw is not None and raw != "":
@@ -442,11 +466,19 @@ def ignored_in_files(*, cwd: Path | str | None = None,
     A key written into `.adder.json` that nothing will ever read is worse than
     a missing one: it looks configured.
     """
-    user = _read_json(USER_FILE) if USER_FILE.is_file() else {}
+    uf = user_file()
+    user = _read_json(uf) if uf.is_file() else {}
     pf = project_file(cwd)
     proj = _read_json(pf) if pf else {}
     written = set(user) | set(proj)
     return sorted(s.name for s in SETTINGS if s.env_only and s.name in written)
+
+
+def ignored_in_project(*, cwd: Path | str | None = None) -> list[str]:
+    """User-only settings the project file tries to set, which it may not."""
+    pf = project_file(cwd)
+    proj = _read_json(pf) if pf else {}
+    return sorted(s.name for s in SETTINGS if s.user_only and s.name in proj)
 
 
 def get(name: str, *, cwd: Path | str | None = None,
@@ -540,7 +572,24 @@ def harness() -> str:
         return "claude-code"
 
 
+# Settings whose unset value is worked out, not fixed: writing the default down
+# is not the same as leaving it unset. `guard_enforce` is `certain` under the
+# plugin and `off` only when nothing says otherwise.
+_DERIVED: frozenset[str] = frozenset({"root", "model", "harness", "guard_enforce"})
+
+
 def template() -> str:
-    """A commented-by-example config file, with every setting at its default."""
-    body = {s.name: s.initial for s in SETTINGS if s.initial not in ("", None)}
+    """A starting `.adder.json` that changes nothing about how the tool behaves.
+
+    It used to dump every default, and `adder config` tells people to save it
+    as their project file. That pinned `model`, `harness`, `root` and
+    `guard_enforce` from the project file, which switched off every derived
+    default -- the model stopped following the newest session and the plugin's
+    `certain` enforcement dropped to `off` -- and wrote this machine's absolute
+    home paths into a file meant to be committed. The next `adder config` then
+    warned about ten keys in its own template that a project file may not set.
+    """
+    body = {s.name: s.initial for s in SETTINGS
+            if s.name not in _DERIVED and not s.env_only and not s.user_only
+            and not callable(s.default) and s.initial not in ("", None)}
     return json.dumps(body, indent=2, sort_keys=True)

@@ -36,8 +36,10 @@ from datetime import date
 from pathlib import Path
 
 from adder.core import settings as _settings
+from adder.core.filters import day_of
 from adder.core.filters import root_of as _root_of
 from adder.core.trace import Session, Turn, project_name
+from adder.measure.argtypes import positive_int
 from adder.pricing.prices import MODELS, fits, resolve
 from adder.pricing.registry import fits as _fits
 from adder.pricing.registry import limit_str
@@ -326,7 +328,10 @@ def report(rep: AgentReport, *, top: int = 10, on: date | None = None) -> str:
                      f"{DELEGABLE_TOKENS:,} tokens at once.")
         lines.append(f"  Delegating those reads would have saved at least "
                      f"{money(total)}:")
-        rows = [[m.session[:8], m.when[:10], tokens(m.tokens), money(m.inline),
+        # The local day, via `day_of`, as `sessions` and `export` print it:
+        # `when[:10]` was the UTC date and put evening reads on tomorrow.
+        rows = [[m.session[:8], str(day_of(m.when) or "—"), tokens(m.tokens),
+                 money(m.inline),
                  money(m.delegated), money(m.saving)]
                 for m in rep.missed[:top] if m.saving > 0]
         lines += table(rows, ["session", "date", "admitted", "inline",
@@ -352,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="adder agents",
         description="Measure delegation: what ran as a subagent, and what should have.")
     add_window(ap)
-    ap.add_argument("--top", type=int, default=10, metavar="N",
+    ap.add_argument("--top", type=positive_int, default=10, metavar="N",
                     help="rows to show (default: %(default)s)")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)

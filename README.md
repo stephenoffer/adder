@@ -70,22 +70,39 @@ Enforcement is the part that needs a hook able to refuse a tool call, so
 
 ## What it is worth
 
-Replaying 33,192 recorded turns across 118 real sessions:
+Replaying 46,687 recorded turns across 103 real sessions (September 2026):
 
 | | spend | |
 |---|---|---|
-| as it actually ran | $7,888 | |
-| after `adder auto on --full` | **$2,567** | 3.1x cheaper, hands off |
-| if you also restart when it says to | $1,233 | 6.4x cheaper |
+| as it actually ran | $8,757 | |
+| after `adder auto on --full` | $7,897 | 1.11x cheaper, hands off |
+| if you also restart when it says to | **$3,131** | 2.8x cheaper |
 
-Nothing in the middle row asks you to work differently. The third needs one
-thing from you, and the tool is explicit about which. These are re-priced
-replays of turns that really happened, not projections; the null configuration
-reproduces the measured bill to within 0.0% before any ratio against it means
-anything. ([benchmark.md](docs/benchmark.md))
+The middle row asks nothing of you, and it is worth about a tenth of the bill:
+refused re-reads of files the context already holds, and large tool results
+sent to a subagent where that is cheaper than carrying them. The third row is
+where the money is. It needs one thing from you, a restart every few dozen
+turns, and the tool says when. At the pessimistic corner of the three inputs no
+transcript can settle, 2.8x becomes 2.4x.
+
+These are re-priced replays of turns that really happened, not projections.
+Replayed with nothing changed, they reproduce the measured bill to +0.0%, which
+shows the bookkeeping is sound and says nothing about the counterfactuals; the
+counterfactuals are what [benchmark.md](docs/benchmark.md) spells out. An
+earlier version of this table read 3.1x and 6.4x. That replay let a refused
+read hand the model's own output to a subagent and priced each subagent at a
+fraction of a cent, and both errors ran in the tool's favour.
+
+On a Pro or Max plan you are not billed these dollars; they are what the same
+tokens cost at API list price. The saving arrives as headroom instead: 99% of
+the input tokens in each five-hour window here were context already read once,
+so a shorter context is more work before the window closes. `adder limits`
+reports your windows in tokens rather than dollars.
 
 Every dollar here comes from one machine's history, dominated by one workload.
-Your absolute numbers will differ. Run `adder savings` before you believe any
+Your absolute numbers will differ. Subagent output is also a lower bound here:
+from mid-September Claude Code stopped writing the final usage record for most
+subagent messages, and `adder trace` counts how many. Run `adder savings` before you believe any
 number on this page — re-checking it on your own transcripts is the entire
 point of the tool.
 
@@ -118,7 +135,8 @@ Write something with 340 turns left and you pay for it 341 times.
 
 | turns remaining | 0 | 50 | 200 | 340 | 759 |
 |---|---|---|---|---|---|
-| what a token really cost | 1.0x | 2.0x | 5.0x | **7.8x** | 16.2x |
+| what a token really cost, Opus 5 | 1.0x | 2.0x | 5.0x | **7.8x** | 16.2x |
+| on Opus 5.5, whose cache reads are half price | 1.0x | 1.5x | 3.0x | 4.4x | 8.6x |
 
 Your usage dashboard shows you the 1.0x column. Two things follow, and they are
 the whole tool: the expensive decision is rarely which model you used but what
@@ -142,7 +160,7 @@ it.
 
 A full adder has two outputs: the sum, and the carry — the bit that doesn't fit
 in this column and has to be paid in the next one. Every cost tool reports the
-sum. This one reports the carry, which on the history above was 5.7x the sum.
+sum. This one reports the carry, which on the history above was 5.4x the sum.
 It's also a snake, the entry fee for a Python project.
 ([naming.md](docs/naming.md))
 

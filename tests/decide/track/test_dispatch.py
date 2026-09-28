@@ -67,6 +67,14 @@ class TestTierInference:
     def test_sonnet_generations_share_a_rung(self):
         assert tier_for_model("claude-sonnet-4-6") == tier_for_model(SONNET)
 
+    @pytest.mark.parametrize("model,tier", [("claude-opus-5-5", "T2"),
+                                            ("claude-opus-4-8", "T2"),
+                                            ("claude-haiku-4-5-20251001", "T0")])
+    def test_a_model_between_rungs_takes_the_nearest_price(self, model, tier):
+        """Opus 5.5 lists at $4, on no rung's exact price; matching only equal
+        prices left the model most sessions ran on untiered and uncounted."""
+        assert tier_for_model(model) == tier
+
     def test_an_unknown_model_yields_no_tier(self):
         assert tier_for_model("gpt-9-turbo") == ""
         assert tier_for_model("") == ""

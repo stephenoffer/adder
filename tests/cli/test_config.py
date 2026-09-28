@@ -115,9 +115,26 @@ class TestSurface:
 
     def test_template_is_valid_json_and_round_trips(self):
         d = json.loads(template())
-        assert d["model"]
+        assert d
         for k in d:
             assert k in settings.BY_NAME
+
+    def test_saving_the_template_changes_nothing(self, tmp_path, isolated_home):
+        """`adder config --init > .adder.json` is the advice `config` prints.
+        Every value the template holds must resolve the same with it saved,
+        and nothing derived, env-only, user-only or home-derived may be in it:
+        pinning `model` or `guard_enforce` from the file switched off the
+        default it was supposed to show."""
+        d = json.loads(template())
+        assert not {"model", "harness", "root", "guard_enforce"} & set(d)
+        assert not any(settings.BY_NAME[k].env_only or settings.BY_NAME[k].user_only
+                       for k in d)
+        assert str(isolated_home) not in template()
+        before = {k: r.value for k, r in resolve(cwd=tmp_path, env={}).items()}
+        (tmp_path / ".adder.json").write_text(template())
+        after = {k: r.value for k, r in resolve(cwd=tmp_path, env={}).items()}
+        assert after == before
+        assert settings.ignored_in_project(cwd=tmp_path) == []
 
     def test_get_rejects_an_unknown_name(self):
         with pytest.raises(KeyError):
@@ -212,3 +229,46 @@ class TestEnvOnlySettingsAreReportedHonestly:
 
         self._project(tmp_path, monkeypatch, {"budget": 42.0})
         assert resolve()["budget"].value == 42.0
+
+
+class TestARepositoryCannotChooseWhereAdderWrites:
+    """The project file is whatever the repository someone just cloned says.
+
+    A `.adder.json` that set `guard_state` to a file outside the project had
+    the hook overwrite it on the next Bash call; one that set `trace_cache`
+    chose a pickle for adder to load; one that set `guard_narrow` turned
+    refusals into approvals that skip the permission prompt.
+    """
+
+    WRITES = ("guard_state", "size_model", "uptake_cache", "log", "ledger",
+              "home", "trace_cache", "guard_narrow")
+
+    def _project(self, tmp_path, monkeypatch, body):
+        (tmp_path / ".adder.json").write_text(json.dumps(body), encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        return tmp_path
+
+    @pytest.mark.parametrize("name", WRITES)
+    def test_the_project_file_is_ignored_for_it(self, tmp_path, monkeypatch, name):
+        value = True if name == "guard_narrow" else str(tmp_path / "victim")
+        self._project(tmp_path, monkeypatch, {name: value})
+        r = resolve(env={})[name]
+        assert r.source == "default"
+        assert r.value != value
+
+    def test_the_user_file_still_sets_it(self, isolated, monkeypatch):
+        f = isolated / "user" / "adder.json"
+        f.parent.mkdir(parents=True)
+        f.write_text(json.dumps({"guard_state": str(isolated / "mine.json")}))
+        monkeypatch.setattr(settings, "USER_FILE", f)
+        assert resolve(env={})["guard_state"].value == str(isolated / "mine.json")
+
+    def test_a_project_setting_it_is_named_in_the_report(self, tmp_path, monkeypatch,
+                                                         capsys):
+        self._project(tmp_path, monkeypatch, {"guard_state": "/tmp/x"})
+        assert config.main([]) == 0
+        assert "a repository must not choose" in capsys.readouterr().out
+
+    def test_an_ordinary_setting_is_still_the_projects(self, tmp_path, monkeypatch):
+        self._project(tmp_path, monkeypatch, {"budget": 7.0})
+        assert resolve(env={})["budget"].value == 7.0

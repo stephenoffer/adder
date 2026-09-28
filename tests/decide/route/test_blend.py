@@ -166,3 +166,20 @@ class TestCli:
         assert bl.main([str(p), "--ttl", "120", "--json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["saving_usd"] > 0
+
+
+class TestTheNoSavingReasonMatchesWhatHappened:
+    """Both sides of the TTL window printed "the prefix has expired", including
+    a queue whose arrival order already read every prefix warm."""
+
+    def test_a_long_ttl_says_the_prefix_survived(self):
+        rep = bl.analyse(_queue(), ttl_s=10_000_000.0)
+        assert not rep.worth_ordering
+        out = " ".join(bl.format_report(rep).split())
+        assert "arrival order already reads it warm" in out and "has expired" not in out
+
+    def test_a_ttl_too_short_for_either_order_says_it_expired(self):
+        rep = bl.analyse(_queue(), ttl_s=0.0)
+        assert not rep.worth_ordering
+        out = " ".join(bl.format_report(rep).split())
+        assert "has expired" in out and "already reads it warm" not in out

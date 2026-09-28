@@ -17,6 +17,7 @@ import sys
 from adder import __version__
 from adder.cli.commands import BY_NAME, COMMANDS, Command
 from adder.cli.help import usage
+from adder.core.settings import ConfigError
 from adder.pricing.prices import UnknownModelError as _PricesUnknownModel
 from adder.pricing.registry import UnknownModelError as _RegistryUnknownModel
 
@@ -43,6 +44,14 @@ def main(argv: list[str] | None = None) -> int:
         # `adder help <command>` forwards to that command's own parser.
         if len(argv) > 1 and argv[1] in BY_NAME:
             return main([argv[1], "--help"])
+        # `adder help lve` printed the short screen and exited 0, while `adder
+        # lve` said "Did you mean: live?" and exited 2. A misspelt topic is the
+        # same mistake as a misspelt command and gets the same answer.
+        # `version` and `help` are words `usage()` lists, not commands in the
+        # table; they get the screen, not "unknown command".
+        if len(argv) > 1 and not argv[1].startswith("-") \
+                and argv[1] not in ("help", "version"):
+            return _unknown(argv[1])
         print(usage(full="--all" in argv[1:]))
         return 0
 
@@ -67,6 +76,16 @@ def main(argv: list[str] | None = None) -> int:
         # place, one behaviour, every command.
         print(f"adder {cmd.name}: {str(e).strip(chr(34))}", file=sys.stderr)
         return 2
+    except ConfigError as e:
+        # `{bad` in .adder.json, or `"budget": "lots"`, is read by `settings.get`
+        # wherever a command first asks for a value, and every command asks.
+        # Each one printed a traceback whose last line was the whole message.
+        # The file is the user's to fix, so name it and exit as a usage error.
+        # `hook` is the exception: 2 means "block" to Claude Code, and a typo
+        # in a config file must not deny every tool call. It catches its own
+        # errors already; this keeps that contract if one ever escapes.
+        print(f"adder {cmd.name}: {e}", file=sys.stderr)
+        return 0 if cmd.name == "hook" else 2
     return 0 if rc is None else int(rc)
 
 

@@ -255,3 +255,30 @@ class TestARegressionFromZero:
         after = self._stats(turns=100, tool_calls=200, tool_errors=11,
                             user_prompts=50, edits=10)
         assert regressions(before, after) == []      # +10% is inside tolerance
+
+
+class TestCompareKeepsASessionWhole:
+    """A session that runs past the cutover belongs to the window it began in.
+
+    Split by record, its first half landed before and its second after, so two
+    identical sessions moved `turns_per_prompt` 22% and `verify` printed
+    REGRESSED with nothing changed.
+    """
+
+    def test_a_straddling_session_is_counted_once(self, tmp_path, tz):
+        from datetime import date
+
+        from adder.measure.session.quality import compare
+
+        tz("UTC")
+        recs = []
+        for i, day in enumerate(("2026-08-01", "2026-08-01", "2026-08-02", "2026-08-02")):
+            recs.append({"type": "user", "sessionId": "x", "timestamp": f"{day}T12:0{i}:00Z",
+                         "message": {"content": "do the thing"}})
+            recs.append({"type": "assistant", "sessionId": "x",
+                         "timestamp": f"{day}T12:0{i}:30Z",
+                         "message": {"id": f"m{i}", "model": OPUS, "content": [],
+                                     "usage": {"input_tokens": 1, "output_tokens": 1}}})
+        before, after = compare(_write(tmp_path, recs), date(2026, 8, 2))
+        assert (before.sessions, before.turns, before.user_prompts) == (1, 4, 4)
+        assert (after.sessions, after.turns) == (0, 0)

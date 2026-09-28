@@ -105,7 +105,7 @@ def _seen(session: str, level: int) -> bool:
     return False
 
 
-def _context_verdict(r, sess, cwd) -> str:
+def _context_verdict(r, sess, cwd, transcript=None) -> str:
     """The compact-or-restart call, priced, with what a brief would have to name.
 
     Fails open to the old generic sentence: this runs in front of a prompt, and
@@ -127,7 +127,7 @@ def _context_verdict(r, sess, cwd) -> str:
                 f"(the other option is worth ~${alt:,.2f}).")
         if verdict == "restart" and b.tokens:
             names = [i.name.rsplit("/", 1)[-1]
-                     for i in items_from(current_transcript(cwd))[:5]]
+                     for i in items_from(current_transcript(cwd, transcript=transcript))[:5]]
             # A bound of a quarter-million tokens is not a brief budget, it is
             # "cost is not the constraint". Printing it as a budget invites
             # someone to fill it.
@@ -145,6 +145,9 @@ def main() -> int:
         payload = json.load(sys.stdin)
     except (ValueError, OSError):
         payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    transcript = payload.get("transcript_path")
 
     try:
         from adder.measure.session.live import analyse, current_session
@@ -153,7 +156,9 @@ def main() -> int:
         return 0
 
     try:
-        sess = current_session(payload.get("cwd"))
+        # The transcript the harness names, not the newest one in the repo:
+        # with two sessions open here, that was the other one's bill.
+        sess = current_session(payload.get("cwd"), transcript=transcript)
         if sess is None or sess.n_turns < 20:
             return 0
         r = analyse(sess)
@@ -208,7 +213,8 @@ def main() -> int:
     # was ignored for hundreds of turns at a time. The verdict below is the same
     # advice with the two numbers that make it actionable, and it withdraws
     # itself when carrying on is actually cheaper.
-    parts.append(_context_verdict(r, sess, payload.get("cwd")))
+    verdict_line = _context_verdict(r, sess, payload.get("cwd"), transcript)
+    parts.append(verdict_line)
     message = " ".join(parts)
 
     # The advice is admitted to the context and re-read on every remaining
@@ -230,8 +236,22 @@ def main() -> int:
     except Exception:
         pass
 
-    json.dump({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
-                                      "additionalContext": message}}, sys.stdout)
+    out: dict = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
+                                        "additionalContext": message}}
+    # The person is the only one who can restart a session, and on this event
+    # `additionalContext` "does not produce a visible transcript entry" (hooks
+    # reference): the priced restart verdict reached the model and nobody else,
+    # so the largest lever in the tool depended on the model choosing to
+    # repeat it. `systemMessage` is shown to the user and is not added to the
+    # context, so it costs no carry. Only a verdict to act on is shown.
+    if verdict_line.startswith(("[context] restart", "[context] compact")):
+        other = ("compacting instead" if verdict_line.startswith("[context] restart")
+                 else "restarting instead")
+        shown = (verdict_line.removeprefix("[context] ")
+                 .replace("the other option is worth", f"{other} is worth", 1))
+        out["systemMessage"] = (f"[adder] ${r.spent:,.2f} over {r.turns:,} turns so far. "
+                                + shown[0].upper() + shown[1:])
+    json.dump(out, sys.stdout)
     return 0
 
 

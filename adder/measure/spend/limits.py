@@ -300,7 +300,7 @@ class Report:
         return best, at
 
     def trailing(self, days: float = 7.0) -> int | None:
-        """Tokens read in the `days` up to `now`. None without a `now`."""
+        """Tokens (input and output) in the `days` up to `now`. None without a `now`."""
         if self.now is None or not self.blocks:
             return None
         cut = self.now - timedelta(days=days)
@@ -363,6 +363,19 @@ def build(sessions: dict, *, hours: float = WINDOW_HOURS,
     return Report(blocks(sessions, hours=hours), hours=hours, now=now)
 
 
+def _local(dt: datetime) -> datetime:
+    """`dt` in the reader's timezone, for display only.
+
+    Blocks are built on the UTC instants the transcripts carry, and that is
+    right for the arithmetic. Printing them without conversion was not:
+    `sessions` and `export` file a turn under its local day (`filters.day_of`),
+    so an evening window west of Greenwich was shown opening on a date the
+    other reports call tomorrow. A naive datetime is taken as already local,
+    the same assumption `day_of` makes.
+    """
+    return dt.astimezone() if dt.tzinfo is not None else dt
+
+
 def render(rep: Report) -> str:
     from adder.util.render import money, table
 
@@ -375,7 +388,7 @@ def render(rep: Report) -> str:
     for b in rep.blocks[-12:]:
         s = b.slope()
         rows.append([
-            b.start.strftime("%Y-%m-%d %H:%M"),
+            _local(b.start).strftime("%Y-%m-%d %H:%M"),
             f"{len(b.turns):,}",
             f"{b.tokens:,}",
             f"{b.new_tokens:,}",
@@ -384,17 +397,23 @@ def render(rep: Report) -> str:
             "-" if s is None else f"{s[0]:.1f}x",
             money(b.cost()),
         ])
-    out += table(rows, ["window opened", "turns", "read", "new", "carry",
+    # The column was headed `read` and described as "every token the model had
+    # to take in", while `Block.tokens` sums `total_tokens`, which includes
+    # output. The number is kept and the label corrected: which directions a
+    # plan meters is not published, so counting both is the reading that
+    # cannot under-state the draw, and the header now says that is what it is.
+    out += table(rows, ["window opened", "turns", "tokens", "new", "carry",
                         "tok/min", "slope", "api $"], align="<>>>>>>>")
     out.append("")
-    out.append("  `read` counts every token the model had to take in, cache reads")
-    out.append("  included, because that is what the meter sees. `new` is the part")
-    out.append("  that had never been read before. A slope under 1.0 is a window")
-    out.append("  containing a restart.")
+    out.append("  `tokens` is input plus output: every token read, cache reads")
+    out.append("  included, and every token written. The plan does not publish which")
+    out.append("  of those it meters, so both are counted. `new` drops the cache")
+    out.append("  reads: what had never been read before. A slope under 1.0 is a window")
+    out.append("  containing a restart. Times are local.")
     out.append("")
 
     out.append(f"  Across {len(rep.blocks):,} windows, {rep.carry_share:.0%} of every "
-               f"token read was context")
+               f"input token was context")
     out.append("  already read before -- on a plan, that is quota spent on text you "
                "had already")
     out.append("  paid for once.")
@@ -416,7 +435,7 @@ def render(rep: Report) -> str:
         out.append("")
         out.append(f"  Heaviest window on record: {env.tokens:,} tokens over "
                    f"{len(env.turns):,} turns,")
-        out.append(f"  opening {env.start.strftime('%Y-%m-%d %H:%M')}. That window "
+        out.append(f"  opening {_local(env.start).strftime('%Y-%m-%d %H:%M')}. That window "
                    f"was served, so it is a")
         out.append("  floor under what your plan allows -- not the limit. The limit is "
                    "not published,")
@@ -426,7 +445,7 @@ def render(rep: Report) -> str:
     if peak is not None:
         out.append("")
         out.append(f"  Heaviest 7 days on record: {peak[0]:,} tokens, from "
-                   f"{peak[1].strftime('%Y-%m-%d')}.")
+                   f"{_local(peak[1]).strftime('%Y-%m-%d')}.")
         if trail is not None:
             share = trail / peak[0] if peak[0] else 0.0
             out.append(f"  The last 7 days: {trail:,} tokens, {share:.0%} of that.")
@@ -443,7 +462,7 @@ def render(rep: Report) -> str:
         mins = max(0.0, (act.end - rep.now).total_seconds() / 60.0)
         out.append("")
         out.append(f"  Open now: {act.tokens:,} tokens in, {mins:,.0f} min to close at "
-                   f"{act.end.strftime('%H:%M')}.")
+                   f"{_local(act.end).strftime('%H:%M')}.")
         out.append(f"  At the observed {act.burn:,.0f} tok/min that reaches "
                    f"~{proj[0]:,} by close,")
         out.append(f"  {proj[1]:.0%} of the heaviest window you have run. The rate is "
@@ -458,12 +477,13 @@ def main(argv: list[str] | None = None) -> int:
 
     from adder.core.filters import add_arguments as add_window
     from adder.core.filters import load as load_window
+    from adder.measure.argtypes import positive_float
 
     ap = argparse.ArgumentParser(
         prog="adder limits",
         description="the five-hour metering window, and what the carry costs it")
     add_window(ap)
-    ap.add_argument("--hours", type=float, default=WINDOW_HOURS, metavar="H",
+    ap.add_argument("--hours", type=positive_float, default=WINDOW_HOURS, metavar="H",
                     help="window length to reconstruct (default: %(default)s)")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)

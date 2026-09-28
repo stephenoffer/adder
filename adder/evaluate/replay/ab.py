@@ -98,10 +98,10 @@ TASKS: list[Task] = [
          "What are the input and output rates for claude-haiku-4-5, in dollars "
          "per million tokens?",
          _all(_has("1"), _has("5"))),
-    Task("sonnet-intro-expiry", "adder/pricing/prices.py",
-         "On what date does the Claude Sonnet 5 introductory price stop applying? "
-         "Answer with the date.",
-         _has("2026", "08", "31")),
+    Task("sonnet-rates", "adder/pricing/prices.py",
+         "What are the input and output rates for claude-sonnet-5, in dollars "
+         "per million tokens?",
+         _has("2", "10")),
     Task("default-remaining", "adder/measure/session/horizon.py",
          "What is the numeric value of DEFAULT_REMAINING? Answer with the number only.",
          _has("450")),
@@ -163,6 +163,24 @@ class ArmResult:
     @property
     def cost(self) -> float:
         return sum(o.cost for o in self.outcomes)
+
+    @property
+    def tasks(self) -> int:
+        """Distinct tasks: the sample size an interval may claim.
+
+        `--repeats` runs the same tasks again. Counting every repeat as a new
+        observation raised the Wilson bound for the same 11-of-12 behaviour
+        from 0.65 to 0.85, which is precision bought by re-asking one question.
+        """
+        return len({o.task for o in self.outcomes})
+
+    @property
+    def task_passed(self) -> float:
+        """Passes over distinct tasks, each task's repeats averaged into one."""
+        by: dict[str, list[bool]] = {}
+        for o in self.outcomes:
+            by.setdefault(o.task, []).append(o.passed)
+        return sum(sum(v) / len(v) for v in by.values())
 
 
 def run_arm(model: str, tasks: list[Task], *, max_tokens: int = 200) -> ArmResult:
@@ -299,7 +317,7 @@ def run_recall_sdk(model: str, *, max_tokens: int = 2_000) -> Recall:
         return seeded.Recall(model, error=str(exc)[:160])
 
 
-def wilson_lower_bound(passed: int, n: int, *, alpha: float = 0.05) -> float:
+def wilson_lower_bound(passed: float, n: int, *, alpha: float = 0.05) -> float:
     """Lower bound of a 95% CI on the pass rate. Small n must not look conclusive.
 
     Delegates to `stats.wilson_interval` rather than carrying a private copy of
@@ -316,25 +334,47 @@ def wilson_lower_bound(passed: int, n: int, *, alpha: float = 0.05) -> float:
 
 
 def report(arms: list[ArmResult]) -> str:
+    """The table, then the cheap arm against the strong one.
+
+    Which arm is cheap is read off the costs. It used to be assumed from the
+    order of `--models`, so `--models opus,haiku` printed "opus costs 500% of
+    haiku ... no measured quality loss". And the verdict is the interval on the
+    gap, not the point estimate: at a dozen tasks a one-task difference is not
+    a measurement of anything.
+    """
+    from adder.util.stats import proportion_diff_ci
+
     lines = [f"  {'model':<24}{'passed':>10}{'pass rate':>12}"
              f"{'95% CI low':>12}{'cost':>10}", "  " + "-" * 70]
     for a in arms:
         lines.append(f"  {a.model:<24}{a.passed:>4}/{a.n:<5}{a.pass_rate:>11.0%}"
-                     f"{wilson_lower_bound(a.passed, a.n):>12.0%}${a.cost:>9.4f}")
+                     f"{wilson_lower_bound(a.task_passed, a.tasks):>12.0%}"
+                     f"${a.cost:>9.4f}")
     if len(arms) >= 2:
-        cheap, strong = arms[0], arms[-1]
+        cheap = min(arms, key=lambda a: a.cost)
+        strong = max(arms, key=lambda a: a.cost)
         lines.append("")
+        if strong is cheap or strong.cost == cheap.cost:
+            lines.append("  the arms cost the same; there is nothing to route")
+            return "\n".join(lines)
+        lines.append(f"  {cheap.model} costs {100 * cheap.cost / strong.cost:.0f}% "
+                     f"of {strong.model}")
         gap = strong.pass_rate - cheap.pass_rate
-        if strong.cost > 0:
-            lines.append(f"  {cheap.model} costs {100 * cheap.cost / strong.cost:.0f}% "
-                         f"of {strong.model}")
-        lines.append(f"  pass-rate gap: {gap:+.0%}")
-        if gap <= 0:
-            lines.append("  => no measured quality loss on this task class")
-        else:
+        lo, hi = proportion_diff_ci(cheap.task_passed, cheap.tasks,
+                                    strong.task_passed, strong.tasks)
+        lines.append(f"  pass-rate gap: {gap:+.0%} (95% CI {lo:+.0%} to {hi:+.0%})")
+        if lo > 0:
             lines.append("  => measured quality loss; do not route this task class down")
+        elif gap > 0:
+            lines.append("  => a loss is suggested but not established at this n; "
+                         "do not route this task class down on this evidence")
+        else:
+            lines.append(f"  => no measured quality loss on this task class; a loss of "
+                         f"up to {max(0.0, hi):.0%} is not ruled out")
         lines.append("")
-        lines.append(f"  With n={cheap.n} per arm the confidence interval is wide. Treat")
+        n = min(cheap.tasks, strong.tasks)
+        lines.append(f"  With n={n} distinct tasks per arm the confidence interval is "
+                     "wide. Treat")
         lines.append("  this as a smoke test, not proof. Scope: comprehension over supplied")
         lines.append("  source (tier T0). Says nothing about agentic or multi-step work.")
     return "\n".join(lines)

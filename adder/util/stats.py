@@ -135,8 +135,14 @@ def gini(xs: Iterable[float]) -> float:
     the same claim without the arbitrary cut point, and it is the number that
     says whether a per-session lever can matter at all. A workload with a Gini
     near 0 has no expensive sessions to fix.
+
+    Zeros are part of the distribution. They were filtered out with the
+    negatives, so `[0, 0, 0, 10]` -- one session holding the whole bill --
+    scored 0.0 and printed "spend is spread evenly". Only values that cannot be
+    a cost (negative, NaN, infinite) are dropped; a sample that is all zeros
+    still scores 0.0, because there is nothing to concentrate.
     """
-    a = _sorted(x for x in xs if x > 0)
+    a = _sorted(x for x in xs if math.isfinite(x) and x >= 0)
     n = len(a)
     if n < 2:
         return 0.0
@@ -339,7 +345,7 @@ def paired_permutation_test(
     return (hits + 1) / (resamples + 1)
 
 
-def wilson_interval(k: int, n: int, *, alpha: float = 0.05) -> tuple[float, float]:
+def wilson_interval(k: float, n: int, *, alpha: float = 0.05) -> tuple[float, float]:
     """Interval for a rate `k/n`. Wilson, not normal-approximation.
 
     The normal approximation is wrong exactly where routing lives: a router
@@ -369,7 +375,7 @@ def wilson_interval(k: int, n: int, *, alpha: float = 0.05) -> tuple[float, floa
 
 
 def proportion_diff_ci(
-    k1: int, n1: int, k2: int, n2: int, *, alpha: float = 0.05
+    k1: float, n1: int, k2: float, n2: int, *, alpha: float = 0.05
 ) -> tuple[float, float]:
     """Interval for `k2/n2 - k1/n1` (Newcombe's hybrid-score method).
 

@@ -77,7 +77,8 @@ from adder.core.shapes import (
     read_estimate,
     shape,
 )
-from adder.pricing.cost import admitted_token_cost, placement_cost
+from adder.pricing.cost import Rates, admitted_token_cost, placement_cost
+from adder.util.homepath import HomeDefault
 from adder.util.text import est_tokens
 
 GUARDED: tuple[str, ...] = ('Read', 'Bash', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Task', 'Agent')
@@ -439,12 +440,16 @@ class Verdict:
         self = self.clipped()
         if self.narrowed is not None:
             # `allow` is required for the substitution to be taken: the shipped
-            # client honours `updatedInput` on the approval path. The reason
-            # travels with it so the model is told the call it made is not the
-            # call that ran -- a silent truncation would have it treat a slice
-            # as the whole file.
+            # client honours `updatedInput` on the approval path. The model has
+            # to be told the call it made is not the call that ran -- a silent
+            # truncation would have it treat a slice as the whole file -- and
+            # on `allow` the reason is shown to the user, not to Claude (hooks
+            # reference, PreToolUse decision control). It went only there, so
+            # the truncation was silent after all. `additionalContext` is the
+            # field Claude reads alongside the tool result.
             out['permissionDecision'] = 'allow'
             out['permissionDecisionReason'] = self.message
+            out['additionalContext'] = self.message
             out['updatedInput'] = self.narrowed
         elif self.deny:
             out['permissionDecision'] = 'deny'
@@ -471,6 +476,24 @@ class GuardState:
     """
     reads: dict[str, float] = field(default_factory=dict)
     wrote: dict[str, float] = field(default_factory=dict)
+    # sha256 of what each Write sent. The mtime window says a write landed;
+    # only the bytes say nothing rewrote the file after it (a format-on-write
+    # hook lands inside the same five seconds).
+    wrote_hash: dict[str, str] = field(default_factory=dict)
+    # Size at the time of each whole read. mtime alone called a file unchanged
+    # after `cp -p`, `rsync -a` or `touch -r` replaced its content.
+    read_size: dict[str, int] = field(default_factory=dict)
+    # Whole reads issued but not yet seen to land. PreToolUse runs before the
+    # permission prompt and before the tool, so a Read the user rejected, a
+    # deny rule blocked, or the harness spilled to a file was recorded as in
+    # the context, and the next attempt was refused on a false reason. The
+    # PostToolUse hook moves an entry to `reads` only when the tool response
+    # shows the whole file arrived.
+    pending: dict[str, float] = field(default_factory=dict)
+    # Non-zero once this context has seen a PostToolUse. Until then an install
+    # without that hook keeps the old behaviour and records at issue time,
+    # rather than silently never catching a duplicate again.
+    post_seen: int = 0
     admitted: dict[str, int] = field(default_factory=dict)
     shape_calls: dict[str, int] = field(default_factory=dict)
     advised: list[str] = field(default_factory=list)
@@ -498,9 +521,12 @@ class GuardState:
     # let the tool called two thousand times a session spend the whole budget
     # before the tool called fifty times had said anything.
     fires_by_tool: dict[str, int] = field(default_factory=dict)
+    # What this process loaded, so `save_state` can write back only what this
+    # process changed. Not persisted.
+    base: dict | None = field(default=None, repr=False, compare=False)
 
     def to_json(self) -> dict:
-        return {'reads': self.reads, 'wrote': self.wrote, 'admitted': self.admitted, 'shape_calls': self.shape_calls, 'advised': self.advised[-64:], 'denied': self.denied, 'fires': self.fires, 'saving': round(self.saving, 6), 'overhead': round(self.overhead, 6), 'prevented': round(self.prevented, 6), 'touched': self.touched, 'shadowed': self.shadowed, 'contradicted': self.contradicted, 'shadow_fires': self.shadow_fires, 'shadow_saving': round(self.shadow_saving, 6), 'fires_by_tool': self.fires_by_tool}
+        return {'reads': self.reads, 'wrote': self.wrote, 'wrote_hash': self.wrote_hash, 'read_size': self.read_size, 'pending': self.pending, 'post_seen': self.post_seen, 'admitted': self.admitted, 'shape_calls': self.shape_calls, 'advised': self.advised[-64:], 'denied': self.denied, 'fires': self.fires, 'saving': round(self.saving, 6), 'overhead': round(self.overhead, 6), 'prevented': round(self.prevented, 6), 'touched': self.touched, 'shadowed': self.shadowed, 'contradicted': self.contradicted, 'shadow_fires': self.shadow_fires, 'shadow_saving': round(self.shadow_saving, 6), 'fires_by_tool': self.fires_by_tool}
 
     def forget_context(self) -> GuardState:
         """Drop every claim that something is already in the context.
@@ -514,6 +540,9 @@ class GuardState:
         """
         self.reads = {}
         self.wrote = {}
+        self.wrote_hash = {}
+        self.read_size = {}
+        self.pending = {}
         self.denied = {}
         # Shadow refusals go with them, and for the same reason: after
         # compaction the tokens they claimed were redundant are gone, so a
@@ -529,6 +558,9 @@ class GuardState:
             return cls()
         reads = d.get('reads')
         wrote = d.get('wrote')
+        wrote_hash = d.get('wrote_hash')
+        read_size = d.get('read_size')
+        pending = d.get('pending')
         admitted = d.get('admitted')
         shape_calls = d.get('shape_calls')
         advised = d.get('advised')
@@ -536,7 +568,7 @@ class GuardState:
         shadowed = d.get('shadowed')
         contradicted = d.get('contradicted')
         fires_by_tool = d.get('fires_by_tool')
-        return cls(reads={str(k): float(v) for k, v in reads.items()} if isinstance(reads, dict) else {}, wrote={str(k): float(v) for k, v in wrote.items()} if isinstance(wrote, dict) else {}, admitted={str(k): int(v) for k, v in admitted.items()} if isinstance(admitted, dict) else {}, shape_calls={str(k): int(v) for k, v in shape_calls.items()} if isinstance(shape_calls, dict) else {}, advised=[str(x) for x in advised] if isinstance(advised, list) else [], denied={str(k): _num(v) for k, v in denied.items()} if isinstance(denied, dict) else {}, fires=int(d.get('fires') or 0), saving=float(d.get('saving') or 0.0), overhead=float(d.get('overhead') or 0.0), prevented=float(d.get('prevented') or 0.0), touched=float(d.get('touched') or 0.0), shadowed={str(k): _num(v) for k, v in shadowed.items()} if isinstance(shadowed, dict) else {}, contradicted={str(k): int(_num(v)) for k, v in contradicted.items()} if isinstance(contradicted, dict) else {}, shadow_fires=int(_num(d.get('shadow_fires'))), shadow_saving=_num(d.get('shadow_saving')), fires_by_tool={str(k): int(_num(v)) for k, v in fires_by_tool.items()} if isinstance(fires_by_tool, dict) else {})
+        return cls(reads={str(k): float(v) for k, v in reads.items()} if isinstance(reads, dict) else {}, wrote={str(k): float(v) for k, v in wrote.items()} if isinstance(wrote, dict) else {}, wrote_hash={str(k): str(v) for k, v in wrote_hash.items()} if isinstance(wrote_hash, dict) else {}, read_size={str(k): int(_num(v)) for k, v in read_size.items()} if isinstance(read_size, dict) else {}, pending={str(k): _num(v) for k, v in pending.items()} if isinstance(pending, dict) else {}, post_seen=int(_num(d.get('post_seen'))), admitted={str(k): int(v) for k, v in admitted.items()} if isinstance(admitted, dict) else {}, shape_calls={str(k): int(v) for k, v in shape_calls.items()} if isinstance(shape_calls, dict) else {}, advised=[str(x) for x in advised] if isinstance(advised, list) else [], denied={str(k): _num(v) for k, v in denied.items()} if isinstance(denied, dict) else {}, fires=int(d.get('fires') or 0), saving=float(d.get('saving') or 0.0), overhead=float(d.get('overhead') or 0.0), prevented=float(d.get('prevented') or 0.0), touched=float(d.get('touched') or 0.0), shadowed={str(k): _num(v) for k, v in shadowed.items()} if isinstance(shadowed, dict) else {}, contradicted={str(k): int(_num(v)) for k, v in contradicted.items()} if isinstance(contradicted, dict) else {}, shadow_fires=int(_num(d.get('shadow_fires'))), shadow_saving=_num(d.get('shadow_saving')), fires_by_tool={str(k): int(_num(v)) for k, v in fires_by_tool.items()} if isinstance(fires_by_tool, dict) else {})
 
     def solvent(self, advice_taken: float=0.5) -> bool:
         """Has the advice been worth more than the advice has cost?"""
@@ -547,9 +579,92 @@ def load_state(session: str, path: Path | None=None) -> GuardState:
     p = Path(path) if path is not None else Settings.resolve().state_path
     try:
         blob = json.loads(p.read_text(encoding="utf-8"))
-        return GuardState.from_json((blob or {}).get(session) or {})
+        state = GuardState.from_json((blob or {}).get(session) or {})
+        # A session's first call cannot know from its own state whether the
+        # PostToolUse hook is installed, and fell back to recording at issue
+        # time: a first Read the permission layer blocked was remembered. Any
+        # other session on this machine having seen the hook answers it.
+        if not state.post_seen and isinstance(blob, dict) and any(
+                isinstance(v, dict) and _num(v.get('post_seen')) > 0
+                for v in blob.values()):
+            state.post_seen = 1
     except (OSError, ValueError, TypeError, AttributeError):
-        return GuardState()
+        state = GuardState()
+    state.base = json.loads(json.dumps(state.to_json()))
+    return state
+
+
+_MAP_FIELDS = ('reads', 'wrote', 'wrote_hash', 'read_size', 'pending', 'admitted', 'shape_calls', 'denied',
+               'shadowed', 'contradicted', 'fires_by_tool')
+_SUM_FIELDS = ('post_seen', 'fires', 'saving', 'overhead', 'prevented', 'shadow_fires', 'shadow_saving')
+
+
+def _merge(disk: dict, mine: dict, base: dict) -> dict:
+    """`disk` with this process's changes since `base` applied on top.
+
+    A turn's parallel tool calls run their hooks at once, and each loaded the
+    session, changed it and wrote the whole of it back: the last writer won and
+    the others' reads, refusals and counters were lost -- 5 of 8 parallel Reads
+    here. Losing a read only costs a refusal, but losing a `denied` entry
+    refuses the same call twice, and a stale save could bring back the reads a
+    PreCompact had just cleared. Applying deltas keeps every writer's work.
+    """
+    out = dict(disk)
+    for k in _MAP_FIELDS:
+        cur = dict(disk.get(k) or {}) if isinstance(disk.get(k), dict) else {}
+        was, now = base.get(k) or {}, mine.get(k) or {}
+        for key in was.keys() - now.keys():
+            cur.pop(key, None)
+        for key, v in now.items():
+            if was.get(key) != v:
+                cur[key] = v
+        out[k] = cur
+    for k in _SUM_FIELDS:
+        out[k] = _num(disk.get(k)) + _num(mine.get(k)) - _num(base.get(k))
+    had = [str(x) for x in disk.get('advised') or []] if isinstance(disk.get('advised'), list) else []
+    seen = set(base.get('advised') or [])
+    out['advised'] = (had + [x for x in mine.get('advised') or [] if x not in seen
+                             and x not in had])[-64:]
+    out['touched'] = mine.get('touched', 0.0)
+    return out
+
+
+@contextlib.contextmanager
+def _locked(p: Path):
+    """An exclusive advisory lock on the directory holding `p`.
+
+    The directory rather than a sidecar `.lock` file, because that would be a
+    new file this tool writes under `~/.claude`, and rather than `p` itself,
+    because the atomic replace swaps `p`'s inode out from under a waiter.
+    Bounded: after two seconds a hook writes unlocked, which is no worse than
+    before the lock existed. No-op where there is no `flock`.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    fd = -1
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(p.parent), os.O_RDONLY)
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.005)
+    except OSError:
+        pass
+    try:
+        yield
+    finally:
+        if fd >= 0:
+            os.close(fd)               # closing releases the lock
+
 
 def save_state(session: str, state: GuardState, path: Path | None=None) -> None:
     """Persist one session's state, atomically, keeping the file bounded.
@@ -559,6 +674,11 @@ def save_state(session: str, state: GuardState, path: Path | None=None) -> None:
     it: PreToolUse hooks overlap whenever a turn issues parallel tool calls.
     """
     p = Path(path) if path is not None else Settings.resolve().state_path
+    with _locked(p):
+        _save_locked(p, session, state)
+
+
+def _save_locked(p: Path, session: str, state: GuardState) -> None:
     try:
         blob = json.loads(p.read_text(encoding="utf-8"))
         if not isinstance(blob, dict):
@@ -566,7 +686,15 @@ def save_state(session: str, state: GuardState, path: Path | None=None) -> None:
     except (OSError, ValueError):
         blob = {}
     state.touched = time.time()
-    blob[session] = state.to_json()
+    mine = state.to_json()
+    disk = blob.get(session)
+    # Only a state that came from `load_state` knows what it changed. One
+    # built by hand is the whole state its caller means to write.
+    blob[session] = (_merge(disk, mine, state.base)
+                     if isinstance(disk, dict) and state.base is not None else mine)
+    # This process's view is now what is on disk; a second save from it must
+    # not apply the same delta twice.
+    state.base = json.loads(json.dumps(blob[session]))
     cutoff = state.touched - MAX_STATE_AGE_S
     blob = {k: v for k, v in blob.items() if k == session or _touched(v) >= cutoff}
     if len(blob) > MAX_SESSIONS:
@@ -703,12 +831,39 @@ def _already_known(path: str, state: GuardState, *, now: float | None=None) -> s
     mtime = _mtime(path)
     if mtime < 0:
         return ''
-    if seen is not None and abs(seen - mtime) < 1e-06:
+    size = state.read_size.get(path)
+    if seen is not None and abs(seen - mtime) < 1e-06 and (size is None or size == _size(path)):
         return 'is already in this context and has not changed on disk since it was read'
     written = state.wrote.get(path)
     if written is not None and written - WRITE_CLOCK_SLACK_S <= mtime <= written + WRITE_SETTLE_S:
-        return 'was written by this session, so its content is already in the context'
+        # The window alone refused the Read that follows a formatter, or an
+        # Edit, run within five seconds of the Write -- telling the model to
+        # trust a copy that no longer matched the disk. No hash (a state file
+        # from before this, or a Write with no content) claims nothing.
+        want = state.wrote_hash.get(path)
+        if want and _content_hash(path) == want:
+            return 'was written by this session, so its content is already in the context'
     return ''
+
+
+# Past this the file is not hashed and not claimed: a Write that large is rare,
+# and reading it back on every later Read would cost the hook more than it saves.
+MAX_HASHED_BYTES = 4 << 20
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _content_hash(path: str) -> str:
+    """sha256 of the file's bytes, or "" if it cannot be read or is too big."""
+    try:
+        p = Path(str(path))
+        if p.stat().st_size > MAX_HASHED_BYTES:
+            return ''
+        return _sha256(p.read_bytes())
+    except (OSError, ValueError):
+        return ''
 
 def _bash_duplicate(command: str, state: GuardState, *, cwd: str | None=None) -> list[tuple[ReadTarget, str]]:
     """Files this command reads that the context already holds in full, or [].
@@ -894,7 +1049,10 @@ def decide(tool: str, tool_input: dict, *, model: str, remaining_turns: int, cfg
     inline = admitted_token_cost(tokens, model, remaining_turns, carry=carry, context_tokens=context_tokens)
     if inline < cfg.min_cost:
         return Verdict(False, f'${inline:,.2f} to carry, below the ${cfg.min_cost:.2f} floor', kind='size', tokens=tokens, inline=inline, estimate=est)
-    _, sub, placement = placement_cost(tokens_read=tokens, summary_tokens=max(200, tokens // 10), remaining_turns=remaining_turns, main_model=model, p_redo=p_redo, carry=carry, context_tokens=context_tokens)
+    # The refusal forces a turn: the model has to issue the Agent call the
+    # read was refused in favour of, and that turn re-reads the whole context.
+    dispatch = context_tokens * Rates.for_model(model).cache_read / 1000000.0
+    _, sub, placement = placement_cost(tokens_read=tokens, summary_tokens=max(200, tokens // 10), remaining_turns=remaining_turns, main_model=model, p_redo=p_redo, carry=carry, context_tokens=context_tokens, dispatch=dispatch)
     if not placement.ok and placement.saving == 0.0:
         return Verdict(False, placement.reason, kind='size', tokens=tokens, inline=inline, delegated=sub, estimate=est)
     saving = inline - sub
@@ -1124,11 +1282,79 @@ def _ledger_gate(v: Verdict, state: GuardState, cfg: Settings, tool: str='') -> 
     return v
 
 def _remember_read(state: GuardState, path: str, mtime: float) -> None:
+    """Record a whole read at issue time: pending, and in `reads` only where
+    no PostToolUse hook is running to confirm it."""
+    state.pending[path] = mtime
+    if len(state.pending) > MAX_REMEMBERED_READS:
+        state.pending = dict(list(state.pending.items())[-(MAX_REMEMBERED_READS // 2):])
+    if not state.post_seen:
+        _admit_read(state, path, mtime)
+
+
+def _admit_read(state: GuardState, path: str, mtime: float) -> None:
     """Record that `path` is in the context, keeping `reads` bounded."""
     state.reads[path] = mtime
+    size = _size(path)
+    if size >= 0:
+        state.read_size[path] = size
     if len(state.reads) > MAX_REMEMBERED_READS:
         keep = MAX_REMEMBERED_READS // 2
         state.reads = dict(list(state.reads.items())[-keep:])
+        state.read_size = {k: v for k, v in state.read_size.items() if k in state.reads}
+
+
+def _response_whole(tool: str, resp) -> bool:
+    """Did this tool response put the whole of what was asked into the context?
+
+    Shapes as Claude Code 2.1.283 sends them. A Read reports the slice it
+    returned; a Bash result that spilled past the inline ceiling carries
+    `persistedOutputPath` and only a preview; a backgrounded one carries
+    `backgroundTaskId` and no output. Anything else unrecognised is not whole,
+    which only ever costs a refusal the guard did not make.
+    """
+    if not isinstance(resp, dict):
+        return False
+    if tool == 'Read':
+        f = resp.get('file')
+        if resp.get('type') != 'text' or not isinstance(f, dict):
+            return False
+        try:
+            return (int(f.get('startLine', 1)) == 1 and not f.get('truncatedByTokenCap')
+                    and int(f.get('numLines', -1)) >= int(f.get('totalLines', 0)))
+        except (TypeError, ValueError):
+            return False
+    if tool == 'Bash':
+        return not (resp.get('interrupted') or resp.get('backgroundTaskId')
+                    or resp.get('persistedOutputPath') or resp.get('isImage'))
+    return False
+
+
+def confirm(tool: str, tool_input: dict, tool_response, state: GuardState, *,
+            cwd: str | None=None) -> GuardState:
+    """PostToolUse: promote this call's pending reads that really landed.
+
+    Only a successful call reaches PostToolUse -- a failed one goes to
+    PostToolUseFailure, and a refused or rejected one to neither -- so what is
+    left to check is that the whole file came back, and that it has not
+    changed since the call was issued.
+    """
+    state.post_seen = state.post_seen or 1
+    if tool not in ('Read', 'Bash') or not isinstance(tool_input, dict):
+        return state
+    whole = _response_whole(tool, tool_response)
+    for key in whole_reads(tool, tool_input, cwd=cwd):
+        issued = state.pending.pop(key, None)
+        if whole and issued is not None and abs(_mtime(key) - issued) < 1e-06:
+            _admit_read(state, key, issued)
+    return state
+
+
+def _size(path: str) -> int:
+    """Size in bytes, or -1 for anything this cannot stat."""
+    try:
+        return Path(str(path)).stat().st_size
+    except (OSError, ValueError):
+        return -1
 
 def observe(tool: str, tool_input: dict, state: GuardState, verdict: Verdict, *, now: float | None=None, sizes: SizeModel | None=None, cwd: str | None=None) -> GuardState:
     """Fold this call into the session's memory. Returns the same state object.
@@ -1165,11 +1391,21 @@ def observe(tool: str, tool_input: dict, state: GuardState, verdict: Verdict, *,
         if fp:
             # Recorded at issue time, because a PreToolUse hook runs before the
             # write lands and cannot read the resulting mtime.
-            state.wrote[_read_key(fp, cwd)] = time.time() if now is None else now
-            state.reads.pop(_read_key(fp, cwd), None)
+            key = _read_key(fp, cwd)
+            state.wrote[key] = time.time() if now is None else now
+            content = tool_input.get('content')
+            if isinstance(content, str):
+                state.wrote_hash[key] = _sha256(content.encode('utf-8'))
+            else:
+                state.wrote_hash.pop(key, None)
+            state.reads.pop(key, None)
+            state.read_size.pop(key, None)
+            state.pending.pop(key, None)
             if len(state.wrote) > MAX_REMEMBERED_READS:
                 keep = MAX_REMEMBERED_READS // 2
                 state.wrote = dict(list(state.wrote.items())[-keep:])
+                state.wrote_hash = {k: v for k, v in state.wrote_hash.items()
+                                    if k in state.wrote}
     if tool == 'Read' and verdict.deny:
         # A denied read never happens, so nothing was admitted and there is
         # nothing to remember. Recording it would also make the guard's own
@@ -1355,7 +1591,8 @@ class Uptake:
 # the same problem (a scan too expensive for the hook's hot path, a number the
 # hook needs on every call) already has an answer in this repo, and a second
 # shape for it would be a second thing to reason about.
-UPTAKE_PATH = Path.home() / '.claude' / '.adder-uptake.json'
+_HOME_UPTAKE = HomeDefault('.claude', '.adder-uptake.json')
+UPTAKE_PATH = _HOME_UPTAKE.at_import
 
 # The measured rate is never allowed below this, and the reason is not caution.
 # `advice_taken` gates whether advice is worth saying at all, so a measured 0
@@ -1370,9 +1607,9 @@ def uptake_path() -> Path:
     """The cache location in effect: the `uptake_cache` setting, or the default."""
     try:
         from adder.core.settings import configured_path
-        return configured_path('uptake_cache', UPTAKE_PATH)
+        return configured_path('uptake_cache', _HOME_UPTAKE.live(UPTAKE_PATH))
     except Exception:
-        return UPTAKE_PATH
+        return _HOME_UPTAKE.live(UPTAKE_PATH)
 
 
 def save_uptake(u: Uptake, path: Path | None=None) -> Path:

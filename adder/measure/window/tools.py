@@ -38,6 +38,7 @@ from pathlib import Path
 
 from adder.core.filters import root_of as _root_of
 from adder.core.trace import DEFAULT_ROOT, transcripts
+from adder.measure.argtypes import positive_int
 from adder.util.records import mapping
 from adder.util.text import est_tokens, flatten_text
 
@@ -415,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="adder tools",
         description="Attribute context growth and carry cost to the tool that caused it.")
     add_window(ap)
-    ap.add_argument("--top", type=int, default=12, metavar="N",
+    ap.add_argument("--top", type=positive_int, default=12, metavar="N",
                     help="rows to show (default: %(default)s)")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)

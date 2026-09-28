@@ -76,6 +76,7 @@ from adder.pricing.cost import (
     EFFORT_OUTPUT_MULT,
     Decision,
     Rates,
+    delegation_need,
     effort_saving,
     max_tolerable_p_fail,
     placement_cost,
@@ -233,6 +234,12 @@ class Plan:
     substitutes: list[Substitute] = field(default_factory=list)
     ladder: list[Rung] = field(default_factory=list)
     guarantee: Guarantee | None = None
+    # Set when running the task in this session is not possible at all: the
+    # context plus what the task reads does not fit the session model's
+    # window. The plan is then a refusal, not "just do it" -- `action` stays
+    # "inline" only because that is the vocabulary for "no routing advice",
+    # and the render leads with why instead.
+    infeasible: str = ""
 
     @property
     def worth_it(self) -> bool:
@@ -240,13 +247,20 @@ class Plan:
 
     def render(self) -> str:
         head = f"{self.action.upper()}"
-        if self.action != "inline":
-            head += f" -> {self.agent} ({self.model}, effort={self.effort})"
+        if self.infeasible:
+            head = "DOES NOT FIT"
+        elif self.action != "inline":
+            # A downgrade has no agent: it is the same session on another
+            # model. This printed `DOWNGRADE -> None (claude-haiku-4-5, ...)`.
+            head += (f" -> {self.agent} ({self.model}, effort={self.effort})"
+                     if self.agent else f" -> {self.model} (effort={self.effort})")
         lines = [
             head,
             f"  modelled saving ${self.saving:,.3f}  routing overhead ${self.overhead:,.3f}"
             f"  confidence {self.confidence:.2f}",
         ]
+        if self.infeasible:
+            lines.append(f"  ! {self.infeasible}")
         if self.guarantee is not None:
             g = self.guarantee
             lines.append(
@@ -410,7 +424,6 @@ def right_size(
     # because every rung below T2 is priced against T2's *expected* cost and
     # that number has to already carry the clamp below.
     specs: list[tuple[Tier, str, str, bool, float, float, object]] = []
-    prev_pf = 1.0
     for tier in Tier:
         model = tier.model
         effort = choose_effort(tier, model)
@@ -431,15 +444,34 @@ def right_size(
             # at least a rule someone can argue with.
             pf = ev.p_fail if (ev is not None and ev.informative) else prior_p_fail(v.confidence)
 
-        # A stronger rung cannot be more likely to fail than a weaker one, so
-        # the sequence is clamped monotone. Without this, a tier nobody has
-        # logged sits at the prior while the tier below it sits at a measured
-        # rate, and the ladder reports T3 (Opus at xhigh) as seven times more
-        # failure-prone than T2 (the same model at high) purely because of
-        # which label the log happens to carry.
-        pf = min(pf, prev_pf)
-        prev_pf = pf
+        # A rung with no history of its own may borrow a lower rung's rate
+        # only when it is the *same model* at more effort: T3 is T2's model
+        # asked to think harder, and reporting it seven times likelier to fail
+        # because the log happens to carry the other label is an artefact.
+        #
+        # Across models it is not an artefact, it is invented evidence. The
+        # clamp used to be `min(pf, prev_pf)` all the way up, so forty
+        # recorded T0 lookups at 2% copied 2% onto an unlogged T2 -- and that
+        # rate then became `p_redo` for a multi-file refactor. A T0 rate is
+        # measured on T0 tasks; it says nothing about how Opus fares on work
+        # nobody has recorded.
+        measured = ev is not None and ev.informative
+        if (p_fail_override is None and not measured and specs
+                and specs[-1][1] == model):
+            pf = min(pf, specs[-1][4])
         specs.append((tier, model, effort, feasible, pf, run, ev))
+
+    # Monotone the other way, which only ever raises a rate: a weaker rung
+    # cannot fail less often than a stronger rung has been *measured* to fail.
+    # A prior never propagates, so a guess about one tier cannot erase a
+    # measurement of another; and nothing is lowered below its own estimate.
+    ceiling = 0.0
+    for i in range(len(specs) - 1, -1, -1):
+        tier, model, effort, feasible, pf, run, ev = specs[i]
+        pf = max(pf, ceiling)
+        specs[i] = (tier, model, effort, feasible, pf, run, ev)
+        if p_fail_override is None and ev is not None and ev.informative:
+            ceiling = max(ceiling, pf)
 
     # Expected cost of finishing on the escalation target, which every cheaper
     # rung is priced against. T2 is the tier the classifier falls back to when
@@ -626,6 +658,7 @@ def assess_placement(
     alpha: float = DEFAULT_ALPHA,
     threshold: float = DEFAULT_CONFIDENCE,
     on: date | None = None,
+    gate_overhead: float | None = None,
 ) -> tuple[Decision, Guarantee]:
     """Price delegation at its midpoint, its worst corner, and in probability.
 
@@ -645,6 +678,11 @@ def assess_placement(
     four frames down. The CLI rejects negatives at the flag now, but the hook
     does not take this number from a human -- it computes it from the horizon
     estimator -- so the arithmetic defends itself too.
+
+    `gate_overhead` is the bar the saving has to clear, when it differs from
+    `overhead`. It does under `schedule`: a batched step pays its share of one
+    routing turn, but a redo still costs a whole turn to notice and dispatch,
+    so the redo term keeps the full `overhead` while the gate uses the share.
     """
     remaining_turns = max(0, int(remaining_turns))
     tokens_read = max(0, int(tokens_read))
@@ -699,7 +737,7 @@ def assess_placement(
     g = guarantee(
         saving,
         {"remaining": r_bounds, "p": p_bounds, "summary": s_bounds},
-        overhead=overhead,
+        overhead=overhead if gate_overhead is None else gate_overhead,
         marginals={"remaining": r_marg, "p": p_marg,
                    "summary": [s_bounds.lo, summ, s_bounds.hi]},
         alpha=alpha, threshold=threshold,
@@ -716,7 +754,8 @@ def assess_placement(
 
 def _switch_guarantee(from_model: str, to_model: str, ctx: int, est_out: int,
                       overhead: float, haircut: float, threshold: float,
-                      on: date | None) -> Guarantee:
+                      on: date | None, *, switch_in_mult: float = 1.0,
+                      extra_tokens: int = 0) -> Guarantee:
     """Price an in-session downgrade against the one number it turns on.
 
     The break-even for a switch is `out > ctx * (rate_to_in - 0.1*rate_from_in)
@@ -727,12 +766,28 @@ def _switch_guarantee(from_model: str, to_model: str, ctx: int, est_out: int,
     """
     def saving(out: float) -> float:
         return haircut * switch_is_profitable(
-            from_model, to_model, ctx, max(1, int(out)), on=on).saving
+            from_model, to_model, ctx, max(1, int(out)),
+            switch_in_mult=switch_in_mult, extra_tokens=extra_tokens, on=on).saving
 
     band = Interval(est_out / OUTPUT_BAND, float(est_out), est_out * OUTPUT_BAND)
     strata = [band.lo, band.lo * 1.5, band.point, band.point * 1.5, band.hi]
     return guarantee(saving, {"out": band}, overhead=overhead,
                      marginals={"out": strata}, threshold=threshold)
+
+
+def switch_write_mult(to_model: str, on: date | None = None) -> float:
+    """What a switch pays per context token on the new model, as a multiple of input.
+
+    A switch does not read the context once at the input rate and stop: the
+    next turn has to find it cached, so the new model *writes* the prefix, at
+    the provider's cache-write price. `switch_is_profitable` defaults to 1.0x,
+    which its own docstring calls the optimistic case, and `decide` emitted
+    downgrades at that default -- a $0.013 saving against a $0.013 routing
+    turn, on a switch whose real re-read at Anthropic's 1.25x erased it. A
+    provider with automatic caching charges no write premium and gets 1.0x.
+    """
+    r = Rates.for_model(to_model, ttl="5m", on=on)
+    return r.cache_write / r.inp if r.inp > 0 else 1.0
 
 
 def _horizon_quantiles(horizon, turn_index: int, strata: int = 8) -> list[float]:
@@ -747,6 +802,11 @@ def _horizon_quantiles(horizon, turn_index: int, strata: int = 8) -> list[float]
         pass
     return [float(horizon.mean_remaining(turn_index))]
 
+
+# What a step at each tier is assumed to read when nobody says. A guess, and
+# every plan priced on it says so.
+_TYPICAL_READ: dict[Tier, int] = {Tier.T0: 8_000, Tier.T1: 20_000,
+                                  Tier.T2: 60_000, Tier.T3: 120_000}
 
 def decide(
     task: str,
@@ -766,8 +826,15 @@ def decide(
     ledger=None,
     min_confidence: float = DEFAULT_CONFIDENCE,
     harness: str | None = None,
+    overhead_share: float = 1.0,
 ) -> Plan:
     """Recommend where and on what model to run `task`.
+
+    `overhead_share` is the fraction of the routing turn this decision pays
+    for. It is 1.0 for a decision asked on its own; `schedule` passes `1/k` for
+    each of k steps asked in one turn. Only the gate moves with it -- a redo
+    still costs a whole turn to catch, so the retry terms keep the full
+    overhead.
 
     `horizon`, `carry` and `ledger` are the three sources of measured
     uncertainty. Supplying them turns the placement gate from "positive at the
@@ -787,6 +854,9 @@ def decide(
         est_read_tokens = max(0, int(est_read_tokens))
     est_out_tokens = max(1, int(est_out_tokens))
     overhead = routing_overhead(context_tokens, session_model, on, carry=carry)
+    # The bar a recommendation has to clear. `overhead` itself stays the price
+    # of a whole turn, because that is what a redo costs.
+    gate = overhead * max(0.0, min(1.0, float(overhead_share)))
     warnings: list[str] = []
 
     # Guard: an empty or unsubstituted task must never produce a confident
@@ -796,7 +866,7 @@ def decide(
     if not stripped or _PLACEHOLDER.fullmatch(stripped):
         return Plan(
             action="inline", tier=Tier.T2, model=session_model, effort="high",
-            agent=None, saving=0.0, overhead=overhead, confidence=0.0,
+            agent=None, saving=0.0, overhead=gate, confidence=0.0,
             reasons=["no task text received; refusing to route "
                      "(check that the task was passed through)"],
         )
@@ -806,8 +876,27 @@ def decide(
 
     # Estimate how much the task will pull into context if run inline.
     if est_read_tokens is None:
-        est_read_tokens = {Tier.T0: 8_000, Tier.T1: 20_000,
-                           Tier.T2: 60_000, Tier.T3: 120_000}[v.tier]
+        est_read_tokens = _TYPICAL_READ[v.tier]
+
+    # --- Gate 0: can this session run it at all? Every gate below prices
+    # "inline" as the baseline, and nothing checked that the baseline existed:
+    # a 990K context plus a 60K read on a 1M window was told INLINE. The
+    # session model has to hold the context, the read and the answer. An
+    # undeclared window cannot be judged, and the session is evidently running
+    # on it, so that case is not called infeasible on no evidence.
+    inline_need = context_tokens + est_read_tokens + est_out_tokens
+    window = context_window(session_model, 0)
+    inline_infeasible = ""
+    if window and inline_need > window:
+        inline_infeasible = (
+            f"{session_model} has a {limit_str(session_model)} window and running "
+            f"this here needs ~{inline_need:,} ({context_tokens:,} of context, "
+            f"~{est_read_tokens:,} read, ~{est_out_tokens:,} out); inline is not "
+            f"an option")
+        if context_tokens > window:
+            warnings.append(
+                f"the context given ({context_tokens:,}) is already larger than "
+                f"{session_model}'s window; check --context and the session model")
 
     # --- Gate 1: feasibility. A tier that cannot hold the task is not an option.
     tier, model = v.tier, v.tier.model
@@ -866,6 +955,7 @@ def decide(
         haircut=haircut,
         threshold=min_confidence,
         on=on,
+        gate_overhead=gate,
     )
     if haircut < 1.0:
         warnings.append(
@@ -886,7 +976,7 @@ def decide(
         reasons.append(g.describe())
         return Plan(
             action="delegate", tier=tier, model=model, effort=effort,
-            agent=tier.agent, saving=place.saving, overhead=overhead,
+            agent=tier.agent, saving=place.saving, overhead=gate,
             confidence=v.confidence, reasons=reasons, p_fail=p_fail,
             warnings=warnings, ladder=ladder, guarantee=g,
         )
@@ -902,14 +992,39 @@ def decide(
         # Declining is the whole point of having measured the spread.
         reasons.append(g.describe())
 
+    if inline_infeasible:
+        # Feasibility before profitability. There is no inline plan to fall
+        # back to, and a downgrade or an effort change leaves the same context
+        # in a window no larger, so the answer is a refusal that says what
+        # would fit. Delegation is named when it holds the read; it is not
+        # emitted as a recommendation unless it cleared its own gate above,
+        # because a saving measured against an impossible baseline is not one.
+        summary = max(200, int(est_read_tokens / compression))
+        if rig.supports_subagents and fits(model, delegation_need(est_read_tokens, summary)):
+            warnings.append(
+                f"delegating to {tier.agent} ({model}) is the placement that "
+                f"fits: only its summary lands in this context")
+        warnings.append("compact or restart before running this, or split the read")
+        return Plan(
+            action="inline", tier=Tier.T2, model=session_model, effort="high",
+            agent=None, saving=0.0, overhead=gate, confidence=v.confidence,
+            reasons=reasons, p_fail=p_fail, warnings=warnings, ladder=ladder,
+            guarantee=None, infeasible=inline_infeasible,
+        )
+
     # Delegation not worth it. Would an in-session downgrade help? Usually not.
     if tier < Tier.T2 and not rig.supports_model_switch:
         reasons.append(
             f"{rig.label} cannot switch model mid-session, so the downgrade "
             "question does not arise here")
     elif tier < Tier.T2:
+        # Priced at the rate a switch actually pays -- the new model writes the
+        # prefix -- and checked against the whole turn it has to hold, reads
+        # and answer included, not the context alone.
+        mult = switch_write_mult(model, on)
         sw: Decision = switch_is_profitable(
-            session_model, model, context_tokens, est_out_tokens, on=on
+            session_model, model, context_tokens, est_out_tokens,
+            switch_in_mult=mult, extra_tokens=est_read_tokens, on=on
         )
         reasons.append(sw.reason)
         # This branch used to emit without checking its own overhead, which the
@@ -919,14 +1034,15 @@ def decide(
         # asking, which is the exact failure this tool exists to prevent
         # elsewhere and was not preventing here.
         sw_g = _switch_guarantee(session_model, model, context_tokens,
-                                 est_out_tokens, overhead, haircut,
-                                 min_confidence, on)
+                                 est_out_tokens, gate, haircut,
+                                 min_confidence, on, switch_in_mult=mult,
+                                 extra_tokens=est_read_tokens)
         if sw and not sw_g.safe:
             reasons.append(sw_g.describe())
         if sw and sw_g.safe:
             return Plan(
                 action="downgrade", tier=tier, model=model, effort=effort,
-                agent=None, saving=sw.saving, overhead=overhead,
+                agent=None, saving=sw.saving, overhead=gate,
                 confidence=v.confidence, reasons=reasons, p_fail=p_fail,
                 warnings=warnings, ladder=ladder, guarantee=sw_g,
             )
@@ -954,7 +1070,7 @@ def decide(
         reasons.append(place.reason)
     return Plan(
         action="inline", tier=Tier.T2, model=session_model, effort=inline_effort,
-        agent=None, saving=0.0, overhead=overhead,
+        agent=None, saving=0.0, overhead=gate,
         confidence=v.confidence, reasons=reasons, p_fail=p_fail,
         warnings=warnings, ladder=ladder, guarantee=g,
     )
@@ -1035,20 +1151,25 @@ def schedule(
 ) -> Batch:
     """Route several steps in one turn, and price them against one turn's cost.
 
-    Each step is decided with its own overhead set to zero -- it is not paying
-    for a turn of its own -- and the batch is then checked against the single
-    overhead they share. That is the exact optimum here rather than a heuristic:
-    the only cost shared between the steps is the one turn, so the best subset
-    is "every step with a positive saving", and the only remaining question is
-    whether their total clears it.
+    Each of the k steps is gated against its 1/k share of the one routing turn
+    -- it is not paying for a turn of its own -- and the batch is then checked
+    against the whole overhead they share. The retry terms inside each step
+    keep the full turn, because a redo is caught by a turn of its own.
+
+    This used to say the per-step overhead was zero and then call `decide`
+    with nothing that made it so: every step still had to clear a whole
+    routing turn by itself, so a batch of individually small steps -- the case
+    the batch exists for -- declined every one of them and the amortization
+    never happened.
     """
     session_model = session_model or _settings.session_model()
     overhead = routing_overhead(context_tokens, session_model, on, carry=carry)
+    share = 1.0 / max(1, len(tasks))
     plans = [
         decide(t, context_tokens=context_tokens, remaining_turns=remaining_turns,
                session_model=session_model, project=project, horizon=horizon,
                carry=carry, ledger=ledger, turn_index=turn_index,
-               min_confidence=0.0, on=on)
+               min_confidence=0.0, on=on, overhead_share=share)
         for t in tasks
     ]
     # `min_confidence=0.0` above so a step is not rejected for failing to clear
@@ -1352,7 +1473,14 @@ def main(argv: list[str] | None = None) -> int:
     ctx, rem, model, project = (a.context, a.remaining,
                                 _settings.session_model(), a.project)
     turn_index = 0
+    # Inputs nobody measured or gave. Each is priced as if it were known, so
+    # the plan has to say it was not: with no session in this directory, "rename
+    # a variable" was quoted a $4.76 saving from a 100K context and 450 turns
+    # that existed nowhere, and nothing on the screen said so.
+    assumed: list[str] = []
+    looked, found = False, False
     if ctx is None or rem is None:
+        looked = True
         s = current_session()
         if s is not None:
             r = analyse(s)
@@ -1363,7 +1491,19 @@ def main(argv: list[str] | None = None) -> int:
             model = r.model
             project = project or s.project
             turn_index = getattr(r, "turns", 0) or 0
+            found = True
+    if ctx is None:
+        assumed.append("a 100,000-token context")
     ctx = ctx if ctx is not None else 100_000
+    # A context the session model cannot hold is not a session this could be
+    # advice for: every number below would be priced against a conversation
+    # that has already failed. Refused at the flag, like a negative count.
+    win = context_window(model, 0)
+    if a.context is not None and win and a.context > win:
+        print(f"adder policy: --context {a.context:,} is larger than {model}'s "
+              f"{limit_str(model)} window; no session on it can hold that",
+              file=sys.stderr)
+        return 2
 
     # The three measured inputs. Each one is optional and each one is loaded
     # here rather than inside `decide`, so a library caller keeps a pure
@@ -1385,6 +1525,8 @@ def main(argv: list[str] | None = None) -> int:
         # The MEAN, not the median: carry cost is linear in remaining turns, so
         # the expectation is what prices it. See `horizon.mean_remaining`.
         rem = int(horizon.mean_remaining(0)) if horizon else 450
+        assumed.append(f"{rem:,} remaining turns"
+                       + (" (a fresh session's expected length)" if horizon else ""))
 
     if a.batch:
         tasks = [line.strip() for line in sys.stdin if line.strip()]
@@ -1411,10 +1553,18 @@ def main(argv: list[str] | None = None) -> int:
                session_model=model, est_read_tokens=a.read_tokens, project=project,
                horizon=horizon, carry=carry, ledger=ledger, turn_index=turn_index,
                min_confidence=a.min_confidence, harness=a.harness)
+    if a.read_tokens is None:
+        # Never measured, session or not: it is the tier's typical size.
+        assumed.append(f"the tier's typical read of ~{_TYPICAL_READ[p.tier]:,} tokens")
+    if assumed:
+        lead = ("no session was found for this directory, so this assumed "
+                if looked and not found else "this assumed ")
+        p.warnings.append(lead + ", ".join(assumed)
+                          + "; pass --context, --remaining or --read-tokens to "
+                            "price what you actually have")
 
     if not a.no_cross_vendor:
-        read = a.read_tokens or {Tier.T0: 8_000, Tier.T1: 20_000,
-                                 Tier.T2: 60_000, Tier.T3: 120_000}[p.tier]
+        read = a.read_tokens or _TYPICAL_READ[p.tier]
         try:
             p.substitutes = substitutes(
                 p, est_read_tokens=read, context_tokens=ctx, remaining_turns=rem,
@@ -1443,6 +1593,7 @@ def main(argv: list[str] | None = None) -> int:
                 "corner": {k: round(v, 4) for k, v in p.guarantee.corner.items()},
             },
             "reasons": p.reasons, "warnings": p.warnings,
+            "infeasible": p.infeasible or None,
             "context_tokens": ctx, "remaining_turns": rem,
             "ladder": [{
                 "tier": r.tier.name, "model": r.model, "effort": r.effort,

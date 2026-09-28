@@ -126,3 +126,71 @@ class TestPrefixInterop:
             model=OPUS, floor_tokens=prior.floor_tokens, handoff_tokens=0, ttl="5m",
             restart_cost=prior.cost(OPUS, ttl="5m"))
         assert k_assumed == k_prior
+
+
+# --- read-only reports and the `cache` setting ------------------------------
+# Counted as files under an isolated HOME, so the test asserts what a user
+# would see on disk rather than which argument reached the reader.
+
+def _write_corpus(root, *, sessions: int = 2, turns: int = 3) -> None:
+    import json
+
+    for s in range(sessions):
+        lines = [{
+            "type": "assistant", "sessionId": f"s{s}",
+            "timestamp": f"2026-08-0{s + 1}T10:{i:02d}:00Z",
+            "message": {"id": f"m{s}-{i}", "model": "claude-opus-5",
+                        "usage": {"input_tokens": 5,
+                                  "cache_read_input_tokens": 1_000 * (i + 1),
+                                  "output_tokens": 50},
+                        "content": []}} for i in range(turns)]
+        d = root / f"-w-{s}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"s{s}.jsonl").write_text("\n".join(json.dumps(r) for r in lines))
+
+
+def _written(home) -> set[str]:
+    return {p.name for p in home.rglob("*") if p.is_file()} - {"adder.json"}
+
+
+def _cache(home, on: bool) -> None:
+    import json
+
+    (home / "adder.json").write_text(json.dumps({"cache": on}))
+
+
+class TestCarryReportIsReadOnly:
+    """`carry` fitted its horizon through `horizon.load`, which stores
+    `.adder-horizon.json`: a write from a report CLAUDE.md lists as read-only,
+    made even with `cache` set to false."""
+
+    def test_writes_nothing_with_cache_off(self, isolated_home, tmp_path, capsys):
+        from adder.measure.window.carry import main
+
+        # Long enough that the old path had lengths to store.
+        root = tmp_path / "long"
+        _write_corpus(root, sessions=2, turns=6)
+        _cache(isolated_home, False)
+        assert main([str(root)]) == 0
+        assert _written(isolated_home) == set()
+
+
+class TestCarrySaysWhyItIsThePrior:
+    """"no local transcripts" was printed for a directory full of transcripts
+    too short to fit from, which tells the reader to fix the wrong thing."""
+
+    def test_short_sessions_are_not_called_missing(self, make_sessions):
+        few = Carry.measure(make_sessions(n=2, n_turns=5))
+        assert "too few sessions (n=0 of 2, need >=3 of >=20 turns)" in few.describe()
+        assert "no local transcripts" not in few.describe()
+        assert "no local transcripts" in Carry.measure({}).describe()
+
+    def test_report_counts_what_is_on_record(self, isolated_home, tmp_path, capsys):
+        from adder.measure.window.carry import main
+
+        root = tmp_path / "short"
+        _write_corpus(root)
+        assert main([str(root)]) == 0
+        out = capsys.readouterr().out
+        assert "0 sessions on record" not in out
+        assert "too few sessions (n=0 of 2, need >=5 of >=5 turns)" in out

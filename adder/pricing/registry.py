@@ -410,7 +410,9 @@ def _best_prefix(cat: Catalog, model: str) -> Entry | None:
         rest = key[len(e.key):]
         if rest[:1] not in ("-", ".", "_", ":", "["):
             continue                       # matched mid-token, e.g. `gpt-5` in `gpt-50`
-        if rest[1:2].isdigit():
+        # `[1m]` is a context variant of the same model; its digit is not a
+        # generation, and without this every catalog model lost its `[1m]` form.
+        if rest[:1] != "[" and rest[1:2].isdigit():
             continue                       # a different generation, not a variant
         if _is_floating_alias(e):
             continue

@@ -56,6 +56,8 @@ DEFAULT_REMAINING = 450
 MAX_AGE_S = 3_600.0
 CACHE_VERSION = 1
 MIN_SAMPLES = 5
+# Shortest session counted as a length at all; `from_sessions`' default.
+MIN_TURNS = 5
 
 # How far a conservative horizon backs off when there is nothing to measure.
 # A gate using the lower bound should not be handed the same number as a gate
@@ -70,7 +72,7 @@ class Horizon:
     lengths: list[int]
 
     @classmethod
-    def from_sessions(cls, sessions, min_turns: int = 5) -> Horizon:
+    def from_sessions(cls, sessions, min_turns: int = MIN_TURNS) -> Horizon:
         """Session lengths, counted on the main chain.
 
         The number this produces is multiplied by the carry rate to price how
@@ -205,9 +207,9 @@ def cache_path() -> Path:
 
 def _root_key(root) -> str:
     """The transcript directory a fit was built from, as a stable string."""
-    from adder.core.trace import DEFAULT_ROOT
+    from adder.core.trace import default_root
 
-    return str(Path(root or DEFAULT_ROOT).expanduser())
+    return str(Path(root or default_root()).expanduser())
 
 
 def _cached(max_age_s: float, root=None) -> Horizon | None:
@@ -286,9 +288,9 @@ def load(root: Path | str | None = None, *, use_cache: bool = True,
         if hit is not None:
             return hit
     try:
-        from adder.core.trace import DEFAULT_ROOT, load_sessions
+        from adder.core.trace import default_root, load_sessions
 
-        h = Horizon.from_sessions(load_sessions(root or DEFAULT_ROOT))
+        h = Horizon.from_sessions(load_sessions(root or default_root()))
     except Exception:
         return Horizon.default()
     if use_cache and h.lengths:
@@ -299,10 +301,12 @@ def load(root: Path | str | None = None, *, use_cache: bool = True,
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
+    from adder.measure.argtypes import nonneg_int
+
     ap = argparse.ArgumentParser(prog="adder horizon")
     ap.add_argument("root", nargs="?", default=None)
     ap.add_argument("--json", action="store_true", help="machine-readable")
-    ap.add_argument("--at", type=int, action="append", metavar="N",
+    ap.add_argument("--at", type=nonneg_int, action="append", metavar="N",
                     help="turn index to report (repeatable; default 10/100/400/600/1000)")
     from adder.core.filters import root_of as _root_of
 
@@ -312,13 +316,25 @@ def main(argv: list[str] | None = None) -> int:
     # about which transcript directory `adder config` names.
     a.root = str(_root_of(a))
 
-    h = load(a.root)
+    # A fresh fit, not `load`. `load` is the hooks' entry point and its cache
+    # is theirs: calling it from here meant `adder horizon` and `adder carry`,
+    # both on CLAUDE.md's read-only list, wrote `~/.claude/.adder-horizon.json`
+    # on every run, even with `cache` set to false. A report shows the history
+    # it was pointed at now, not a fit another process stored an hour ago. The
+    # parse cache underneath still follows the `cache` setting, as elsewhere.
+    from adder.core import settings
+    from adder.core.trace import load_sessions
+
+    sessions = load_sessions(a.root, use_cache=bool(settings.get("cache")))
+    h = Horizon.from_sessions(sessions, min_turns=MIN_TURNS)
     points = tuple(a.at) if a.at else (10, 100, 400, 600, 1000)
     if a.json:
         import json
 
         print(json.dumps({
             "sessions": len(h.lengths),
+            "observed": len(sessions),
+            "min_turns": MIN_TURNS,
             "median_length": int(statistics.median(h.lengths)) if h.lengths else None,
             "default_prior": DEFAULT_REMAINING,
             "measured_through": h.measured_through(),
@@ -336,8 +352,17 @@ def main(argv: list[str] | None = None) -> int:
             },
         }))
         return 0
-    print(f"\n  {len(h.lengths)} sessions observed"
-          f"{f'; median length {int(statistics.median(h.lengths)):,}' if h.lengths else ''}\n")
+    # "0 sessions observed" was printed for a directory holding two short
+    # sessions: `from_sessions` drops anything under MIN_TURNS, and the count
+    # shown was the survivors of that filter labelled as everything seen.
+    if len(h.lengths) < MIN_SAMPLES and sessions:
+        print(f"\n  too few sessions (n={len(h.lengths)} of {len(sessions)} on record, "
+              f"need >={MIN_SAMPLES} of >={MIN_TURNS} turns)\n")
+    else:
+        print(f"\n  {len(h.lengths)} sessions of >={MIN_TURNS} turns observed"
+              f"{f' (of {len(sessions)})' if len(sessions) != len(h.lengths) else ''}"
+              f"{f'; median length {int(statistics.median(h.lengths)):,}' if h.lengths else ''}"
+              "\n")
     through = h.measured_through()
     print(f"  {'at turn':>9}{'median left':>14}{'mean left':>12}"
           f"{'ratio':>9}  basis")

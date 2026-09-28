@@ -45,9 +45,9 @@ class TestCheckers:
         assert not c("It routes down to a cheaper model.")
 
     def test_multi_needle_requires_all_parts(self):
-        c = self._check("sonnet-intro-expiry")
-        assert c("2026-08-31")
-        assert not c("2026-09-30")
+        c = self._check("sonnet-rates")
+        assert c("$2 in, $10 out")
+        assert not c("$2 in, $15 out")
 
     @pytest.mark.parametrize("t", TASKS)
     def test_every_task_source_exists(self, t):
@@ -81,8 +81,25 @@ class TestWilson:
 class TestReport:
     def _arm(self, model, passed, n, cost):
         a = ArmResult(model)
-        a.outcomes = [Outcome("t", model, i < passed, cost=cost / n) for i in range(n)]
+        a.outcomes = [Outcome(f"t{i}", model, i < passed, cost=cost / n) for i in range(n)]
         return a
+
+    def test_the_cheap_arm_is_read_off_the_costs_not_the_order(self):
+        r = report([self._arm("opus", 12, 12, 1.0), self._arm("haiku", 11, 12, 0.2)])
+        assert "haiku costs 20% of opus" in r
+        assert "opus costs" not in r
+
+    def test_a_one_task_gap_is_not_called_a_measured_loss(self):
+        r = report([self._arm("haiku", 11, 12, 0.2), self._arm("opus", 12, 12, 1.0)])
+        assert "measured quality loss;" not in r and "not established" in r
+
+    def test_repeats_do_not_buy_precision(self):
+        once = self._arm("haiku", 11, 12, 0.2)
+        thrice = ArmResult("haiku")
+        thrice.outcomes = once.outcomes * 3
+        assert (thrice.tasks, thrice.task_passed) == (12, 11)
+        assert wilson_lower_bound(thrice.task_passed, thrice.tasks) == \
+            wilson_lower_bound(once.passed, once.n)
 
     def test_flags_quality_loss(self):
         cheap = self._arm("haiku", 6, 12, 0.001)

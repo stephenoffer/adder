@@ -51,6 +51,7 @@ import json
 from dataclasses import dataclass, field
 from itertools import pairwise
 
+from adder.measure.argtypes import positive_int
 from adder.pricing.catalog import Catalog, Entry
 from adder.util import render
 
@@ -356,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="tokens the task pulls in")
     ap.add_argument("--open-weights", action="store_true",
                     help="restrict to open-weight models")
-    ap.add_argument("--top", type=int, default=12)
+    ap.add_argument("--top", type=positive_int, default=12)
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
 

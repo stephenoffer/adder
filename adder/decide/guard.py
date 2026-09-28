@@ -66,7 +66,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from adder.core.filters import root_of as _root_of
-from adder.core.reads import ReadTarget, tool_targets, whole_reads
+from adder.core.reads import ReadTarget, only_prints_files, tool_targets, whole_reads
 from adder.core.reads import resolve as _resolve_path
 from adder.core.shapes import (
     Estimate,
@@ -111,10 +111,15 @@ MAX_MESSAGE_TOKENS = 90
 # into one session. No per-call rule can see that, however well calibrated:
 # every one of those calls really was small.
 AGGREGATE_TOKENS = 20000
-# A file whose mtime lands within this many seconds of a `Write` we saw is
-# taken to be that write. Wider than it needs to be for clock granularity, and
-# the failure direction is safe: too wide only means the guard stays quiet.
+# A file whose mtime lands within this window of a `Write` we saw is taken to
+# be that write. The window has two sides, and it used to have one: any mtime
+# *before* the write also matched, so a Write that never landed -- refused by
+# the harness because the file had not been read first, or denied at the
+# permission prompt -- left the old file looking like the session's own
+# content, and the Read that should follow was refused. An mtime earlier than
+# the write, by more than clock granularity, is a file the write did not touch.
 WRITE_SETTLE_S = 5.0
+WRITE_CLOCK_SLACK_S = 2.0
 # How far the guard may go, in order. `off` is the historical behaviour and is
 # still the default for anyone who has not activated anything.
 #
@@ -701,7 +706,7 @@ def _already_known(path: str, state: GuardState, *, now: float | None=None) -> s
     if seen is not None and abs(seen - mtime) < 1e-06:
         return 'is already in this context and has not changed on disk since it was read'
     written = state.wrote.get(path)
-    if written is not None and mtime <= written + WRITE_SETTLE_S:
+    if written is not None and written - WRITE_CLOCK_SLACK_S <= mtime <= written + WRITE_SETTLE_S:
         return 'was written by this session, so its content is already in the context'
     return ''
 
@@ -718,6 +723,8 @@ def _bash_duplicate(command: str, state: GuardState, *, cwd: str | None=None) ->
     asking for lines that are already there. Recording a slice would claim
     something that is not true; refusing one rests on a claim that is.
     """
+    if not only_prints_files(command):
+        return []
     targets = tool_targets('Bash', {'command': command}, cwd=cwd)
     if not targets:
         return []
@@ -1177,8 +1184,9 @@ def observe(tool: str, tool_input: dict, state: GuardState, verdict: Verdict, *,
         # against the one move that would actually have got the rest of the
         # file. The guard is the only component here that changes behaviour,
         # so a confidently wrong sentence from it is the expensive kind.
-        if fp and not tool_input.get('limit') and not tool_input.get('offset'):
-            key = _read_key(fp, cwd)
+        # And only a read the tool returned in full: `whole_reads` drops a file
+        # past the Read tool's own line and token ceilings.
+        for key in whole_reads('Read', tool_input, cwd=cwd):
             _remember_read(state, key, _mtime(key))
     _note_contradiction(tool, tool_input, state, verdict, cwd=cwd)
     if verdict.shadow:
@@ -1552,7 +1560,7 @@ def replay(root=None, *, cfg: Settings | None=None, sizes: SizeModel | None=None
     rep = Replay()
     states: dict[str, GuardState] = {}
     seen_turns: dict[str, int] = {}
-    for session, model, tool, inp, _ts in iter_calls(root or DEFAULT_ROOT):
+    for session, model, tool, inp, _ts in iter_calls(root or DEFAULT_ROOT, by_context=True):
         rep.calls += 1
         state = states.get(session)
         if state is None:
@@ -1565,6 +1573,10 @@ def replay(root=None, *, cfg: Settings | None=None, sizes: SizeModel | None=None
             continue
         rep.priced += 1
         v = decide(tool, inp, model=model, remaining_turns=int(remaining), cfg=cfg, sizes=sizes, state=state)
+        if ':' in session and not v.certain:
+            # The live rule for a subagent context: only a duplicate is acted
+            # on, because anything priced is priced on the parent's horizon.
+            v = Verdict(False, 'subagent: only a certain duplicate is acted on')
         observe(tool, inp, state, v, sizes=sizes)
         if not v.fire:
             continue

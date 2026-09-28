@@ -51,6 +51,12 @@ class TestTierInference:
     def test_agent_names_are_matched_case_insensitively(self):
         assert Dispatch("s", "p", "u", "Route-T1").tier == "T1"
 
+    def test_a_plugin_dispatch_calibrates_the_same_tier(self):
+        """Otherwise every delegation a plugin user made went unrecorded, and
+        the router stayed on its prior forever."""
+        for name, tier in AGENT_TIERS.items():
+            assert Dispatch("s", "p", "u", f"adder:{name}").tier == tier
+
     def test_an_unknown_agent_falls_back_to_the_model(self):
         assert Dispatch("s", "p", "u", "custom", model=HAIKU).tier == "T0"
 

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from adder.decide import guard
+from adder.decide import auto, guard
 from adder.decide.auto import (
     BACKUP_SUFFIX,
     HOOK_TIMEOUT_S,
@@ -558,3 +558,56 @@ class TestPlanShape:
     def test_an_empty_plan_is_recognised(self):
         assert Plan(settings_path=Path('a'), config_path=Path('b'),
                     level='off', was_level='off').empty
+
+
+class TestHarnessGate:
+    """`auto on` must not write hooks to a runtime that cannot fire them.
+
+    The whole saving this command promises comes from a `PreToolUse` hook
+    refusing a call. Written to a harness with no such event, the hooks are
+    inert, the reports keep working, and the success message reads as proof
+    that enforcement is on. Silent non-function is the worst outcome available
+    here, which is why this is a block rather than a warning.
+    """
+
+    def test_a_hookless_harness_is_blocked(self, clean_home, monkeypatch):
+        monkeypatch.setenv('ADDER_HARNESS', 'codex')
+        p = auto.plan(level='full')
+        assert p.blocked
+        assert 'codex' in p.blocked
+        assert 'never fire' in p.blocked
+
+    def test_the_block_says_what_still_works(self, clean_home, monkeypatch):
+        # A refusal that only says no sends someone away from a tool that does
+        # most of its job on their machine.
+        monkeypatch.setenv('ADDER_HARNESS', 'aider')
+        p = auto.plan(level='full')
+        assert 'adder doctor' in p.blocked
+        assert 'adder policy' in p.blocked
+
+    def test_claude_code_is_not_blocked(self, clean_home, monkeypatch):
+        monkeypatch.setenv('ADDER_HARNESS', 'claude-code')
+        assert not auto.plan(level='full').blocked
+
+    def test_the_default_harness_is_not_blocked(self, clean_home, monkeypatch):
+        # Nobody who has not configured a harness may be stopped by this.
+        monkeypatch.delenv('ADDER_HARNESS', raising=False)
+        assert not auto.plan(level='full').blocked
+
+    def test_apply_refuses_a_blocked_plan(self, clean_home, monkeypatch):
+        monkeypatch.setenv('ADDER_HARNESS', 'codex')
+        p = auto.plan(level='full')
+        with pytest.raises(ValueError):
+            auto.apply(p)
+        assert not (Path(clean_home) / '.claude' / 'settings.json').exists()
+
+    def test_an_override_file_can_declare_hook_support(self, clean_home,
+                                                       monkeypatch, tmp_path):
+        # The block names ADDER_HARNESSES as the way out, so that has to work:
+        # a harness that grows a pre-tool-call hook must be usable the day it
+        # does, without waiting for a release here.
+        spec = tmp_path / 'harnesses.json'
+        spec.write_text('{"harnesses": {"codex": {"supports_hooks": true}}}')
+        monkeypatch.setenv('ADDER_HARNESSES', str(spec))
+        monkeypatch.setenv('ADDER_HARNESS', 'codex')
+        assert not auto.plan(level='full').blocked

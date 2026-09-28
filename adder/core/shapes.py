@@ -934,14 +934,19 @@ def iter_results(root: Path | str = DEFAULT_ROOT, *,
                         yield tool, inp, est_tokens(flatten_text(b.get("content")))
 
 
-def iter_calls(root: Path | str = DEFAULT_ROOT, *,
-               window=None) -> Iterable[tuple[str, str, str, dict, str]]:
+def iter_calls(root: Path | str = DEFAULT_ROOT, *, window=None,
+               by_context: bool = False) -> Iterable[tuple[str, str, str, dict, str]]:
     """Yield `(session, model, tool, input, timestamp)` for every call, in order.
 
     `iter_results` pairs a call with its answer and is the right shape for
     learning sizes. This one is the right shape for *replaying a decision*: it
     keeps the order and the session, which is what a guard's state depends on,
     and it does not need the result -- the guard never sees one.
+
+    `by_context` keys a subagent's calls `<session>:<agentId>` rather than by
+    the parent's session id they are recorded under. A replay of the guard
+    needs it for the reason the live hook does: a subagent's context is not
+    its parent's, and pooling them books refusals that would have been wrong.
     """
     for path in transcripts(root):
         try:
@@ -968,6 +973,8 @@ def iter_calls(root: Path | str = DEFAULT_ROOT, *,
                 if not isinstance(content, list):
                     continue
                 session = str(d.get("sessionId") or path.stem)
+                if by_context and d.get("agentId"):
+                    session = f"{session}:{d['agentId']}"
                 for b in content:
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue

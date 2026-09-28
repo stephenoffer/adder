@@ -12,6 +12,7 @@ import pytest
 from adder.util.render import (
     bar,
     bullet,
+    clip_path,
     color_enabled,
     duration,
     heading,
@@ -199,3 +200,30 @@ class TestColourVocabulary:
         monkeypatch.setenv("NO_COLOR", "")
         monkeypatch.setenv("ADDER_COLOR", "always")
         assert color_enabled(self._NotATty()) is True
+
+
+class TestClipPath:
+    def test_short_paths_are_untouched(self):
+        assert clip_path("/srv/a/b.py", 60, home="/Users/me") == "/srv/a/b.py"
+
+    def test_home_is_abbreviated(self):
+        assert clip_path("/Users/me/a/b.py", 60, home="/Users/me") == "~/a/b.py"
+
+    def test_a_prefix_of_home_is_not_home(self):
+        assert clip_path("/Users/meg/a.py", 60, home="/Users/me") == "/Users/meg/a.py"
+
+    def test_cuts_at_a_separator_and_keeps_the_file(self):
+        p = "/srv/wolfgang-v2/.claude/skills/w-compose/references/note-writing-craft.md"
+        got = clip_path(p, 60, home="/Users/me")
+        assert len(got) <= 60
+        assert got.startswith("…/") and got.endswith("/note-writing-craft.md")
+        # every segment shown is a whole segment of the original
+        assert all(seg in p.split("/") for seg in got[2:].split("/"))
+
+    def test_a_file_name_longer_than_the_width_keeps_its_tail(self):
+        got = clip_path("/a/" + "x" * 80 + ".md", 20, home="")
+        assert len(got) == 20 and got.endswith(".md") and got.startswith("…")
+
+    def test_a_tool_prefix_survives(self):
+        got = clip_path("Read:/Users/me/proj/deep/dir/tree/leaf/file.md", 30, home="/Users/me")
+        assert got.startswith("Read:") and got.endswith("/file.md") and len(got) <= 30

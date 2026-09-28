@@ -349,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     sessions, _w = filters.load(args, use_cache=True)
     if not sessions:
         print(json.dumps({"total_turns": 0}, indent=2) if args.json
-              else "  No sessions found.")
+              else filters.nothing_found(args, _w))
         return 1
 
     rep = analyse(sessions, max_gap_s=args.max_gap, seed=args.seed)

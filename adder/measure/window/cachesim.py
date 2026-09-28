@@ -549,7 +549,7 @@ def main(argv: list[str] | None = None) -> int:
     sessions, _window = filters.load(args, use_cache=True)
     if not sessions:
         msg = {"simulated": True, "requests": 0} if args.json else \
-            "  No sessions found to replay."
+            filters.nothing_found(args, _window)
         print(json.dumps(msg, indent=2) if args.json else msg)
         return 1
 

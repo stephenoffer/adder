@@ -30,6 +30,7 @@ happen.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -81,6 +82,15 @@ HOOK_TIMEOUT_S = 5
 # exploration is read-heavy work in a throwaway context, which is the one place
 # a cheap model costs nothing in cache.
 AGENTS: tuple[str, ...] = ('Explore.md', 'route-t0.md', 'route-t1.md', 'route-t2.md')
+# The skills, keyed by their directory in the package and mapped to the name
+# they are installed under. Two names because two installers read the same
+# files: the plugin namespaces a skill by its directory (`/adder:doctor`), and a
+# copy in `~/.claude/skills` is named by the directory it is copied to, where
+# the prefix is what keeps `/doctor` from colliding with somebody else's.
+# `route` installs as plain `adder` because `/adder` is the name the docs and
+# three releases of muscle memory use.
+SKILLS: dict[str, str] = {'route': 'adder', 'doctor': 'adder-doctor',
+                          'context': 'adder-context', 'init': 'adder-init'}
 
 # The thresholds an enforcing guard runs at, and why they are not the advisory
 # ones. All three were swept with `guard.replay` over 34,144 recorded tool
@@ -94,6 +104,15 @@ AGENTS: tuple[str, ...] = ('Explore.md', 'route-t0.md', 'route-t1.md', 'route-t2
 #     800     200   $0.10      2,421        $517     $27.45   $513       8%
 #     800   1,000   $0.10      2,448        $523     $27.79   $519       8%
 #     300     200   $0.10      4,590        $677     $51.54   $651      39%
+#
+# Measured before `replay` kept a memory per subagent context. Pooled, a
+# subagent's first read of a file its parent had read counted as a prevented
+# duplicate. On this machine's current history (43,592 calls, `full` at these
+# thresholds) separating contexts took prevented from $1,397 to $830 and net
+# from $1,418 to $791, so the dollar column above is an upper bound. The
+# ordering between rows held when re-swept that way: net $270, $738, $792 and
+# $996 for the four `TUNE_GRID` points, with 6%, 19%, 19% and 43% of calls
+# parsing a transcript.
 #
 # Three things that table settles. The $0.25 gate is not a threshold on this
 # lever at all -- it exists to stop the guard *interrupting* over small change,
@@ -143,7 +162,100 @@ def agents_dir(repo: Path | None = None) -> Path:
     return hooks_dir(repo).parent / 'agents'
 
 
-def agent_plan(target: Path, *, repo: Path | None = None) -> tuple[list[str], list[str]]:
+def skills_dir(repo: Path | None = None) -> Path:
+    """Where the skills live: in the package, so a wheel carries them.
+
+    They were in `.claude/skills/` for as long as the hooks were in
+    `.claude/hooks/`, with the same result one release later: `pip install`
+    delivered a tool whose reports the agent could not reach without the user
+    typing the command themselves.
+    """
+    return hooks_dir(repo).parent / 'skills'
+
+
+def skill_plan(target: Path, *, repo: Path | None = None) -> tuple[list[str], list[str]]:
+    """Which skills would be copied into `target`, and which are left alone.
+
+    The same never-overwrite rule as `agent_plan`, for the same reason. Names
+    returned are the installed names, `<name>/SKILL.md` under `target`.
+    """
+    write, skip = [], []
+    for src_name, name in SKILLS.items():
+        src = skills_dir(repo) / src_name / 'SKILL.md'
+        if not src.is_file():
+            continue
+        dst = target / name / 'SKILL.md'
+        if not dst.exists():
+            write.append(name)
+        elif dst.read_text(encoding='utf-8', errors='replace') != \
+                src.read_text(encoding='utf-8', errors='replace'):
+            skip.append(name)
+    return write, skip
+
+
+def skill_removals(target: Path, *, repo: Path | None = None) -> list[str]:
+    """Installed skills that are still exactly what we shipped.
+
+    Unlike the agent files, `off` does remove these. A skill's description is
+    resident in every session whether or not it is ever used, so leaving four
+    of them behind is a small per-turn charge for a tool the user just turned
+    off. A copy that differs has been edited and is somebody's now; it stays.
+    """
+    out = []
+    for src_name, name in SKILLS.items():
+        src = skills_dir(repo) / src_name / 'SKILL.md'
+        dst = target / name / 'SKILL.md'
+        try:
+            if dst.read_bytes() == src.read_bytes():
+                out.append(name)
+        except OSError:
+            continue
+    return out
+
+
+def plugin_enabled(cwd: Path | str | None = None) -> bool:
+    """Is the adder Claude Code plugin enabled here? Read-only; never raises.
+
+    It matters because plugin hooks and `settings.json` hooks are merged with
+    no deduplication: the same guard declared in both places runs twice on
+    every tool call, charges its overhead twice, and counts every refusal
+    twice in the ledger `auto status` reports. The detection lives in
+    `core.claude`, because routing needs it too.
+    """
+    from adder.core.claude import plugin_enabled as _enabled
+
+    return _enabled(cwd)
+
+
+def plugin_hooks() -> dict:
+    """The plugin's `hooks/hooks.json`, derived from `HOOKS`.
+
+    Checked in rather than generated at install, because a plugin is a
+    directory Claude Code reads and there is no install step to run code in.
+    A test compares the file to this, so the two cannot drift: a matcher that
+    grew a tool here and not there would leave plugin users unguarded on it.
+    The command goes through the plugin's own `bin/adder`, which finds a
+    Python new enough to run the package without anything installed.
+    """
+    hooks: dict[str, list] = {}
+    for h in HOOKS:
+        group: dict = {'hooks': [{
+            'type': 'command',
+            'command': f'"${{CLAUDE_PLUGIN_ROOT}}/bin/{ADDER_EXE}" hook {h["name"]}',
+            'timeout': HOOK_TIMEOUT_S}]}
+        if h['matcher']:
+            group = {'matcher': h['matcher'], **group}
+        hooks.setdefault(str(h['event']), []).append(group)
+    return {'hooks': hooks}
+
+
+def double_registered(cwd: Path | str | None = None) -> list[Path]:
+    """Settings files that declare our hooks while the plugin also does."""
+    return guard.installed_in(cwd) if plugin_enabled(cwd) else []
+
+
+def agent_plan(target: Path, *, repo: Path | None = None,
+               names: tuple[str, ...] = AGENTS) -> tuple[list[str], list[str]]:
     """Which agent files would be written, and which are left alone.
 
     Never overwrites. A user may have their own `Explore` they rely on, and
@@ -153,7 +265,7 @@ def agent_plan(target: Path, *, repo: Path | None = None) -> tuple[list[str], li
     the report says so rather than pretending the install was complete.
     """
     write, skip = [], []
-    for name in AGENTS:
+    for name in names:
         src = agents_dir(repo) / name
         if not src.is_file():
             continue
@@ -390,6 +502,13 @@ class Plan:
     agents_path: Path = Path()
     agent_writes: list[str] = field(default_factory=list)
     agent_skips: list[str] = field(default_factory=list)
+    skills_path: Path = Path()
+    skill_writes: list[str] = field(default_factory=list)
+    skill_skips: list[str] = field(default_factory=list)
+    skill_removes: list[str] = field(default_factory=list)
+    # The plugin supplies the hooks, the tier agents and the skills, so `on`
+    # writes only what a plugin cannot: the level, and the `Explore` override.
+    plugin: bool = False
     repo: Path | None = None
     user: bool = True
     level: str = 'certain'
@@ -410,7 +529,8 @@ class Plan:
     @property
     def empty(self) -> bool:
         return not self.hook_changes and not self.config_changes \
-            and not self.agent_writes
+            and not self.agent_writes and not self.skill_writes \
+            and not self.skill_removes
 
 
 def _override_warnings(env: dict[str, str] | None = None) -> list[str]:
@@ -505,9 +625,34 @@ def _scope_warnings(base: Path, settings_path: Path, config_path: Path, *,
     return out
 
 
+def _ephemeral(exe: str) -> bool:
+    """Is this interpreter inside a throwaway environment (`uvx`, `pipx run`)?
+
+    Both keep the environment in a cache they are free to collect. A user-scope
+    install writes `sys.executable` into every hook, so activating from one of
+    them works today and fails on every tool call the day the cache is pruned.
+    """
+    parts = [p.lower() for p in Path(exe).parts]
+    uvx = 'uv' in parts and any(p.startswith('archive-v') for p in parts)
+    pipx_run = 'pipx' in parts and any('cache' in p for p in parts)
+    return uvx or pipx_run
+
+
+def _interpreter_warnings(*, user: bool, plugin: bool, exe: str | None = None) -> list[str]:
+    """The interpreter a user-scope hook will be pinned to, when it will not last."""
+    import sys
+
+    exe = sys.executable if exe is None else exe
+    if not user or plugin or not _ephemeral(exe):
+        return []
+    return [f'this adder runs from a temporary environment ({exe}), and the hooks '
+            'would be pinned to it. Install it to stay: `uv tool install '
+            'adder-cli` or `pipx install adder-cli`, then run this again.']
+
+
 def plan(*, cwd: Path | str | None = None, level: str = 'certain', user: bool = True,
          repo: Path | None = None, env: dict[str, str] | None = None,
-         thresholds: dict | None = None) -> Plan:
+         thresholds: dict | None = None, plugin: bool | None = None) -> Plan:
     """What `on` would do. Pure with respect to disk: it reads, never writes.
 
     `user` defaults to True, and the default moved. Project scope wrote three
@@ -521,13 +666,20 @@ def plan(*, cwd: Path | str | None = None, level: str = 'certain', user: bool = 
     None of that is wrong to do deliberately; it is wrong to do by default, for
     a tool whose entire argument is that the cheapest work is the work that does
     not happen. `--project` still does it, and now says what it is touching.
+
+    With the plugin enabled, `on` writes no hooks and instead removes any it
+    wrote before, because the plugin already declares them and a second copy
+    runs every hook twice. `plugin` overrides the detection, for tests.
     """
     base = Path(cwd or os.getcwd()).resolve()
+    if plugin is None:
+        plugin = plugin_enabled(base)
     settings_path = ((Path.home() / '.claude' / 'settings.json') if user
                      else base / '.claude' / 'settings.json')
     config_path = USER_FILE if user else (project_file(base) or base / PROJECT_FILE)
     current = _read_json(settings_path)
-    after, changes = merge(current, repo=repo, portable=not user)
+    after, changes = (unmerge(current) if plugin
+                      else merge(current, repo=repo, portable=not user))
     config = _read_json(config_path)
     was = str(config.get('guard_enforce', 'off'))
     # `full` moves the thresholds as well as the level. `certain` deliberately
@@ -538,17 +690,51 @@ def plan(*, cwd: Path | str | None = None, level: str = 'certain', user: bool = 
     if level == 'full':
         tuned.update(ENFORCING_THRESHOLDS if thresholds is None else thresholds)
     agents_path = settings_path.parent / 'agents'
-    writes, skips = agent_plan(agents_path, repo=repo)
+    # A plugin cannot override a built-in agent -- its agents are namespaced
+    # `adder:route-t0` -- so `Explore` is the one thing activation still has to
+    # copy when the plugin supplies the rest.
+    writes, skips = agent_plan(agents_path, repo=repo,
+                               names=AGENTS[:1] if plugin else AGENTS)
+    skills_path = settings_path.parent / 'skills'
+    skill_writes, skill_skips = ([], []) if plugin else skill_plan(skills_path, repo=repo)
     p = Plan(settings_path=settings_path, config_path=config_path, hook_changes=changes,
-             agents_path=agents_path, agent_writes=writes, agent_skips=skips, repo=repo,
+             agents_path=agents_path, agent_writes=writes, agent_skips=skips,
+             skills_path=skills_path, skill_writes=skill_writes, skill_skips=skill_skips,
+             plugin=plugin, repo=repo,
              level=level, was_level=was, settings_after=after,
              config_after={**tuned, 'guard_enforce': level}, config_before=config,
              user=user, warnings=_override_warnings(env) + _scope_warnings(
-                 base, settings_path, config_path, user=user))
+                 base, settings_path, config_path, user=user)
+             + _interpreter_warnings(user=user, plugin=plugin))
     if not _parses(settings_path):
         p.blocked = f'{settings_path} exists but is not valid JSON; fix it first'
     elif not _parses(config_path):
         p.blocked = f'{config_path} exists but is not valid JSON; fix it first'
+    else:
+        # Everything above writes Claude Code's hook block, and a hook block is
+        # only worth writing to something that fires hooks. This command used to
+        # write it whatever was driving: a Codex or Aider user configured their
+        # harness, ran `auto on --full`, got a success message and three hooks
+        # nothing would ever call. Silent non-function is the worst outcome
+        # available here, because the reports keep working and look like proof
+        # that it is on.
+        from adder.core import harness as _harness
+        from adder.core import settings as _settings
+
+        h = _harness.get(_settings.get('harness'))
+        if not h.supports_hooks:
+            p.blocked = (
+                f"harness is {h.name!r}, which does not run pre-tool-call hooks, "
+                f"so these would never fire.\n"
+                f"    The reports all work on {h.name} — `adder doctor`, `trace`, "
+                f"`savings`, `carry` — and\n"
+                f"    so does `adder policy` for placement. Enforcement needs a "
+                f"harness that can refuse\n"
+                f"    a tool call, which today means claude-code.\n"
+                f"    If {h.name} does run hooks, describe it with ADDER_HARNESSES "
+                f"and set supports_hooks;\n"
+                f"    if this is a Claude Code machine, set harness=claude-code "
+                f"in .adder.json or ADDER_HARNESS")
     return p
 
 
@@ -569,8 +755,11 @@ def plan_off(*, cwd: Path | str | None = None, user: bool = True) -> Plan:
     # deleting a file somebody may have edited is not something `off` should
     # do quietly. The report says they are staying.
     agents_path = settings_path.parent / 'agents'
+    skills_path = settings_path.parent / 'skills'
     return Plan(settings_path=settings_path, config_path=config_path,
                 hook_changes=changes, agents_path=agents_path, level='off',
+                skills_path=skills_path, skill_removes=skill_removals(skills_path),
+                plugin=plugin_enabled(base),
                 was_level=str(config.get('guard_enforce', 'off')),
                 settings_after=after, config_after={**config, 'guard_enforce': 'off'},
                 config_before=config, user=user)
@@ -614,6 +803,21 @@ def apply(p: Plan) -> list[str]:
             (p.agents_path / name).write_text(
                 src.read_text(encoding='utf-8'), encoding='utf-8')
         done.append(f'{p.agents_path}: {len(p.agent_writes)} agent(s)')
+    for name in p.skill_writes:
+        src_name = next(k for k, v in SKILLS.items() if v == name)
+        dst = p.skills_path / name / 'SKILL.md'
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text((skills_dir(p.repo) / src_name / 'SKILL.md').read_text(
+            encoding='utf-8'), encoding='utf-8')
+    if p.skill_writes:
+        done.append(f'{p.skills_path}: {len(p.skill_writes)} skill(s)')
+    for name in p.skill_removes:
+        d = p.skills_path / name
+        (d / 'SKILL.md').unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            d.rmdir()                 # only if nothing of the user's is in it
+    if p.skill_removes:
+        done.append(f'{p.skills_path}: removed {len(p.skill_removes)} skill(s)')
     return done
 
 
@@ -640,6 +844,7 @@ class Status:
     measured_uptake: bool
     model_calls: int
     model_age_s: float
+    plugin: bool = False
 
     @property
     def realised(self) -> float:
@@ -654,7 +859,7 @@ class Status:
 
     @property
     def active(self) -> bool:
-        return bool(self.installed) and not self.hooks_missing
+        return (bool(self.installed) or self.plugin) and not self.hooks_missing
 
 
 def status(*, cwd: Path | str | None = None) -> Status:
@@ -668,12 +873,13 @@ def status(*, cwd: Path | str | None = None) -> Status:
             declared += json.dumps(_read_json(path))
         except (TypeError, ValueError):
             continue
+    plugin = plugin_enabled(cwd)
     for h in HOOKS:
         # Matched through `_is_ours`, not on the script name: the command form
         # changed twice, and a status that only knows the oldest one reports a
         # working install as absent -- which reads as "nothing is preventing
-        # spend" while something is.
-        (present if (h['script'] in declared or h['module'] in declared
+        # spend" while something is. The plugin's hooks.json declares all three.
+        (present if (plugin or h['script'] in declared or h['module'] in declared
                      or f"hook {h['name']}" in declared)
          else missing).append(str(h['script']))
     try:
@@ -695,7 +901,8 @@ def status(*, cwd: Path | str | None = None) -> Status:
                   promised=float(led.get('saving') or 0.0),
                   overhead=float(led.get('overhead') or 0.0),
                   uptake=rate if measured else cfg.advice_taken,
-                  measured_uptake=measured, model_calls=calls, model_age_s=age)
+                  measured_uptake=measured, model_calls=calls, model_age_s=age,
+                  plugin=plugin)
 
 
 def _render_plan(p: Plan, *, off: bool = False) -> list[str]:
@@ -703,7 +910,14 @@ def _render_plan(p: Plan, *, off: bool = False) -> list[str]:
     verb = 'remove' if off else 'add'
     scope = 'user-wide (~/.claude)' if p.user else 'this project only (--project)'
     out = ['', f'  Scope: {scope}', '', f'  This will {verb}:', '']
-    if p.hook_changes:
+    if p.plugin and not off:
+        # The removal is the point, so it gets the reason on the same screen.
+        for c in p.hook_changes:
+            out.append(f'    remove {c}  (the plugin declares it; two copies run twice)')
+        if p.hook_changes:
+            out.append(f'    in     {p.settings_path}')
+        out.append('    (hooks come from the adder plugin)')
+    elif p.hook_changes:
         for c in p.hook_changes:
             out.append(f'    {verb:<6} {c}')
         out.append(f'    in     {p.settings_path}')
@@ -724,6 +938,21 @@ def _render_plan(p: Plan, *, off: bool = False) -> list[str]:
         for name in p.agent_skips:
             out.append(f'    keep   {name}  (yours differs — left alone)')
         out.append(f'    in     {p.agents_path}')
+    if not off and (p.skill_writes or p.skill_skips):
+        out.append('')
+        for name in p.skill_writes:
+            out.append(f'    copy   skill /{name}')
+        for name in p.skill_skips:
+            out.append(f'    keep   skill /{name}  (yours differs — left alone)')
+        out.append(f'    in     {p.skills_path}')
+    if off and p.skill_removes:
+        out.append('')
+        for name in p.skill_removes:
+            out.append(f'    remove skill /{name}')
+        out.append(f'    in     {p.skills_path}')
+    if off and p.plugin:
+        out += ['', '    (the adder plugin is still enabled, so its hooks go on '
+                'advising; `/plugin` disables it)']
     if off:
         out += ['', '    (agent files are left in place; they cost nothing '
                 'without the hooks)']
@@ -733,6 +962,9 @@ def _render_plan(p: Plan, *, off: bool = False) -> list[str]:
             out.append(f"    {h['event']:<18}{h['does']}")
         out.append(f"    {'agents':<18}what a delegated step runs on — Explore on "
                    "Haiku, three tiers")
+        if p.skill_writes or p.skill_skips:
+            out.append(f"    {'skills':<18}the reports, reachable from inside the "
+                       "agent: /adder-doctor, /adder-context, /adder")
         out += ['', kv('refusals', {
             'shadow': 'shadow: none. It records what it would have refused, '
                       'and what the session then did anyway',
@@ -751,7 +983,7 @@ def _render_plan(p: Plan, *, off: bool = False) -> list[str]:
 def render_status(s: Status) -> str:
     from adder.util.render import kv, money
     out = ['', '  adder auto', '']
-    if not s.installed:
+    if not s.installed and not s.plugin:
         out += [kv('status', 'OFF — nothing is running between your turns'), '',
                 '  Every report here measures money already gone. The hooks are',
                 '  the only part that runs while the decision is still',
@@ -760,7 +992,13 @@ def render_status(s: Status) -> str:
         return '\n'.join(out)
     out += [kv('status', f'ON — enforcing `{s.level}`' if s.level != 'off'
                else 'ADVISORY — installed, but refusing nothing'),
-            kv('declared in', ', '.join(str(p) for p in s.installed))]
+            kv('declared in', ', '.join(
+                (['the adder plugin'] if s.plugin else [])
+                + [str(p) for p in s.installed]))]
+    if s.plugin and s.installed:
+        out.append(kv('twice', 'the plugin and settings.json both declare the '
+                      'hooks, so each runs twice. `adder auto on` removes the '
+                      'settings.json copy'))
     if s.hooks_missing:
         out.append(kv('missing', ', '.join(s.hooks_missing)))
     out.append(kv('size model', f'{s.model_calls:,} calls learned'
@@ -824,7 +1062,7 @@ def main(argv: list[str] | None = None) -> int:
         s = status()
         if a.json:
             print(json.dumps({'installed': [str(p) for p in s.installed],
-                              'level': s.level, 'active': s.active,
+                              'plugin': s.plugin, 'level': s.level, 'active': s.active,
                               'hooks_missing': s.hooks_missing,
                               'sessions': s.sessions, 'fires': s.fires,
                               'prevented': round(s.prevented, 4),

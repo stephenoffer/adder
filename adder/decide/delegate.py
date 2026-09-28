@@ -127,7 +127,11 @@ def advise(tool_input: dict, *, session_model: str, remaining_turns: int,
     expensive thing here and is reached only after the cheap refusals above it.
     """
     sub = str((tool_input or {}).get('subagent_type') or '').strip()
-    if sub.lower() in ROUTED:
+    # `adder:route-t1` is the plugin's copy of the same agent, and routed just
+    # the same; without this the guard second-guessed every plugin dispatch.
+    from adder.core.claude import bare
+
+    if bare(sub).lower() in ROUTED:
         return Advice(False, f'{sub} already names a routed subagent')
     task = task_text(tool_input)
     if not task:
@@ -162,12 +166,18 @@ def advise(tool_input: dict, *, session_model: str, remaining_turns: int,
     # cheaper net of the chance of redoing the work, and a reader who cannot see
     # that number cannot check the claim.
     why = next((r for r in plan.reasons if r), '')
-    msg = (f'[adder] Run this on {plan.agent} ({chosen.model}) rather than '
-           f'{session_model}: ~${saving:,.2f} cheaper in expectation, including a '
-           f'{chosen.p_fail:.0%} chance of having to redo it')
+    # Named as the argument to pass, with the model as what it runs on rather
+    # than as a value. Some versions of the Agent tool declare `model` as an
+    # alias-only enum (`haiku`/`sonnet`/`opus`), and "route-t1
+    # (claude-sonnet-5)" reads as an instruction to pass the full id. The
+    # agent file already pins the model, so the name is all a dispatch needs.
+    msg = (f'[adder] Run this as subagent_type={plan.agent}, which runs '
+           f'{chosen.model}, rather than on {session_model}: ~${saving:,.2f} '
+           f'cheaper in expectation, including a {chosen.p_fail:.0%} chance of '
+           f'having to redo it')
     msg += f' ({why}).' if why else '.'
-    clause = (f'[adder] Run it on {plan.agent} ({chosen.model}): ~${saving:,.2f} '
-              f'cheaper, redo risk included.')
+    clause = (f'[adder] Run it as subagent_type={plan.agent} (runs {chosen.model}): '
+              f'~${saving:,.2f} cheaper, redo risk included.')
     over = admitted_token_cost(est_tokens(msg), session_model, remaining_turns,
                                carry=carry, context_tokens=context_tokens)
     out = Advice(True, 'a cheaper tier clears the cost of saying so', message=msg,

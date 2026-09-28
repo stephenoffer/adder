@@ -17,24 +17,56 @@
 **Your coding agent's bill is bigger than your dashboard says, and most of it is
 avoidable.**
 
-adder reads the Claude Code transcripts already on your disk and prices what
-your context is costing you. Turned on, it also refuses the tool calls that
-waste the money and routes the work that is left to the cheapest model that can
-do it.
+adder reads the transcripts your coding agent already writes to disk and prices
+what your context is costing you. On Claude Code it also refuses the tool calls
+that waste the money and routes the work that is left to the cheapest model
+that can do it.
 
 ## Install
 
+In Claude Code, as a plugin, with nothing else to install:
+
 ```bash
-pip install adder-cli        # the distribution is `adder-cli`; bare `adder`
-adder auto on --full         # on PyPI is an unrelated 2014 package
+claude plugin marketplace add stephenoffer/adder
+claude plugin install adder@adder
 ```
 
-Two lines, and the second is the one that changes the bill. No account, no API
-key, no model calls, no network, no runtime dependencies.
+That gives you `/adder:doctor`, `/adder:context` and `/adder:route`, the tier
+agents, and the read guard at `certain` once the plugin loads: it refuses a
+re-read of a file the context already holds unchanged, and nothing that would
+admit anything new. Run `/adder:init` once for the rest. It offers `--full`
+and installs the Haiku `Explore` override, which a plugin cannot ship because
+plugin agents are namespaced and cannot replace a built-in.
+
+From PyPI, for the command line, or if you would rather not use plugins:
+
+```bash
+uv tool install adder-cli    # or pipx; the distribution is `adder-cli`, since
+adder auto on --full         # bare `adder` on PyPI is an unrelated 2014 package
+```
+
+`auto on` installs the hooks, the agents and the same skills (as `/adder`,
+`/adder-doctor`, `/adder-context`, `/adder-init`), prints every change first,
+and `adder auto off` undoes it. If the plugin is also installed, `auto on`
+notices and writes no second copy of the hooks.
+
+Either way, no account, no API key, no model calls, no network, and no runtime
+dependencies. The line that changes the bill is the one that turns on
+enforcement.
 
 Not ready to let a hook refuse a tool call? `adder auto on --shadow` runs the
 whole decision, records what it would have refused, and refuses nothing.
 [Getting started](docs/getting-started.md) walks through the first run.
+
+**Not on Claude Code?** Codex CLI, Gemini CLI and OpenCode transcripts are
+found where those agents keep them, so `adder doctor` needs no setup there
+either; `adder trace codex` picks one. Aider, an OpenTelemetry export or any
+log carrying token counts works too — point it at the file. To ask adder from
+inside one of those agents, register its MCP server:
+`adder mcp --print-config codex` (or `gemini`, `cursor`) prints the snippet.
+Enforcement is the part that needs a hook able to refuse a tool call, so
+`adder auto on` declines rather than installing something inert.
+[agents.md](docs/agents.md) has the split.
 
 ## What it is worth
 

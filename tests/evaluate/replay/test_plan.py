@@ -135,6 +135,16 @@ class TestSubagentRightSizing:
     def test_a_read_that_fits_goes_to_the_cheap_tier(self):
         assert cheapest_tier(50_000, 5_000, p_fail=0.1, overhead=0.01) == Tier.T0
 
+    def test_a_ladder_passed_in_is_the_one_used(self, monkeypatch):
+        """`replay` resolves the ladder once and hands it down."""
+        from adder.evaluate.replay import plan as _plan
+        passed = {"T0": "claude-haiku-4-5", "T1": "claude-sonnet-5",
+                  "T2": "claude-opus-5", "T3": "claude-opus-5"}
+        monkeypatch.setattr(_plan, "ladder_models",
+                            lambda: pytest.fail("re-read the ladder it was given"))
+        assert cheapest_tier(50_000, 5_000, p_fail=0.1, overhead=0.01,
+                             models=passed) == Tier.T0
+
     def test_a_read_too_big_for_haiku_does_not(self):
         assert cheapest_tier(400_000, 40_000, p_fail=0.1, overhead=0.01) > Tier.T0
 

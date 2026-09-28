@@ -256,6 +256,27 @@ class Plan:
         lines += [f"  - {r}" for r in self.reasons]
         for w in self.warnings:
             lines.append(f"  ! {w}")
+        # The recommendation above names a rung, and a rung is only an answer
+        # if the runtime can dispatch to it. A harness that pins the session to
+        # one vendor pins its subagents too, so on Codex every rung of the
+        # shipped Claude ladder is unreachable -- and this printed
+        # `route-t2 (claude-opus-5)` there in the same format it uses for an
+        # answer somebody can act on. Checked at render time because that is
+        # where the claim is made.
+        if self.action != "inline":
+            from adder.decide.route.classify import ladder_mismatch
+
+            bad = ladder_mismatch()
+            if any(rung == self.tier.name for rung, _, _ in bad):
+                from adder.core import harness as _harness
+                from adder.core import settings as _settings
+
+                h = _harness.get(_settings.get("harness"))
+                lines.append(
+                    f"  ! {self.model} cannot be dispatched under harness "
+                    f"{h.name!r}, which pins work to {h.main_session_org}; "
+                    f"set `ladder` to models it can reach (`adder doctor` "
+                    f"shows the rungs)")
         if self.action != "inline" and not self.worth_it:
             lines.append("  - saving does not clear routing overhead; do it inline instead")
         lines += self._render_ladder()

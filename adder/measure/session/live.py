@@ -146,6 +146,12 @@ class LiveReport:
     # the two differ by several fold and the median is the smaller one.
     # See `horizon.mean_remaining`.
     expected_remaining: float = 0.0
+    # Whether the two numbers above were fitted to this machine's history or
+    # fell back to `horizon.DEFAULT_REMAINING`. The projection is the headline
+    # of this report and it is linear in remaining turns, so a prior-backed
+    # figure and a measured one differ by any amount at all -- and until this
+    # field existed they printed identically. See `Horizon.basis`.
+    horizon_basis: str = "measured"
     # The multiplier this session actually realized on its input, not the 0.10
     # a warm prefix would have cost. A session that keeps missing the cache
     # pays several times that, and every decision below is linear in it.
@@ -289,6 +295,7 @@ def analyse(sess: Session, *, horizon: Horizon | None = None) -> LiveReport:
         per_turn=per_turn,
         projected_remaining=remaining,
         expected_remaining=expected,
+        horizon_basis=h.basis(n_main),
         projected_total=spent + per_turn * expected,
         model=last.model,
         out_per_turn=sess.out_tokens // max(1, n),
@@ -358,6 +365,13 @@ def render(sess: Session | None, *, sizes: list[int] | None = None,
             f"more turns (mean {r.expected_remaining:,.0f}) → ~${r.projected_total:,.2f} "
             f"total at the mean"
         )
+        if r.horizon_basis != "measured":
+            out.append(
+                "    ⚠ that horizon is the shipped prior, not your history — no "
+                "session on record")
+            out.append(
+                "      has run this long, so read the total as a shape, not a "
+                "figure (`adder horizon`)")
     out.append(f"  One more turn at this context costs ~${r.next_turn_cost:.3f}.")
 
     # A rate change is a re-tune, not a footnote: every threshold in this repo

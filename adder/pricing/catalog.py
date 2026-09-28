@@ -635,7 +635,7 @@ def first_party(on: date | None = None) -> Catalog:
             key=normalize_key(mid), id=mid, name=mid, org="Anthropic",
             license="Proprietary",
             inp=r.inp, out=r.out,
-            cache_read=round(r.inp * CACHE_READ_MULT, 6),
+            cache_read=round(r.inp * (m.cache_read_mult or CACHE_READ_MULT), 6),
             cache_write=round(r.inp * CACHE_WRITE_MULT["5m"], 6),
             context=m.context, max_output=m.max_output,
             modalities=("text", "image"),

@@ -20,6 +20,7 @@ so the first three stay short.
 | Why is the guard built that way? | [guard-internals.md](guard-internals.md) |
 | Which tier should run a task? | [tiers.md](tiers.md) |
 | How do I know the router helped? | [routing.md](routing.md) |
+| I'm not on Claude Code — does this work? | [agents.md](agents.md) |
 | Can I use a non-Anthropic model? | [models.md](models.md), [providers.md](providers.md) |
 | What is CLAUDE.md costing me every turn? | [context.md](context.md) |
 | Does the advice pay for the turn it costs? | [overhead.md](overhead.md) |

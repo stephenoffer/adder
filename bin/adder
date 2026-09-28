@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# The Claude Code plugin puts `bin/` on the Bash tool's PATH, so this is the
+# `adder` a plugin user's skills and hooks run. It is the checkout launcher.
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/adder" "$@"

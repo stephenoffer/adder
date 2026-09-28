@@ -230,6 +230,42 @@ def read_targets(command: str) -> list[ReadTarget]:
     return [ReadTarget(p, w) for p, w in whole.items()]
 
 
+# Programs whose output is bytes of the file and nothing else. A command built
+# only from these, over files the context already holds, admits nothing new.
+# `grep`, `awk`, `cut`, `jq` and `diff` read the same bytes but return a
+# search, a projection or a comparison, which the model would otherwise have
+# to compute by reading hundreds of lines in its head: not a duplicate.
+BYTE_READERS: frozenset[str] = frozenset({
+    "cat", "bat", "nl", "tac", "head", "tail", "less", "more"})
+
+
+def only_prints_files(command: str) -> bool:
+    """Is every program this command runs one that just prints file bytes?
+
+    The test a duplicate refusal has to pass. Without it `cat a.py && pytest`
+    was refused whole because its one read target was known -- test run and
+    all -- and `grep -n foo a.py` was refused because a slice of a known file
+    "adds nothing", when what it adds is the search.
+    """
+    stages = [s for p in pipelines(command) for s in p]
+    if not stages:
+        return False
+    for prog, args in stages:
+        if prog == "sed":
+            # `sed -n 40,80p` prints lines; any other sed program transforms.
+            if "-n" not in args or not all(
+                    a.startswith("-") or re.fullmatch(r"\d+(,\d+)?p", a) or not a.endswith("p")
+                    for a in args):
+                return False
+            continue
+        if prog not in BYTE_READERS:
+            return False
+        if prog in ("tail", "less") and any(
+                a in ("-f", "-F", "+F") or a.startswith("--follow") for a in args):
+            return False                      # prints what is appended, not what is there
+    return True
+
+
 def resolve(path: str, cwd: str | None = None) -> str:
     """`path` as an absolute path, or "" when that cannot be answered honestly.
 
@@ -280,6 +316,50 @@ def tool_targets(tool: str, inp: dict | None, *, cwd: str | None = None) -> list
     return []
 
 
+# What the Read tool itself returns of a file, which is less than the file past
+# any of three limits: the first 2,000 lines, each cut at 2,000 characters, and
+# an error instead of content once the file is over the output-token ceiling
+# (25,000 by default, `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`). A whole Read
+# of a file past one of them did not put the file in the context, and the guard
+# remembering it as if it had refused the `offset` read that would have got the
+# rest -- with "use the copy you have", about a copy that stops at line 2,000.
+READ_MAX_LINES = 2000
+READ_MAX_LINE_CHARS = 2000
+DEFAULT_READ_MAX_TOKENS = 25_000
+# Characters per token, set low on purpose: it over-counts tokens, so a file
+# near the ceiling is taken not to fit. That errs toward the guard staying quiet.
+_CHARS_PER_TOKEN = 3
+
+
+def read_max_tokens() -> int:
+    """Tokens a Read returns before the harness refuses the file."""
+    try:
+        n = int(str(os.environ.get("CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS")))
+    except (TypeError, ValueError):
+        return DEFAULT_READ_MAX_TOKENS
+    return n if n > 0 else DEFAULT_READ_MAX_TOKENS
+
+
+def read_fits(path: str) -> bool:
+    """Does a Read with no offset or limit return the whole of this file?
+
+    False for anything that is not plain text, since what an image or a PDF
+    puts in the context is not the file's bytes.
+    """
+    cap = read_max_tokens() * _CHARS_PER_TOKEN
+    try:
+        if os.path.getsize(path) > cap:
+            return False
+        with open(path, "rb") as f:
+            blob = f.read(cap + 1)
+    except OSError:
+        return False
+    if b"\0" in blob[:8192]:
+        return False
+    lines = blob.splitlines()                 # a trailing newline ends a line, not starts one
+    return len(lines) <= READ_MAX_LINES and all(len(x) <= READ_MAX_LINE_CHARS for x in lines)
+
+
 def whole_reads(tool: str, inp: dict | None, *, cwd: str | None = None,
                 max_chars: int | None = None) -> list[str]:
     """Paths this call put into the context in full, and that are still there.
@@ -300,5 +380,7 @@ def whole_reads(tool: str, inp: dict | None, *, cwd: str | None = None,
                     continue
             except OSError:
                 continue
+        elif tool == "Read" and not read_fits(t.path):
+            continue
         out.append(t.path)
     return out

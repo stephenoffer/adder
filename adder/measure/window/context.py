@@ -259,6 +259,21 @@ def report(root: Path | str, sessions=None, *, window=None) -> str:
     for name, v, basis, lever in sorted(rows, key=lambda r: -r[1]):
         lines.append(f"  {name:<20}{v:>14,}{100*v/g.total:>8.1f}%  {basis:<10} {lever}")
     lines.append(f"  {'TOTAL':<20}{g.total:>14,}")
+    if not g.tool_results:
+        # A zero here is the most expensive wrong impression this tool can
+        # leave. On the corpus adder was built from, `Bash` results alone were
+        # 80% of context growth; printing "tool results 0.0%" against a log
+        # that simply does not record them reads as "tool output is free".
+        from adder.core.ingest import records_tool_calls
+
+        if not records_tool_calls(root):
+            lines.append("")
+            lines.append("  The 0 against tool results is this log format, not "
+                         "your workload: it carries")
+            lines.append("  token totals and no tool-call detail. Those tokens "
+                         "are inside the assistant")
+            lines.append("  and context figures above; what cannot be done here "
+                         "is splitting them out.")
     if g.thinking:
         lines.append(f"    (thinking, billed as output: {g.thinking:,} tok, "
                      f"{100*g.thinking/max(1,g.assistant_output):.0f}% of output)")

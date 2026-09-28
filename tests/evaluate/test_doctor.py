@@ -64,6 +64,28 @@ class TestTheGuardCheck:
         assert 'advisory' not in got.headline
 
 
+class TestTheGuardCheckBesideThePlugin:
+    """Plugin hooks and settings.json hooks merge without deduplication."""
+
+    def test_hooks_declared_by_both_are_a_finding(self, monkeypatch):
+        from adder.evaluate import doctor
+        monkeypatch.setattr("adder.decide.auto.plugin_enabled", lambda *a, **k: True)
+        monkeypatch.setattr("adder.decide.guard.installed_in",
+                            lambda *a, **k: [Path('/somewhere/settings.json')])
+        got = doctor.check_guard()
+        assert not got.ok and 'twice' in got.headline
+        assert 'adder auto on' in got.action
+
+    def test_the_plugin_alone_counts_as_installed(self, monkeypatch):
+        from adder.evaluate import doctor
+        monkeypatch.setattr("adder.decide.auto.plugin_enabled", lambda *a, **k: True)
+        monkeypatch.setattr("adder.decide.guard.installed_in", lambda *a, **k: [])
+        monkeypatch.setenv('ADDER_GUARD_ENFORCE', 'off')
+        got = doctor.check_guard()
+        assert 'not installed' not in got.headline
+        assert 'advisory' in got.headline
+
+
 class TestHonestDegradation:
     """What `doctor` says on a machine that has not been running long.
 

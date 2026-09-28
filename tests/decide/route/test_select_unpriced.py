@@ -75,6 +75,15 @@ class TestTheCliReportsItAsAUserError:
                             "--limit", "1"]) == 2
         assert "not in the catalog" in capsys.readouterr().err
 
+    def test_an_unknown_reference_exits_two_rather_than_raising(self, capsys):
+        """The default reference is the session model, so a model newer than
+        the snapshot reached `rank` and ended in a KeyError traceback."""
+        from adder.decide.route import select
+        assert select.main(["x", "--reference", "not-a-model",
+                            "--session-model", "claude-opus-5", "--limit", "1"]) == 2
+        err = capsys.readouterr().err
+        assert "reference model" in err and "Traceback" not in err
+
 
 class TestAHarnessWithNoSubagentsIsNotOfferedOne:
     """`harness.supports_subagents` was declared load-bearing and never read.

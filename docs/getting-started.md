@@ -1,19 +1,42 @@
 # Getting started
 
+In Claude Code the shortest route is the plugin, which runs straight from a
+clone of this repository and needs nothing installed:
+
 ```bash
-pip install adder-cli        # the distribution is `adder-cli`; bare `adder`
-adder auto on --full         # on PyPI is an unrelated 2014 package
+claude plugin marketplace add stephenoffer/adder
+claude plugin install adder@adder
 ```
+
+The guard is already enforcing at `certain` at that point: it refuses a
+re-read of a file the context holds unchanged, and nothing else. Then, inside
+a session, `/adder:init`. That shows what `--full` would change, asks you, and
+installs the one piece a plugin cannot ship: the `Explore` override that runs
+exploration on Haiku. A plugin's agents are namespaced
+(`adder:route-t0`), so a plugin `Explore` would be a second explorer rather
+than a replacement for the built-in one.
+
+Outside a plugin, or for the command line:
+
+```bash
+uv tool install adder-cli    # or `pipx install adder-cli`
+adder auto on --full
+```
+
+Use `uv tool install` or `pipx install` rather than `uvx` or `pipx run` for
+this. The hooks are pinned to the interpreter that installed them, and a
+throwaway environment gets collected; `auto on` warns if it is running from
+one.
 
 That is the setup. No account, no API key, no configuration file to write. adder
 never calls a model and never opens a network connection, with one exception:
 `adder models refresh`, which only runs when you type it.
 
-The second line is the one that changes the bill. Everything else on this page
+Enforcement is the step that changes the bill. Everything else on this page
 is a report, and a report saves nothing until somebody acts on it. Replaying the
 author's recorded turns, activation alone — installed, working the same way —
 priced a $7,888 bill at $2,567, which is 3.1x, and that is the whole reason this
-page starts with `auto on` rather than with a number. ([benchmark.md](benchmark.md))
+page starts with installation rather than with a number. ([benchmark.md](benchmark.md))
 
 You can also run it from a checkout with no install step at all:
 
@@ -25,6 +48,16 @@ git clone https://github.com/stephenoffer/adder && cd adder
 A full run over one machine's entire history takes under a second and needs
 nothing but Python 3.10+. There are no dependencies at all, deliberately, so it
 works on a machine with no reachable package index.
+
+Not running Claude Code? Codex CLI, Gemini CLI and OpenCode sessions are found
+where those agents keep them, so `adder doctor` needs nothing configured, and
+naming one (`adder trace codex`) picks it. Aider, an OpenTelemetry export, or
+any log carrying token counts works too — pass the file as the first argument.
+To reach adder from inside one of those agents, `adder mcp --print-config
+codex` (or `gemini`, `cursor`) prints what to add to its MCP configuration.
+`auto on` is the part that needs a hook able to refuse a tool call, and on
+those agents it declines rather than installing something inert.
+[agents.md](agents.md) is that split in full.
 
 ## What activation actually does
 
@@ -53,12 +86,19 @@ $ adder auto on --full
     copy   route-t2.md
     in     /your/project/.claude/agents
 
+    copy   skill /adder
+    copy   skill /adder-doctor
+    copy   skill /adder-context
+    copy   skill /adder-init
+    in     /your/project/.claude/skills
+
   What each hook does:
 
     PreToolUse        prices, and can refuse, a call before its result lands in context
     PreCompact        forgets what compaction drops, and re-learns result sizes
     UserPromptSubmit  prices compaction against a restart, once a session is expensive
     agents            what a delegated step runs on: Explore on Haiku, three tiers
+    skills            the reports, reachable from inside the agent: /adder-doctor, /adder-context, /adder
 
   refusals              full: also a large read with a cheaper equal
 
@@ -306,7 +346,7 @@ different. The *shares* are what drive the advice, and even those are worth
 re-checking on your own history, which is the entire point of the tool. Run
 `adder savings` before believing any number here.
 
-3,753 tests, no API key, and no network outside `adder models refresh`. Two of
+3,843 tests, no API key, and no network outside `adder models refresh`. Two of
 those tests exist only to enforce the last two clauses: one walks the code of
 every module and fails if anything outside `adder/pricing/sources.py` imports a
 networking library, the other fails if the dependency list stops being empty.

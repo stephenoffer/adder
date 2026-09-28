@@ -179,6 +179,11 @@ saving covers it. Replayed over 34,592 recorded tool calls:
 | what adder's own messages cost | $27 |
 | return per $1 spent | **20x** |
 
+That replay pooled each subagent's reads with its parent's, which books
+refusals no live guard would make now. On this machine's current history the
+fix took the net at these thresholds from $1,418 to $791, so read the table as
+an upper bound.
+
 96% of that needs no assumption about whether anyone listened, because the calls
 did not happen. Before enforcement existed, 100% of the number was a sentence
 multiplied by a guess. That is the real change: not that the figure got bigger,
@@ -247,7 +252,7 @@ validate`, not remembered, and the thresholds were swept rather than chosen:
 `adder auto on --full --tune` re-derives them from your transcripts instead of
 inheriting one machine's answer.
 
-3,753 tests stand behind that, and two of them exist only to enforce two of the
+3,843 tests stand behind that, and two of them exist only to enforce two of the
 promises above: no runtime dependencies, and no network outside `adder models
 refresh`.
 

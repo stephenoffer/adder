@@ -325,6 +325,14 @@ def report(root: Path | str = DEFAULT_ROOT, sessions=None, *, window=None,
 
     rep = scan(root, window=window)
     if not rep.calls:
+        from adder.core.ingest import records_tool_calls
+
+        if not records_tool_calls(root):
+            return ("  These transcripts carry token counts but no tool-call "
+                    "detail, so this\n  report cannot be computed here. That is "
+                    "a property of the log format,\n  not a finding: it does not "
+                    "mean tool output is free. `adder context`\n  and `adder "
+                    "debt` still work, because they read totals.")
         return "  No tool calls found to attribute."
 
     costs = carried_cost(rep, sessions, on) if sessions else {}

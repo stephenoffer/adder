@@ -615,7 +615,12 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\n  {c.describe()}\n")
 
-    if h.lengths:
+    # `h.lengths` being non-empty is not the same as the horizon being fitted:
+    # a handful of short sessions clears that test and still falls through to
+    # the prior inside `remaining()`. Asking `basis` is what separates the two,
+    # and the distinction matters here more than anywhere because every figure
+    # below this line is multiplied by the number on it.
+    if h.lengths and h.basis(0) == "measured":
         med, mean = h.remaining(0), h.mean_remaining(0)
         print(f"  Horizon at turn 0: median {med:,} turns, mean {mean:,.0f} "
               f"({mean / med:.2f}x)" if med else "")
@@ -623,7 +628,12 @@ def main(argv: list[str] | None = None) -> int:
         print("  the median only describes it. Using the median under-prices "
               "admission.")
     else:
-        print(f"  No local sessions; using the flat {remaining}-turn prior.")
+        have = f"{len(h.lengths)} session{'s' if len(h.lengths) != 1 else ''}"
+        print(f"  ⚠ Horizon is the shipped flat {remaining}-turn prior, not yours "
+              f"({have} on record).")
+        print("  Every dollar below is linear in that number, so read them as "
+              "relative, not absolute,")
+        print("  until more sessions accumulate (`adder horizon`).")
     print()
 
     reads = c.expected_reads(remaining, context_tokens=a.context)

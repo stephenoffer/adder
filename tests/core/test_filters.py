@@ -265,3 +265,26 @@ class TestDaysAreLocalDays:
         t = make_turn(ts="2026-08-02T02:00:00Z")
         assert Window(since=date(2026, 8, 1), until=date(2026, 8, 2)).keeps_turn(t)
         assert not Window(since=date(2026, 8, 2)).keeps_turn(t)
+
+
+class TestNothingFound:
+    """An empty report names where it looked and what emptied it."""
+
+    def _args(self, *argv):
+        ap = argparse.ArgumentParser()
+        add_arguments(ap)
+        return ap.parse_args(list(argv))
+
+    def test_names_the_directory(self, tmp_path):
+        from adder.core.filters import load, nothing_found
+        a = self._args(str(tmp_path))
+        sessions, w = load(a, use_cache=False)
+        assert not sessions
+        assert str(tmp_path) in nothing_found(a, w)
+
+    def test_names_the_filter_that_emptied_it(self, tmp_path):
+        from adder.core.filters import load, nothing_found
+        a = self._args(str(tmp_path), "--since", "2030-01-01")
+        _, w = load(a, use_cache=False)
+        msg = nothing_found(a, w)
+        assert "2030-01-01" in msg and "--since" in msg

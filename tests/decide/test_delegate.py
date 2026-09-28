@@ -88,6 +88,17 @@ class TestWhenItStaysQuiet:
             assert not got.fire, name
             assert "already" in got.reason
 
+    def test_the_plugins_namespaced_tiers_are_routed_too(self):
+        """The plugin's copy of `route-t1` is `adder:route-t1`. Advising a
+        switch away from it would second-guess a dispatch adder itself chose."""
+        for name in ("adder:route-t0", "adder:route-t1", "ADDER:route-t2"):
+            got = _advise({"description": "look at it", "subagent_type": name})
+            assert not got.fire, name
+
+    def test_another_plugins_agent_of_the_same_name_is_not(self):
+        assert _advise({"description": "audit the schema",
+                        "subagent_type": "other:route-t1"}).fire
+
     def test_an_unrouted_custom_agent_is_still_advised(self):
         """Only the tiers carry a decision. A project's own agent does not."""
         assert _advise({"description": "audit the schema",

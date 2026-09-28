@@ -21,15 +21,20 @@ import argparse
 import json
 from pathlib import Path
 
+from adder.core.harness import LADDER_BANDS
 from adder.decide.route.select import Need, cost_of
 from adder.pricing.catalog import Catalog, Entry, load, user_cache
 
-BANDS = (
-    # (rung, ceiling on input $/Mtok, what the rung is for)
-    ("T0", 1.5, "lookups, searches, read-only triage"),
-    ("T1", 3.5, "scoped edits, mechanical refactors, tests"),
-    ("T2", 99.0, "multi-file, ambiguous, long-horizon"),
-)
+_PURPOSE = {
+    "T0": "lookups, searches, read-only triage",
+    "T1": "scoped edits, mechanical refactors, tests",
+    "T2": "multi-file, ambiguous, long-horizon",
+}
+# (rung, ceiling on input $/Mtok, what the rung is for). The ceilings are the
+# ones `harness.vendor_ladder` derives a Codex or Gemini ladder from, so this
+# report and the dispatcher cannot disagree about where a band ends.
+BANDS = (*((rung, ceiling, _PURPOSE[rung]) for rung, ceiling in LADDER_BANDS),
+         ("T2", 99.0, _PURPOSE["T2"]))
 
 
 def _fmt_price(v: float | None) -> str:

@@ -147,8 +147,14 @@ class TestCrossVendorSubstitution:
                   elo={"webdev": 1330.0}, verified=True),
         ]
         path = tmp_path / "pinned.json"
+        # Relative to now, not a literal date: a pinned timestamp reads as
+        # fresh on the day it is written and quietly ages into a stale-catalog
+        # warning afterwards.
+        from datetime import datetime, timedelta, timezone
+
+        fresh = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         Catalog(list(base) + list(extra),
-                provenance={"refreshed_at": "2026-08-14T00:00:00+00:00"}).save(path)
+                provenance={"refreshed_at": fresh}).save(path)
         monkeypatch.setenv("ADDER_CATALOG", str(path))
         return path
 
@@ -853,3 +859,52 @@ class TestTheDecisionBoundaries:
                       threshold=0.5)
         assert g.safe is False                       # saving == overhead
         assert self._batch(1.0, 1.0, 0.5, threshold=0.5).worth_it is False
+
+
+class TestLadderReachability:
+    """A rung is only an answer if the runtime can dispatch to it.
+
+    `harness.py` already stopped reports offering a main-session model the
+    runtime cannot run. The ladder was the same question one level down with no
+    guard: a harness that pins the session to a vendor pins its subagents too,
+    so on Codex every rung of the shipped Claude ladder is unreachable and
+    `adder policy` answered `route-t2 (claude-opus-5)` anyway.
+    """
+
+    def test_the_shipped_ladder_is_fine_on_claude_code(self):
+        from adder.decide.route.classify import ladder_mismatch
+
+        assert ladder_mismatch("claude-code") == []
+
+    def test_a_claude_ladder_is_unreachable_on_codex(self):
+        from adder.decide.route.classify import ladder, ladder_mismatch
+
+        bad = ladder_mismatch("codex")
+        assert len(bad) == len(ladder())
+        assert all(org == "anthropic" for _, _, org in bad)
+
+    def test_a_harness_that_pins_nothing_never_complains(self):
+        from adder.decide.route.classify import ladder_mismatch
+
+        # Aider routes across vendors, so no rung is structurally unreachable.
+        assert ladder_mismatch("aider") == []
+        assert ladder_mismatch("any") == []
+
+    def test_matching_the_ladder_to_the_harness_clears_it(self, monkeypatch):
+        from adder.decide.route.classify import ladder_mismatch
+
+        monkeypatch.setenv("ADDER_LADDER",
+                           "T0=gpt-5-mini,T1=gpt-5,T2=gpt-5-pro,T3=gpt-5-pro")
+        assert ladder_mismatch("codex") == []
+        # ... and the mirror case is then wrong, which is the same bug the
+        # other way round rather than a second rule.
+        assert ladder_mismatch("claude-code")
+
+    def test_an_unknown_model_is_not_reported_as_a_mismatch(self, monkeypatch):
+        # The gate catches a definite mismatch. Firing on a model the catalog
+        # has not heard of would fire on every rung the week it launches.
+        from adder.decide.route.classify import ladder_mismatch
+
+        monkeypatch.setenv("ADDER_LADDER", "T0=not-a-real-model-xyz")
+        rungs = {r for r, _, _ in ladder_mismatch("codex")}
+        assert "T0" not in rungs

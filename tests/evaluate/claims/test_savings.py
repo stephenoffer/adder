@@ -91,8 +91,29 @@ class TestSeparateLevers:
         assert explore_on_haiku({"a": _sess(50)}).saving == pytest.approx(0.0)
 
     def test_explore_savings_measured_when_subagents_exist(self):
-        e = explore_on_haiku({"a": _sess(50, sidechain=True)})
+        e = explore_on_haiku({"a": _sess(50, ctx_step=1_000, sidechain=True)})
         assert e.saving > 0 and e.confidence == "MEASURED"
+
+    def test_a_subagent_the_cheap_tier_cannot_hold_is_not_counted(self):
+        """Context gates feasibility before price: 270K does not fit in 200K."""
+        e = explore_on_haiku({"a": _sess(50, sidechain=True)}, cheap="claude-haiku-4-5")
+        assert e.saving == 0.0
+        assert "1 runs excluded" in e.basis
+
+    def test_one_turn_over_the_limit_takes_the_whole_run_out(self):
+        """A run cannot change model half-way, so it is priced whole or not at all."""
+        fits = _sess(10, ctx_step=1_000, sidechain=True)
+        grows = _sess(50, sidechain=True)
+        for t in fits.turns:
+            t.agent_id = "small"
+        for t in grows.turns:
+            t.agent_id = "big"
+        s = Session("s", "p")
+        s.turns = fits.turns + grows.turns
+        both = explore_on_haiku({"s": s}, cheap="claude-haiku-4-5")
+        alone = explore_on_haiku({"s": fits}, cheap="claude-haiku-4-5")
+        assert alone.saving > 0
+        assert both.saving == pytest.approx(alone.saving)
 
 
 class TestConfidenceLabelling:

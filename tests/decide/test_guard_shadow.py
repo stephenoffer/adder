@@ -54,7 +54,7 @@ def sizes():
 @pytest.fixture
 def big(tmp_path):
     f = tmp_path / "a.py"
-    f.write_text("x" * 40_000)
+    f.write_text(("x" * 79 + "\n") * 500)
     return f
 
 

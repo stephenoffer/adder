@@ -1,0 +1,15 @@
+{
+  "name": "adder",
+  "description": "adder: cost measurement and cost-aware routing for Claude Code, from one repository.",
+  "owner": {
+    "name": "Stephen Offer",
+    "url": "https://github.com/stephenoffer"
+  },
+  "plugins": [
+    {
+      "name": "adder",
+      "source": "./",
+      "description": "What a Claude Code session actually costs, and what each fix is worth."
+    }
+  ]
+}

@@ -26,11 +26,14 @@ recommendation that someone acts on.
 3. **No mutation of user data.** The tool reads `~/.claude/projects/**`. It does
    not write there, rename there, or delete there. Ever. Outputs go to stdout or
    to a path the user named. The one exception is `adder auto on`, which writes
-   `settings.json` and `.adder.json` — it prints the change first, keeps a
+   `settings.json`, `.adder.json`, and the agent and skill files beside them
+   (never over a copy the user edited) — it prints the change first, keeps a
    `.adder.bak`, and `adder auto off` reverses it. Nothing else may grow a
    write path.
 4. **Read-only means read-only.** `adder live`, `adder trace`, `adder debt`, `adder context`,
    `adder cache`, `adder quality`, `adder horizon` must never change state on disk.
+   Neither may `adder mcp`: its tools are an allowlist of read-only reports,
+   and `--print-config` prints a snippet rather than writing one.
 5. **Every claim is testable or it is not made.** A number in the README, a
    docstring, or a report either comes from a function under test or it is
    labelled as an estimate with its assumptions written down. `adder validate`
@@ -75,14 +78,22 @@ adder/
   decide/     measurement -> choice:  route/  track/  guard.py  handoff.py
               delegate.py (the tier a delegated step should run on)
               auto.py (the one module that writes a file the user did not name)
-              hooks/ and agents/ — the payload `auto on` installs, in the
-              package because the wheel prunes `.claude/`
+              hooks/, agents/ and skills/ — the payload `auto on` installs
+              and the plugin points at, in the package because the wheel
+              prunes `.claude/`. `hooks/hooks.json` is generated from
+              `auto.HOOKS`; a test fails if it drifts
   evaluate/   did it hold up:  replay/  claims/  doctor.py
-  cli/        dispatcher, command table, help, completion, config
+  cli/        dispatcher, command table, help, completion, config,
+              mcp (the reports as MCP tools, one subprocess per call)
 tests/        mirrors the package tree, directory for directory
 docs/         the reasoning; the README is the summary of it
-scripts/adder launcher for a checkout; delegates to adder.cli
-.claude/      skills, and forwarding shims for hooks installed before v0.2.
+scripts/adder launcher for a checkout; delegates to adder.cli. The plugin's
+              hooks run it on every tool call, so keep it probe-free
+bin/adder     the same launcher, where the plugin puts it on PATH
+.claude-plugin/  this repo as a Claude Code plugin and its own marketplace;
+              JSON only, every path it names is checked by a test
+.claude/      a mirror of the packaged skills and agents (a test keeps them
+              equal), and forwarding shims for hooks installed before v0.2.
               Not shipped: `MANIFEST.in` prunes it. Nothing installable may
               live here — see `tests/repo/test_invariants.py`
 ```
@@ -172,7 +183,9 @@ owns its own parser.
 - Do not "fix" a failing test by weakening its assertion or deleting it.
 - Do not change a headline number in the README without re-running the
   measurement that produced it and updating `validate.py`.
-- Do not add a dependency, a network call, or a background process.
+- Do not add a dependency, a network call, or a background process. `adder
+  mcp` is not one: the agent starts it over a pipe and ends it with the
+  session, and it holds no socket and runs no timer.
 - Do not touch `.claude/settings.local.json` or anything gitignored as local.
 - Do not rewrite git history that has been pushed.
 - Do not widen scope. If you find a second bug, report it; fix the one asked for.

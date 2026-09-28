@@ -1,0 +1,17 @@
+{
+  "name": "adder",
+  "version": "0.2.0",
+  "description": "What a Claude Code session actually costs, and what each fix is worth. Reads local transcripts; no network, no dependencies.",
+  "author": { "name": "Stephen Offer" },
+  "homepage": "https://github.com/stephenoffer/adder",
+  "repository": "https://github.com/stephenoffer/adder",
+  "license": "MIT",
+  "keywords": ["cost", "tokens", "context", "routing", "observability"],
+  "skills": ["./adder/decide/skills"],
+  "agents": [
+    "./adder/decide/agents/route-t0.md",
+    "./adder/decide/agents/route-t1.md",
+    "./adder/decide/agents/route-t2.md"
+  ],
+  "hooks": "./adder/decide/hooks/hooks.json"
+}

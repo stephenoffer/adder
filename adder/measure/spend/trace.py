@@ -85,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:
                               "unknown_turns": s.unknown_turns,
                               "synthetic_turns": s.synthetic_turns}))
         else:
-            print(nothing_found("priced turns", a.root, window=window.describe()))
+            from adder.core.trace import unread_count
+
+            n_files, example = unread_count(a.root)
+            print(nothing_found("priced turns", a.root, window=window.describe(),
+                                unread=n_files, example=example))
             if s.unknown_models:
                 names = ", ".join(sorted(s.unknown_models)[:5])
                 print(f"  ⚠ {s.unknown_turns:,} turns used a model with no price "

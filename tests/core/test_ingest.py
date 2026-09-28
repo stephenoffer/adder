@@ -474,3 +474,142 @@ class TestForeignDedupKeepsPosition:
             rec("a", 10), rec("b", 10), rec("b", 50), rec("a", 20)]))
         turns = list(iter_turns(path))
         assert [(t.msg_id, t.out) for t in turns] == [("a", 20), ("b", 50)]
+
+
+class TestClassifyFiles:
+    """Per-file provenance, which is the grain a person asks the question at.
+
+    A mis-sniffed log does not error: it reads the cached prefix under the
+    wrong convention and reports a plausible bill roughly double the real one.
+    So which adapter fired has to be visible, and `adder doctor` shows it.
+    """
+
+    def _write(self, p, rows):
+        p.write_text("\n".join(json.dumps(r) for r in rows))
+
+    def test_each_file_is_named_by_its_own_shape(self, tmp_path):
+        self._write(tmp_path / "a.jsonl", [
+            {"id": "1", "model": "gpt-5",
+             "usage": {"prompt_tokens": 10, "completion_tokens": 2}}])
+        self._write(tmp_path / "b.jsonl", [
+            {"modelVersion": "gemini-3-pro",
+             "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 2}}])
+        tally, silent = ingest.classify_files(sorted(tmp_path.glob("*.jsonl")))
+        assert tally == {ingest.OPENAI_CHAT: 1, ingest.GEMINI: 1}
+        assert silent == []
+
+    def test_a_file_with_no_usage_is_reported_rather_than_dropped(self, tmp_path):
+        self._write(tmp_path / "chat.jsonl", [
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "yo"}])
+        tally, silent = ingest.classify_files(sorted(tmp_path.glob("*.jsonl")))
+        assert tally == {}
+        assert [p.name for p in silent] == ["chat.jsonl"]
+
+    def test_the_sample_cap_is_honoured(self, tmp_path):
+        # Only the head of a file is inspected, which is what keeps this
+        # affordable on every `adder doctor`.
+        rows = [{"role": "user", "content": "x"}] * 5
+        rows += [{"id": "z", "model": "gpt-5",
+                  "usage": {"prompt_tokens": 10, "completion_tokens": 2}}]
+        self._write(tmp_path / "late.jsonl", rows)
+        tally, silent = ingest.classify_files(sorted(tmp_path.glob("*.jsonl")), sample=3)
+        assert tally == {} and len(silent) == 1
+        tally, silent = ingest.classify_files(sorted(tmp_path.glob("*.jsonl")), sample=50)
+        assert tally == {ingest.OPENAI_CHAT: 1} and silent == []
+
+
+class TestRecordsToolCalls:
+    """A zero that means "unrecorded" must not print as a zero that means "none".
+
+    `adder context` on a Gemini log showed "tool results 0.0%". On the corpus
+    adder was built from, `Bash` results alone were 80% of context growth, so
+    that zero is the most expensive wrong impression the tool can leave.
+    """
+
+    def test_claude_code_records_tool_calls(self, tmp_path):
+        (tmp_path / "s.jsonl").write_text(json.dumps({
+            "type": "assistant",
+            "message": {"id": "m1", "model": "claude-opus-5",
+                        "usage": {"input_tokens": 10, "output_tokens": 2}}}))
+        assert ingest.records_tool_calls(tmp_path)
+
+    def test_a_usage_only_format_does_not(self, tmp_path):
+        (tmp_path / "s.jsonl").write_text(json.dumps({
+            "id": "1", "model": "gpt-5",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2}}))
+        assert not ingest.records_tool_calls(tmp_path)
+
+    def test_a_mixed_corpus_keeps_the_detail(self, tmp_path):
+        # One Claude Code file is enough for the breakdown to mean something,
+        # so the caveat would be the misleading half here.
+        (tmp_path / "a.jsonl").write_text(json.dumps({
+            "id": "1", "model": "gpt-5",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2}}))
+        (tmp_path / "b.jsonl").write_text(json.dumps({
+            "type": "assistant",
+            "message": {"id": "m1", "model": "claude-opus-5",
+                        "usage": {"input_tokens": 10, "output_tokens": 2}}}))
+        assert ingest.records_tool_calls(tmp_path)
+
+    def test_an_unreadable_root_does_not_add_a_caveat(self, tmp_path):
+        # Unknown is not the same as "no tool detail"; a caveat asserted over
+        # nothing is its own wrong claim.
+        assert ingest.records_tool_calls(tmp_path / "does-not-exist")
+        assert ingest.records_tool_calls(tmp_path)
+
+
+class TestHeadRecordsIsBounded:
+    """Sniffing a file must not read it.
+
+    `classify_files` asked for fifty records per file and got them through
+    `iter_records`, which calls `read_text()` first. On 278 transcripts that
+    read every byte of every one and put 22 seconds onto `adder doctor` --
+    a cap enforced at the consumer is not a cap.
+    """
+
+    def test_it_yields_no_more_than_the_cap(self, tmp_path):
+        p = tmp_path / "big.jsonl"
+        p.write_text("\n".join(json.dumps({"i": i}) for i in range(1000)))
+        assert len(list(ingest._head_records(p, 5))) == 5
+
+    def test_a_jsonl_file_never_goes_through_the_whole_file_reader(
+            self, tmp_path, monkeypatch):
+        p = tmp_path / "s.jsonl"
+        p.write_text("\n".join(json.dumps({
+            "id": str(i), "model": "gpt-5",
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+            for i in range(50)))
+
+        def _boom(*_a, **_k):
+            raise AssertionError("read the whole file to sniff it")
+
+        monkeypatch.setattr(ingest, "iter_records", _boom)
+        assert len(list(ingest._head_records(p, 3))) == 3
+
+    def test_a_pretty_printed_object_still_reads(self, tmp_path):
+        # The fallback that keeps a valid single-object log from being called
+        # unreadable: no line of it parses on its own.
+        p = tmp_path / "one.json"
+        p.write_text(json.dumps(
+            {"id": "1", "model": "gpt-5",
+             "usage": {"prompt_tokens": 10, "completion_tokens": 2}}, indent=2))
+        assert len(list(ingest._head_records(p, 5))) == 1
+
+    def test_a_json_array_still_reads(self, tmp_path):
+        p = tmp_path / "arr.json"
+        p.write_text(json.dumps([
+            {"id": str(i), "model": "gpt-5",
+             "usage": {"prompt_tokens": 10, "completion_tokens": 2}}
+            for i in range(20)]))
+        assert len(list(ingest._head_records(p, 4))) == 4
+
+    def test_classify_stops_once_a_shape_is_settled(self, tmp_path):
+        # The early exit must not change the answer, only the work.
+        rows = [{"id": str(i), "model": "gpt-5",
+                 "usage": {"prompt_tokens": 10, "completion_tokens": 2}}
+                for i in range(200)]
+        (tmp_path / "a.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in rows))
+        tally, silent = ingest.classify_files([tmp_path / "a.jsonl"])
+        assert tally == {ingest.OPENAI_CHAT: 1} and silent == []

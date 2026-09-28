@@ -93,12 +93,22 @@ class CacheReport:
 
     @property
     def hit_rate(self) -> float:
-        """Share of cacheable input tokens actually served from cache."""
-        tot = self.read_tokens + self.write_tokens
+        """Share of cacheable input tokens actually served from cache.
+
+        The denominator includes `missed_tokens`, the uncached input on
+        automatic-caching providers. Without it a Codex or Gemini history,
+        which never records a cache write, reported a 100% hit rate however
+        much of its prefix was re-sent at full input rate.
+        """
+        tot = self.read_tokens + self.write_tokens + self.missed_tokens
         return self.read_tokens / tot if tot else 0.0
 
     read_tokens: int = 0
     write_tokens: int = 0
+    # Uncached input on providers that cache automatically. They report no
+    # write count, because there is no separate write to bill: the prefix that
+    # missed is plain input, and that input is where the cache gets rebuilt.
+    missed_tokens: int = 0
 
 
 def _classify(prev, turn, gap: float) -> str:
@@ -130,6 +140,8 @@ def analyse(sessions, on: date | None = None) -> CacheReport:
             rep.n_turns += 1
             rep.read_tokens += t.cache_read
             rep.write_tokens += t.cache_write
+            if not t.cache_write:
+                rep.missed_tokens += t.rebuilt
             rep.read_cost += t.cache_read * r.cache_read / M
             rep.write_cost += t.cache_write * r.cache_write / M
             rep.ttl_tokens[t.ttl] = rep.ttl_tokens.get(t.ttl, 0) + t.cache_write
@@ -149,7 +161,8 @@ def analyse(sessions, on: date | None = None) -> CacheReport:
         for chain in (s.main_turns, [t for t in s.turns if t.sidechain]):
             prev = None
             for i, t in enumerate(chain):
-                if i and t.cache_write > t.cache_read and t.cache_write >= MIN_MISS_TOKENS:
+                written = t.rebuilt
+                if i and written > t.cache_read and written >= MIN_MISS_TOKENS:
                     gap = 0.0
                     if prev is not None and prev.when and t.when:
                         gap = (_ordered(t.when) - _ordered(prev.when)).total_seconds()
@@ -159,9 +172,9 @@ def analyse(sessions, on: date | None = None) -> CacheReport:
                     # input, so the waste is real but smaller: input minus the
                     # read rate, not a 1.25x premium minus it.
                     r = t.rates(on)
-                    waste = t.cache_write * max(0.0, r.cache_write - r.cache_read) / M
+                    waste = written * max(0.0, r.cache_write - r.cache_read) / M
                     rep.misses.append(
-                        Miss(s.id, t.model, t.cache_write, t.ttl, cause, waste, gap))
+                        Miss(s.id, t.model, written, t.ttl, cause, waste, gap))
                 prev = t
     rep.total_cost = rep.read_cost + rep.write_cost
     return rep

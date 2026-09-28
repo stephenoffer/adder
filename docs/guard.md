@@ -233,6 +233,13 @@ than picked:
 | 800 | 1,000 | $0.10 | 2,448 | $523 | $27.79 | $519 | 8% |
 | 300 | 200 | $0.10 | 4,590 | $677 | $51.54 | $651 | 39% |
 
+These figures were replayed before the guard kept a separate memory per
+subagent. That replay pooled a subagent's reads with its parent's, so it
+booked refusals of reads the other context had never made. Re-run on this
+machine's current history (43,592 calls) at the shipped `full` thresholds,
+separating contexts moved prevented spend from $1,397 to $830 and the net from
+$1,418 to $791. Treat the table as an upper bound until it is re-measured.
+
 The $0.25 gate is not a threshold on this lever at all. It exists to stop the
 guard *interrupting* over small change, and a refusal is not an interruption,
 so under enforcement it comes down to $0.10 and finds $200 more. The 15-fire

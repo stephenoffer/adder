@@ -17,12 +17,32 @@ from adder.decide.route.models import main
 from adder.pricing.catalog import Catalog, Entry
 
 
-def _cat(tmp_path, monkeypatch, entries, *, refreshed="2026-08-14T00:00:00+00:00"):
+def _recent(days_ago: float = 1.0) -> str:
+    """An ISO timestamp `days_ago` days back, for a catalog meant to read fresh.
+
+    This used to be the literal `2026-08-14T00:00:00+00:00`, which was fresh on
+    the day it was written and silently aged past the 21-day staleness limit
+    afterwards. `test_if_stale_returns_before_opening_a_socket` then began
+    failing for everyone, six weeks after the commit that broke it, with an
+    error about the network that had nothing to do with the cause. A fixture
+    that means "fresh" has to say so relative to the clock the code reads.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+
+
+def _cat(tmp_path, monkeypatch, entries, *, refreshed=None):
     """Pin the catalog to exactly these entries.
 
     `ADDER_CATALOG` replaces the whole layer stack, so a test asserts on
     what it wrote rather than on whatever snapshot happens to be bundled.
+
+    `refreshed` defaults to recent-enough-to-be-fresh. A test that wants a
+    stale catalog names an old date explicitly, which is the direction that
+    cannot rot.
     """
+    refreshed = refreshed if refreshed is not None else _recent()
     path = tmp_path / "pinned.json"
     Catalog(entries, provenance={"refreshed_at": refreshed}).save(path)
     monkeypatch.setenv("ADDER_CATALOG", str(path))

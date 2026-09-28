@@ -102,6 +102,34 @@ class Horizon:
             return DEFAULT_REMAINING
         return int(statistics.median(L - turn_index for L in alive))
 
+    def basis(self, turn_index: int) -> str:
+        """`"measured"` if the conditional sample is real, `"prior"` if it is not.
+
+        Every remaining-turns answer above silently returns `DEFAULT_REMAINING`
+        once the conditional sample thins out, and that constant then multiplies
+        every carry dollar, every delegation verdict and every `adder live`
+        projection downstream. Printed without provenance it reads as a finding:
+        `adder horizon` on a corpus whose longest session is 40 turns reported
+        "450 turns remain" at turn 400, with the same formatting it uses for a
+        number fitted to twelve hundred sessions.
+
+        So the provenance is a first-class answer rather than something each
+        caller re-derives from `len(survivors(...))`. `Carry.source` already
+        does this for the re-read multiplier; this is the same contract.
+        """
+        return "measured" if len(self.survivors(turn_index)) >= MIN_SAMPLES else "prior"
+
+    def measured_through(self) -> int:
+        """Highest turn index still backed by a real conditional sample.
+
+        A floor rather than the exact boundary: with ties at the fifth-largest
+        length the true crossover is a little higher, and erring low is the
+        direction that over-reports the prior rather than under-reporting it.
+        """
+        if len(self.lengths) < MIN_SAMPLES:
+            return 0
+        return max(0, self.lengths[-MIN_SAMPLES] - 1)
+
     def survivors(self, turn_index: int) -> list[int]:
         """Observed remaining lengths, conditioned on having reached `turn_index`.
 
@@ -293,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             "sessions": len(h.lengths),
             "median_length": int(statistics.median(h.lengths)) if h.lengths else None,
             "default_prior": DEFAULT_REMAINING,
+            "measured_through": h.measured_through(),
             "at": {
                 str(n): {
                     "median_remaining": h.remaining(n),
@@ -301,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
                     "p05": round(h.quantile_remaining(n, 0.05), 2),
                     "p95": round(h.quantile_remaining(n, 0.95), 2),
                     "survivors": len(h.survivors(n)),
+                    "basis": h.basis(n),
                 }
                 for n in points
             },
@@ -308,24 +338,54 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print(f"\n  {len(h.lengths)} sessions observed"
           f"{f'; median length {int(statistics.median(h.lengths)):,}' if h.lengths else ''}\n")
+    through = h.measured_through()
     print(f"  {'at turn':>9}{'median left':>14}{'mean left':>12}"
-          f"{'ratio':>9}   the mean is what prices carry cost")
+          f"{'ratio':>9}  basis")
     for n in points:
         med, mean = h.remaining(n), h.mean_remaining(n)
         ratio = f"{mean / med:.2f}x" if med else "n/a"
-        print(f"  {n:>9,}{med:>14,}{mean:>12,.0f}{ratio:>9}")
-    print()
-    print(f"  {'at turn':>9}{'countdown':>12}{'empirical':>12}{'countdown error':>18}")
-    for n, cd, emp in h.error_table(points):
-        if emp <= 0:
-            err = "n/a"
-        elif cd <= 0:
-            err = "infinite"
+        if h.basis(n) == "measured":
+            basis = f"measured ({len(h.survivors(n))} sessions ran past here)"
         else:
-            err = f"{emp / cd:.1f}x under" if emp > cd else f"{cd / emp:.1f}x over"
-        print(f"  {n:>9,}{cd:>12,}{emp:>12,}{err:>18}")
-    print("\n  Reaching a high turn count is evidence of being in a LONG session,")
-    print("  not evidence of being near its end.\n")
+            basis = "PRIOR — nothing on record ran this long"
+        print(f"  {n:>9,}{med:>14,}{mean:>12,.0f}{ratio:>9}  {basis}")
+    print()
+    print("  The mean is what prices carry cost; the median is what to tell a person.")
+    if any(h.basis(n) == "prior" for n in points):
+        print(f"  Rows marked PRIOR are the shipped constant of {DEFAULT_REMAINING},")
+        print("  not a measurement, and it multiplies every carry dollar downstream.")
+        if through:
+            print(f"  This history is informative through turn {through:,}; past that")
+            print(f"  fewer than {MIN_SAMPLES} sessions survive and the number stops being")
+            print("  about you.")
+        else:
+            print(f"  Fewer than {MIN_SAMPLES} sessions here reach any turn index, so no row")
+            print("  is fitted to this history at all.")
+        print(f"  Read a PRIOR row as 'unknown', not as {DEFAULT_REMAINING}.")
+    print()
+    # The point of this table is that a naive countdown under-reads how much is
+    # left. Computed against the prior it would instead be comparing a countdown
+    # to a constant and reporting the gap as a finding, which is how "infinite"
+    # got printed for a corpus whose longest session was 40 turns.
+    rows = [(n, cd, emp) for n, cd, emp in h.error_table(points)
+            if h.basis(n) == "measured"]
+    if rows:
+        print(f"  {'at turn':>9}{'countdown':>12}{'empirical':>12}"
+              f"{'countdown error':>18}")
+        for n, cd, emp in rows:
+            if emp <= 0:
+                err = "n/a"
+            elif cd <= 0:
+                err = "infinite"
+            else:
+                err = f"{emp / cd:.1f}x under" if emp > cd else f"{cd / emp:.1f}x over"
+            print(f"  {n:>9,}{cd:>12,}{emp:>12,}{err:>18}")
+        print("\n  Reaching a high turn count is evidence of being in a LONG session,")
+        print("  not evidence of being near its end.\n")
+    else:
+        print("  Countdown-vs-empirical needs a fitted horizon, and this history")
+        print("  has none at the turn indices asked for. Run it again with more")
+        print("  sessions on record, or `--at N` inside the measured range.\n")
     return 0
 
 

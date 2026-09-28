@@ -135,7 +135,11 @@ class Dispatch:
         the outcome log: a row filed under the wrong rung calibrates the wrong
         gate.
         """
-        by_name = AGENT_TIERS.get(self.agent_type.strip().lower(), "")
+        # `bare`, so a plugin dispatch (`adder:route-t1`) calibrates the same
+        # tier as the file `auto on` installs; otherwise it went unrecorded.
+        from adder.core.claude import bare
+
+        by_name = AGENT_TIERS.get(bare(self.agent_type).lower(), "")
         return by_name or tier_for_model(self.model)
 
     @property

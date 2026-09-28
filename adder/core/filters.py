@@ -273,7 +273,8 @@ def add_arguments(ap: argparse.ArgumentParser, *, root: bool = True) -> argparse
     """
     if root:
         ap.add_argument("root", nargs="?", default=None,
-                        help="transcript directory (default: the `root` setting)")
+                        help="transcript directory, or an agent name: claude, codex, "
+                             "gemini, opencode (default: the `root` setting)")
     g = ap.add_argument_group("window")
     g.add_argument("--since", type=_date_arg, metavar="DATE",
                    help="keep turns on or after DATE (YYYY-MM-DD, 7d, 2w, today)")
@@ -312,7 +313,20 @@ def root_of(a: argparse.Namespace | None = None) -> Path:
 
     given = getattr(a, "root", None) if a is not None else None
     if given:
-        return Path(str(given)).expanduser()
+        # An agent's name stands for that agent's transcript directory, so
+        # `adder trace codex` works without anyone knowing where Codex keeps
+        # its sessions. A real path of the same name wins: `adder trace codex`
+        # run beside a directory called `codex` means that directory.
+        path = Path(str(given)).expanduser()
+        if not path.exists():
+            from adder.core.native import root_for
+
+            path = root_for(str(given)) or path
+        # Recorded as the command-line layer, so `harness` and `model` follow
+        # the directory this run actually reads. Without it `adder doctor
+        # codex` read Codex sessions while still placing work as Claude Code.
+        settings.set_argument("root", str(path))
+        return path
     try:
         return Path(str(settings.get("root"))).expanduser()
     except (KeyError, OSError, ValueError):
@@ -334,6 +348,22 @@ def load(a: argparse.Namespace, *, use_cache: bool | None = None) -> tuple[dict,
     sessions = load_sessions(root_of(a), use_cache=use_cache)
     w = Window.from_args(a)
     return (w.apply(sessions) if w.active else sessions), w
+
+
+def nothing_found(a: argparse.Namespace, w: Window, subject: str = "sessions") -> str:
+    """The empty-window message for a report that loaded through `load`.
+
+    Four reports printed a bare "No sessions found." and stopped, which names
+    neither the directory it looked in nor the filter that emptied it -- the
+    two things a reader needs in order to do anything next.
+    """
+    from adder.core.trace import unread_count
+    from adder.util.render import nothing_found as _render
+
+    root = root_of(a)
+    n_files, example = unread_count(root)
+    return _render(subject, str(root), window=w.describe(), unread=n_files,
+                   example=example)
 
 
 def span(sessions: dict) -> tuple[datetime | None, datetime | None]:

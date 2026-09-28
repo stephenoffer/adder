@@ -84,7 +84,10 @@ adder = ["py.typed"]
 # silently skips the delegation half of the saving `adder bench` reports.
 # `TestWhatTheWheelCarries` in tests/repo/test_invariants.py asserts every file
 # `auto.AGENTS` names is covered by a glob here, because the failure is a quiet one.
-"adder.decide" = ["agents/*.md"]
+# The skills ride along for the same reason: `auto on` copies them into
+# `~/.claude/skills`, and the plugin manifest points at the same directory.
+# `hooks.json` is the plugin's hook table, generated from `auto.HOOKS`.
+"adder.decide" = ["agents/*.md", "skills/*/SKILL.md", "hooks/hooks.json"]
 
 [tool.setuptools.dynamic]
 version = { attr = "adder.__version__" }

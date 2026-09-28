@@ -77,6 +77,7 @@ from adder.core import settings as _settings
 from adder.core.filters import root_of as _root_of
 from adder.core.trace import DEFAULT_ROOT, load_sessions
 from adder.decide.route.classify import Tier
+from adder.decide.route.classify import ladder as ladder_models
 from adder.measure.window.prefix import DEFAULT_HANDOFF, Opening
 from adder.pricing.cost import EFFORT_OUTPUT_MULT, Rates, run_cost
 from adder.pricing.registry import context_window, fits, rate
@@ -272,21 +273,27 @@ def prepare(sessions, on: date | None = None,
 
 
 def cheapest_tier(read_tokens: int, summary_tokens: int, *, p_fail: float,
-                  overhead: float, on: date | None = None) -> Tier:
+                  overhead: float, on: date | None = None,
+                  models: dict[str, str] | None = None) -> Tier:
     """Lowest expected-cost tier that can hold a delegated read.
 
     The same arithmetic `policy.right_size` uses, minus the classifier: here the
     task is known to be a read of a known size, so feasibility and escalation
     risk are the only things left to decide it.
+
+    `models` is the ladder, tier name to model, when the caller already has it.
+    `Tier.model` re-reads the settings on every access, and `replay` asks once
+    per delegated turn per regime.
     """
+    models = models or ladder_models()
     need = read_tokens + summary_tokens + BRIEF_TOKENS
-    t2 = run_cost(Tier.T2.model, min(need, context_window(Tier.T2.model, need)),
-                  summary_tokens, on)
+    t2m = models[Tier.T2.name]
+    t2 = run_cost(t2m, min(need, context_window(t2m, need)), summary_tokens, on)
     best, best_cost = Tier.T2, t2 + p_fail * (t2 + overhead)
     for tier in Tier:
-        if tier >= Tier.T2 or not fits(tier.model, need):
+        if tier >= Tier.T2 or not fits(models[tier.name], need):
             continue
-        run = run_cost(tier.model, need, summary_tokens, on)
+        run = run_cost(models[tier.name], need, summary_tokens, on)
         cost = run + p_fail * (t2 + overhead)
         if cost < best_cost:
             best, best_cost = tier, cost
@@ -321,6 +328,8 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
     """
     prepared = sessions if isinstance(sessions, list) else prepare(sessions, on)
     res = Result(regime=regime)
+    models = ladder_models()          # once: it cannot change inside a replay
+    t2m = models[Tier.T2.name]
     cheap = regime.session_model
     keep_out = (1.0 - regime.terseness) * regime.effort_mult
     keep_adm = output_share * keep_out + (1.0 - output_share) * (1.0 - regime.tool_discipline)
@@ -380,14 +389,14 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
                 overhead = ctx * Rates.for_model(st.model, on=st.on).cache_read / M
                 if regime.right_size:
                     tier = cheapest_tier(raw, summary, p_fail=regime.p_fail,
-                                         overhead=overhead, on=st.on)
-                    sub_model = tier.model
+                                         overhead=overhead, on=st.on, models=models)
+                    sub_model = models[tier.name]
                     res.by_tier[tier.name] = res.by_tier.get(tier.name, 0) + 1
                 else:
                     sub_model = regime.sub_model
-                redo = run_cost(Tier.T2.model,
+                redo = run_cost(t2m,
                                 min(raw + BRIEF_TOKENS,
-                                    context_window(Tier.T2.model, raw + BRIEF_TOKENS)),
+                                    context_window(t2m, raw + BRIEF_TOKENS)),
                                 summary, st.on)
                 res.sub_run += run_cost(sub_model, raw + BRIEF_TOKENS, summary, st.on)
                 res.sub_escalation += regime.p_fail * (redo + overhead)
@@ -607,8 +616,11 @@ def report(root: Path | str = DEFAULT_ROOT, *, target: float = 10.0,
     sessions = load_sessions(root, use_cache=True)
     measured = sum(s.cost_on(on) for s in sessions.values())
     if not measured:
+        from adder.core.trace import unread_count
         from adder.util.render import nothing_found
-        print("\n" + nothing_found("priced turns", str(root)) + "\n")
+        n_files, example = unread_count(root)
+        print("\n" + nothing_found("priced turns", str(root),
+                                   unread=n_files, example=example) + "\n")
         return 1
 
     share = output_share_of_growth(sessions)

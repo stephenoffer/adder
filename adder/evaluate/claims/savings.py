@@ -39,9 +39,10 @@ from pathlib import Path
 from adder.core import settings as _settings
 from adder.core.filters import root_of as _root_of
 from adder.core.trace import DEFAULT_ROOT, load_sessions
+from adder.measure.spend.agents import runs
 from adder.measure.spend.debt import decompose_read_cost, output_share_of_growth, verbosity_saving
 from adder.pricing.cost import EFFORT_OUTPUT_MULT, turn_cost
-from adder.pricing.registry import rate
+from adder.pricing.registry import fits, rate
 
 M = 1_000_000.0
 
@@ -378,33 +379,47 @@ def model_routing(sessions, on: date | None = None) -> Estimate:
 
 def explore_on_haiku(sessions, cheap: str | None = None,
                      on: date | None = None) -> Estimate:
-    """MEASURED: rerun existing subagent turns at the cheap tier's rates.
+    """MEASURED: rerun existing subagent runs at the cheap tier's rates.
 
     `cheap` defaults to the configured T0 rung rather than to Haiku. The old
     default named one vendor's model in the lever's own title, so a Codex or
     Gemini CLI workload was told to "run subagents on Haiku" -- advice for a
     model that machine does not dispatch to.
+
+    Gated per run on the cheap tier's context window. Repricing every sidechain
+    turn priced subagents whose context had grown past the cheap tier's window
+    as if it could have held them, and reported the result as MEASURED; on one
+    machine that was most of the lever. A run cannot switch model half-way, so one
+    turn over the limit takes the whole run out, and an undeclared window
+    counts as not fitting.
     """
     cheap = cheap or _settings.sub_model()
     actual = saved = 0.0
-    n = 0
-    for s in sessions.values():
-        for t in s.turns:
-            when = t.pricing_date(on)
-            if not t.sidechain or t.rates(on).inp <= rate(cheap, when).inp:
-                continue
+    n = n_runs = too_big = 0
+    for r in runs(sessions):
+        todo = [t for t in r.turns if t.rates(on).inp > rate(cheap, t.pricing_date(on)).inp]
+        if not todo:
+            continue
+        if not fits(cheap, r.peak_context):
+            too_big += 1
+            continue
+        for t in todo:
             actual += t.cost(on)
             # Both legs on the turn's own date. `on=on` priced the recorded turn
             # at the day it ran and the counterfactual at today, so the
             # difference moved when a rate expired.
             saved += turn_cost(cheap, uncached_in=t.uncached_in, cache_read=t.cache_read,
-                               cache_write=t.cache_write, out=t.out, ttl=t.ttl, on=when)
-            n += 1
+                               cache_write=t.cache_write, out=t.out, ttl=t.ttl,
+                               on=t.pricing_date(on))
+        n += len(todo)
+        n_runs += 1
+    skipped = f"; {too_big:,} runs excluded, their context does not fit {cheap}" \
+        if too_big else ""
     return Estimate(
-        f"Run subagents on {cheap} ({n:,} existing subagent turns)",
+        f"Run subagents on {cheap} ({n:,} turns in {n_runs:,} runs that fit)",
         actual - saved,
         "MEASURED",
-        f"recomputed {n:,} recorded subagent turns at Haiku rates",
+        f"recomputed {n:,} recorded subagent turns at {cheap} rates{skipped}",
         "",
     )
 
@@ -489,8 +504,10 @@ def report(root: Path | str = DEFAULT_ROOT, *, max_turns: int = 300,
     sessions = load_sessions(root, use_cache=True)
     total = sum(s.cost_on(on) for s in sessions.values())
     if not total:
+        from adder.core.trace import unread_count
         from adder.util.render import nothing_found
-        print(nothing_found("priced turns", str(root)))
+        n_files, example = unread_count(root)
+        print(nothing_found("priced turns", str(root), unread=n_files, example=example))
         return
 
     read_total, baseline, accumulated = decompose_read_cost(sessions, on)

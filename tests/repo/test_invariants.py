@@ -9,6 +9,7 @@ offline guarantee without breaking any other test.
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
 from typing import ClassVar
 
@@ -187,6 +188,27 @@ class TestWhatTheWheelCarries:
             "adder/decide/agents/. The packaged one is what users get; copy it over."
         )
 
+    def test_the_skills_and_the_plugin_hook_table_are_package_data(self):
+        """The same failure one directory over: without a glob, the wheel
+        carries none of the skills and `auto on` copies zero of them."""
+        declared = pyproject()["tool"]["setuptools"]["package-data"]["adder.decide"]
+        assert "skills/*/SKILL.md" in declared
+        assert "hooks/hooks.json" in declared
+
+    def test_the_repository_runs_the_skills_it_ships(self):
+        """`.claude/skills/<installed name>` mirrors the packaged copy."""
+        from adder.decide.auto import SKILLS, skills_dir
+
+        drifted = [name for src, name in SKILLS.items()
+                   if (REPO / ".claude" / "skills" / name / "SKILL.md").is_file()
+                   and (REPO / ".claude" / "skills" / name / "SKILL.md").read_text(
+                       encoding="utf-8")
+                   != (skills_dir() / src / "SKILL.md").read_text(encoding="utf-8")]
+        assert not drifted, (
+            f"{drifted} differ between .claude/skills/ and adder/decide/skills/. "
+            "The packaged one is what users get; copy it over."
+        )
+
     def test_nothing_installable_is_read_out_of_dot_claude(self):
         """The directory the manifest prunes may not be a source of payload.
 
@@ -198,6 +220,61 @@ class TestWhatTheWheelCarries:
             assert len(path.read_text(encoding="utf-8").splitlines()) < 30, (
                 f"{path} is doing real work again; the wheel does not carry it"
             )
+
+
+class TestThePlugin:
+    """The repository is a Claude Code plugin and its own marketplace.
+
+    Claude Code reads the plugin straight out of a clone: there is no build
+    step and no install hook in which to fix anything up. So every path the
+    manifest names has to exist, the hook table has to be the one `auto.HOOKS`
+    describes, and the launcher the hooks run has to be executable -- each of
+    those failing is a plugin that installs cleanly and does nothing.
+    """
+
+    def manifest(self) -> dict:
+        return json.loads((REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+
+    def test_its_version_is_the_package_version(self):
+        assert self.manifest()["version"] == __version__
+
+    def test_every_path_it_names_exists_inside_the_repo(self):
+        m = self.manifest()
+        paths = [*m["skills"], *m["agents"], m["hooks"]]
+        for p in paths:
+            assert p.startswith("./"), p
+            full = (REPO / p).resolve()
+            assert full.exists(), p
+            assert REPO.resolve() in full.parents, p
+
+    def test_it_ships_the_tier_agents_but_not_explore(self):
+        """A plugin agent is namespaced, so a plugin `Explore` would be a second
+        explorer rather than the override; activation installs that one."""
+        from adder.decide.auto import AGENTS
+
+        names = [pathlib.Path(p).name for p in self.manifest()["agents"]]
+        assert names == list(AGENTS[1:])
+
+    def test_its_hook_table_is_the_one_activation_describes(self):
+        from adder.decide.auto import plugin_hooks
+
+        path = REPO / self.manifest()["hooks"]
+        assert json.loads(path.read_text(encoding="utf-8")) == plugin_hooks(), (
+            "adder/decide/hooks/hooks.json is stale; regenerate it from "
+            "adder.decide.auto.plugin_hooks()"
+        )
+
+    def test_the_launcher_its_hooks_run_is_executable(self):
+        import os
+
+        for p in ("bin/adder", "scripts/adder"):
+            assert os.access(REPO / p, os.X_OK), p
+
+    def test_the_marketplace_lists_this_repository(self):
+        m = json.loads((REPO / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        (entry,) = m["plugins"]
+        assert entry["name"] == self.manifest()["name"]
+        assert entry["source"] in (".", "./")
 
 
 class TestTheBuildBackendFloor:
@@ -245,3 +322,137 @@ class TestTheBuildBackendFloor:
             "the floor is above the newest feature this project's metadata uses; "
             "if a newer setuptools is genuinely required, say which key needs it"
         )
+
+
+class TestFixturesDoNotDependOnTheWallClock:
+    """A fixture that means "fresh" may not say so with a literal date.
+
+    `tests/decide/route/test_models.py` pinned a catalog to
+    `refreshed_at: 2026-08-14`, which was one day old when it was written and
+    44 days old by the time anyone noticed. The staleness limit is 21 days, so
+    six weeks later `--if-stale` started fetching, the offline guard refused,
+    and a test named after sockets failed for a reason that had nothing to do
+    with sockets. CLAUDE.md already forbids wall-clock dependence; this is the
+    one shape of it that rots silently instead of failing immediately.
+    """
+
+    def test_no_test_pins_a_catalog_timestamp_to_a_literal_date(self):
+        import re
+
+        pattern = re.compile(r'"refreshed_at"\s*:\s*"(\d{4})-')
+        offenders = []
+        for path in (REPO / "tests").rglob("test_*.py"):
+            for i, line in enumerate(path.read_text().splitlines(), 1):
+                m = pattern.search(line)
+                # A deliberately ancient date is the "stale" fixture and cannot
+                # rot any further; it is the recent-looking one that expires.
+                if m and int(m.group(1)) >= 2024:
+                    offenders.append(f"{path.relative_to(REPO)}:{i}")
+        assert not offenders, (
+            "these pin a catalog timestamp to a date that will age past the "
+            "staleness limit; derive it from the clock instead: "
+            + ", ".join(offenders))
+
+
+class TestDocsOnlyNameRealCommands:
+    """The reverse of the coverage check above, which only ran one way.
+
+    `TestEveryCommandIsDocumented` fails when a command is missing from
+    `docs/commands.md`. Nothing caught the opposite: prose naming a command
+    that does not exist. `docs/agents.md` shipped a reference to `adder tiers`,
+    which reads exactly like the real ones and sends the reader to an "unknown
+    command" error. A doc that invents a command is worse than one that omits
+    a real one, because it is confidently wrong.
+    """
+
+    # Dispatcher-level words that are not rows in COMMANDS.
+    META = frozenset({"config", "help", "version", "auto", "hook", "completion"})
+
+    def test_no_doc_references_a_command_that_does_not_exist(self):
+        import re
+
+        from adder.cli.commands import COMMANDS
+
+        known = {c.name for c in COMMANDS} | self.META
+        offenders = []
+        docs = list(REPO.glob("*.md")) + list((REPO / "docs").glob("*.md"))
+        for path in docs:
+            for name in sorted(set(re.findall(r"`adder ([a-z][a-z0-9-]*)",
+                                              path.read_text()))):
+                if name not in known:
+                    offenders.append(f"{path.relative_to(REPO)}: `adder {name}`")
+        assert not offenders, (
+            "these name a command that does not exist: " + ", ".join(offenders))
+
+
+class TestDocsOnlyNameRealFlags:
+    """A valid command with an invented flag reads exactly like working advice.
+
+    `adder config --set harness=codex` shipped in two action lines the tool
+    prints to users and in three places in the docs. `config` is a real
+    command, so the check above passed it; `--set` has never existed. Following
+    that instruction gets an argparse error, and the setting stays wrong.
+
+    Flags are read out of each parser's own `--help` rather than from a list
+    here, so this cannot drift: a renamed flag fails on the reference that
+    still spells it the old way. Subcommands are walked too, because
+    `adder outcomes import --write` hangs its flag off a subparser.
+    """
+
+    @staticmethod
+    def _flags(cmd: str, sub: str | None, mods: dict, cache: dict):
+        import contextlib
+        import importlib
+        import io
+        import re
+
+        key = (cmd, sub or "")
+        if key in cache:
+            return cache[key]
+        name = mods.get(cmd)
+        if not name:
+            cache[key] = None
+            return None
+        buf = io.StringIO()
+        try:
+            module = importlib.import_module(name)
+            argv = ([sub] if sub else []) + ["--help"]
+            with (contextlib.redirect_stdout(buf),
+                  contextlib.redirect_stderr(buf),
+                  contextlib.suppress(SystemExit)):
+                module.main(argv)
+        except Exception:
+            cache[key] = None
+            return None
+        text = buf.getvalue()
+        cache[key] = set(re.findall(r"(--[a-z][a-z0-9-]*)", text)) if text else None
+        return cache[key]
+
+    def test_every_documented_flag_exists_on_its_command(self):
+        import re
+
+        from adder.cli.commands import COMMANDS
+
+        mods = {c.name: c.module for c in COMMANDS}
+        cache: dict = {}
+        sources = (list((REPO / "adder").rglob("*.py"))
+                   + list(REPO.glob("*.md"))
+                   + list((REPO / "docs").glob("*.md")))
+        offenders = []
+        for path in sources:
+            for cmd, rest in re.findall(r"`adder ([a-z][a-z0-9-]*)((?: [^`]*)?)`",
+                                        path.read_text()):
+                tokens = rest.split()
+                sub = (tokens[0] if tokens and not tokens[0].startswith("-")
+                       and tokens[0].isalpha() else "")
+                for flag in re.findall(r"(--[a-z][a-z0-9-]*)", rest):
+                    known = self._flags(cmd, sub or None, mods, cache)
+                    if known is None and sub:
+                        known = self._flags(cmd, None, mods, cache)
+                    if known is not None and flag not in known:
+                        offenders.append(
+                            f"{path.relative_to(REPO)}: `adder {cmd}"
+                            f"{' ' + sub if sub else ''} {flag}`")
+        assert not offenders, (
+            "these name a flag the command does not accept: "
+            + ", ".join(sorted(set(offenders))))

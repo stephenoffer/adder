@@ -92,15 +92,20 @@ Inspect what the tool is configured to do, and turn on the parts that run
 without being asked. `adder auto on` is the only command in this tool that
 writes a file you did not name: it says what it will change before it changes
 it, keeps a `.adder.bak` of whatever was there, and `adder auto off` removes
-exactly what it added. It writes to `~/.claude` unless you pass `--project`:
+exactly what it added. If the adder Claude Code plugin is enabled, the plugin
+already declares the hooks, so `auto on` writes none. It removes any copy it
+wrote earlier, because Claude Code runs a hook declared in both places twice.
+It writes to `~/.claude` unless you pass `--project`:
 a `.claude/settings.json` is commonly tracked in git, and a hooks block there
 is configuration every contributor inherits without asking for it.
 
 | Command | What it does |
 |---|---|
 | `adder auto [status]` | is anything running between your turns, and what has it been worth: refusals at par, advice discounted by measured uptake |
-| `adder auto on [--shadow\|--full] [--project] [--yes] [--dry-run]` | install the three hooks (with an explicit 5s timeout each) and start enforcing. Writes to `~/.claude` by default; `--project` writes to this repository's `.claude/` instead and says what it is putting inside a tracked tree. `certain` (default) refuses only calls that admit nothing new; `--full` also refuses a large read that has a cheaper equal; `--shadow` refuses nothing at all and records what it would have refused, which is how the assumed uptake term becomes a measurement before anything is denied |
-| `adder auto off [--project] [--yes]` | remove the hooks and stop enforcing; foreign hooks in the same file are left alone |
+| `adder auto on [--shadow\|--full] [--project] [--yes] [--dry-run]` | install the three hooks, the four agent files and the four skills (with an explicit 5s timeout each) and start enforcing. Writes to `~/.claude` by default; `--project` writes to this repository's `.claude/` instead and says what it is putting inside a tracked tree. `certain` (default) refuses only calls that admit nothing new; `--full` also refuses a large read that has a cheaper equal; `--shadow` refuses nothing at all and records what it would have refused, which is how the assumed uptake term becomes a measurement before anything is denied |
+| `adder auto off [--project] [--yes]` | remove the hooks and stop enforcing; foreign hooks in the same file are left alone, and so is any skill you have edited |
+| `adder mcp` | serve the read-only reports as MCP tools over stdio, for Codex, Gemini CLI, Cursor or anything else that speaks MCP. Nine tools (`doctor`, `live`, `trace`, `sessions`, `savings`, `context`, `policy`, `pick`, `handoff`) and nothing that writes. Each call runs in a fresh process, so a long-lived server never reports stale numbers |
+| `adder mcp --print-config AGENT` | print the snippet that registers the server with `codex`, `gemini`, `cursor` or `claude`. It prints and never writes: `auto on` stays the one command that edits a file you did not name |
 | `adder hook NAME` | run one harness hook (`read-guard`, `compact-learn`, `cost-advisor`). Claude Code calls this; you do not. It exists so a project-scope install can name a command that resolves on every contributor's machine instead of one absolute path from the machine that ran `auto on` |
 | `adder config [name] [--json] [--explain]` | every setting in effect, its value, and which layer set it |
 | `adder config --init` | print a config-file template to stdout |

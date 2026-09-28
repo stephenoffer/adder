@@ -50,6 +50,9 @@ class Model:
     fast: Rate | None = None
     # Effort levels the model accepts, cheapest reasoning first.
     efforts: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+    # Cache read as a fraction of the input rate, where the published rate is
+    # not the family's 0.10. None means `CACHE_READ_MULT`.
+    cache_read_mult: float | None = None
 
     def rate(self, on: date | None = None, *, speed: str = "standard") -> Rate:
         if speed == "fast":
@@ -88,6 +91,16 @@ MODELS: dict[str, Model] = {
         cache_min=1024,
     ),
     "claude-sonnet-4-6": Model("claude-sonnet-4-6", Rate(3, 15), cache_min=1024),
+    # Opus 5.5 is cheaper than Opus 5 and was priced as Opus 5 until it had a
+    # row: longest prefix resolved `claude-opus-5-5` to `claude-opus-5`, so
+    # every turn on it billed 1.25x its input and output and 2.5x its cache
+    # reads, which are most of a session. Published: $4/$20, cache read $0.20,
+    # fast $8/$40. The cache minimum is not published separately; it is taken
+    # from Opus 5, whose tokenizer and feature set it shares.
+    "claude-opus-5-5": Model(
+        "claude-opus-5-5", Rate(4, 20),
+        cache_min=512, fast=Rate(8, 40), cache_read_mult=0.05,
+    ),
     "claude-opus-5": Model(
         "claude-opus-5", Rate(5, 25),
         cache_min=512,                   # halved vs 4.8; short prefixes now cache
@@ -98,6 +111,9 @@ MODELS: dict[str, Model] = {
     "claude-opus-4-6": Model("claude-opus-4-6", Rate(5, 25), cache_min=4096,
                              efforts=("low", "medium", "high", "max")),
     "claude-fable-5": Model("claude-fable-5", Rate(10, 50), cache_min=512),
+    # Same list price as Fable 5; cache reads publish at $0.25, not $1.00.
+    "claude-fable-5-1": Model("claude-fable-5-1", Rate(10, 50), cache_min=512,
+                              cache_read_mult=0.025),
     "claude-mythos-5": Model("claude-mythos-5", Rate(10, 50), cache_min=512),
 }
 

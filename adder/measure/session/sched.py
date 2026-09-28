@@ -430,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sessions, _w = filters.load(args, use_cache=True)
     if not sessions:
-        msg = "  No sessions found."
+        msg = filters.nothing_found(args, _w)
         print(json.dumps({"sessions": 0}, indent=2) if args.json else msg)
         return 1
 

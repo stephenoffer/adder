@@ -93,6 +93,26 @@ class TestRates:
         assert MODELS[order[0]].base.inp <= MODELS[order[-1]].base.inp
 
 
+class TestPointReleasesHaveTheirOwnRows:
+    """`claude-opus-5-5` resolved by prefix to `claude-opus-5` and billed at its
+    rates: 1.25x on input and output, 2.5x on cache reads."""
+
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-opus-5-5[1m]"])
+    def test_opus_five_five_is_not_opus_five(self, model):
+        assert resolve(model).id == "claude-opus-5-5"
+        assert rate(model, date(2026, 9, 1)) == (4, 20)
+
+    def test_a_dated_opus_five_is_still_opus_five(self):
+        assert resolve("claude-opus-5-20260401").id == "claude-opus-5"
+
+    @pytest.mark.parametrize("model,per_m", [
+        ("claude-opus-5-5", 0.20), ("claude-fable-5-1", 0.25), ("claude-opus-5", 0.50),
+    ])
+    def test_cache_reads_bill_at_the_published_rate(self, model, per_m):
+        from adder.pricing.cost import turn_cost
+        assert turn_cost(model, cache_read=1_000_000) == pytest.approx(per_m)
+
+
 class TestEffort:
     def test_haiku_rejects_effort(self):
         assert not supports_effort(HAIKU, "low")

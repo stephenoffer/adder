@@ -11,6 +11,108 @@ without a stated reason is a regression, not a change.
 
 ## [Unreleased]
 
+- **`adder plan` and `adder bench` did not finish on a real history.** Each
+  recorded turn looked the ladder up through the settings, and each lookup
+  computed every setting's default, including a `root` default that walks
+  every agent's transcript directory. On 67 sessions neither command finished
+  in fifteen minutes. A lookup now resolves only the setting asked for, a
+  directory known to hold a session is remembered, `replay` reads the ladder
+  once, and a Claude model resolves without the `getcwd` behind the catalog
+  key. The same history now takes 2m07s for `plan` and 12s for `bench`, and
+  one project's `plan` went from 6m30s to 4s with byte-identical output.
+- **Opus 5.5 was billed as Opus 5.** The price table had no row for
+  `claude-opus-5-5`, so longest-prefix resolution priced it as
+  `claude-opus-5`: $5/$25 and $0.50 cache reads against the published $4/$20
+  and $0.20. It now has its own row, and so does `claude-fable-5-1`, whose
+  cache reads publish at $0.25 rather than Fable 5's $1.00. A model can now
+  carry its own cache-read multiplier. On the author's 67 sessions the 13,510
+  Opus 5.5 turns fell from $1,795 to $941, and total spend from $9,409 to
+  $8,555.
+- **`adder pick` crashed on a reference model the catalog did not hold.** The
+  default reference is the session's own model, so a model newer than the
+  snapshot ended in a `KeyError` traceback. It now exits 2 with a message
+  naming the model.
+- **`adder savings` priced subagents the cheap tier could not hold.** The
+  "run subagents on the cheap tier" lever repriced every sidechain turn,
+  including those whose context had grown past that model's window, and
+  labelled the result MEASURED. It now prices only whole subagent runs whose
+  peak context fits, and says how many it excluded. On the author's 67
+  sessions the lever fell from $1,267 to $236 (129 of the runs fit).
+- **A pip install got none of the skills.** `/adder`, `/adder-doctor`,
+  `/adder-context` and `/adder-init` lived in `.claude/skills/`, which
+  `MANIFEST.in` prunes, so the wheel carried none of them and `auto on` never
+  mentioned them. They now live in `adder/decide/skills/`, `auto on` copies
+  them into `~/.claude/skills/` under the same names (never over a copy you
+  edited), and `auto off` removes the ones still exactly as shipped.
+- **adder is a Claude Code plugin.** `claude plugin marketplace add
+  stephenoffer/adder` then `claude plugin install adder@adder` installs the
+  skills, the tier agents and the three hooks straight from a clone, with no
+  pip. With the plugin enabled an unset `guard_enforce` means `certain` rather
+  than `off`, so the install cuts cost without a second step; a config value
+  or `ADDER_GUARD_ENFORCE` still wins, and `auto off` writes `off`.
+  `/adder:init` offers `--full` and installs the `Explore` override, which a
+  plugin cannot ship because its agents are namespaced.
+- **Routing named agents that did not exist.** A plugin's agents answer to
+  `adder:route-t1`, not `route-t1`, so on a plugin-only machine every
+  delegation `adder policy` recommended pointed at nothing. The guard's
+  already-routed check and `outcomes import` did not recognise the namespaced
+  form either, so the router second-guessed plugin dispatches and never
+  learned from them. The tier now names whichever form this machine has
+  (`core/claude.py`), and both readers strip the prefix. Plugin users get the skills as `/adder:route`,
+  `/adder:doctor`, `/adder:context` and `/adder:init`; pip users keep the old
+  names.
+- **`auto on` no longer doubles the plugin's hooks.** Claude Code merges
+  plugin hooks with `settings.json` hooks without deduplicating, so the same
+  guard declared in both ran twice per tool call and the ledger counted each
+  refusal twice. With the plugin enabled, `auto on` writes no hooks and removes
+  any it wrote before. `auto status` and `adder doctor` both name a double
+  registration.
+- **`adder mcp`**: the read-only reports as a stdio MCP server, for Codex,
+  Gemini CLI, Cursor, or anything else that speaks MCP. Nine tools and nothing
+  that writes. `--print-config AGENT` prints the snippet to paste. Stdlib only.
+- **The checkout launcher gave up on the first `python3`.** On macOS that is
+  3.9, so `scripts/adder` exited even when a 3.11 sat further down PATH. It now
+  tries `python3.14` down to `python3.10` first, with no version probe for a
+  versioned name, and only probes a bare `python3` or `python`.
+- **`/adder-init` could not finish.** It told the agent to run `auto on
+  --full`, which asks on stdin, and the Bash tool has none, so it printed
+  `Nothing written.` It now runs the dry run, asks in the conversation, and
+  passes `--yes`.
+- `auto on` warns when it runs from a `uvx` or `pipx run` environment, since
+  the hooks it writes are pinned to an interpreter that cache will collect.
+- **The guard refused reads whose content was not in the context.** Four
+  ways, all of which ended in "use the copy you have" about a copy that did
+  not exist, and all of which matter more now that the plugin refuses by
+  default:
+  - *Subagents.* Claude Code sends a subagent's tool calls with its parent's
+    `session_id`, and the guard kept one memory per session. Observed in a
+    real session: a general-purpose subagent's first read of a file its
+    parent had read was refused. The reverse also held, so after Explore read
+    a file the main session could not. Memory is now per context
+    (`session_id:agent_id`), and in a subagent the guard acts only on a
+    duplicate, since everything else it prices uses the parent's horizon.
+  - *Truncated reads.* A whole Read of a file past the Read tool's own limits
+    (2,000 lines, 2,000 characters a line, the output-token ceiling) was
+    remembered as the whole file, so the `offset` read for the rest was
+    refused.
+  - *Writes that never landed.* A Write is recorded before it runs, and the
+    settle window matched any older mtime, so a rejected or denied Write left
+    the old file looking like the session's own content.
+  - *Commands that compute.* A shell command counted as a re-read if every
+    file it read was known, so `grep -n foo a.py`, `diff a b` and
+    `cat a.py && pytest` (test run included) were refused. Only a command
+    whose every program prints file bytes (`cat`, `head`, `tail`, `sed -n`,
+    ...) can be a duplicate now.
+- **Routing advice read as an instruction to pass a full model id.** "Run
+  this on route-t1 (claude-sonnet-5)" invited `model: "claude-sonnet-5"`,
+  which versions of the Agent tool that declare the parameter as an alias
+  enum refuse. The advice now names `subagent_type`, and the route skill
+  says to pass the alias.
+- The Explore override is described as the trade it is. The built-in Explore
+  inherits the session's model (Opus on an Opus session, from Claude Code
+  v2.1.198), so pinning it to Haiku saves a lot and searches less well on
+  hard questions; it was called zero-risk.
+
 ## [0.2.0] - 2026-08-27
 
 - **Activation wrote a third-party hook into a repository by default, with a

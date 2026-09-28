@@ -236,3 +236,44 @@ class TestTheFitIsKeyedToItsRoot:
         again = mod.load(a, use_cache=True)
         assert again.lengths == first.lengths
         assert calls["n"] == 0          # served from the cache, not re-fitted
+
+
+class TestBasis:
+    """A prior and a measurement must not print identically.
+
+    `remaining()` falls back to `DEFAULT_REMAINING` whenever the conditional
+    sample thins out, and that constant multiplies every carry dollar, every
+    delegation verdict and the `adder live` projection. Before `basis` existed
+    a corpus whose longest session was 40 turns reported "450 turns remain" at
+    turn 400 in the same format it uses for a fitted number.
+    """
+
+    def test_a_real_conditional_sample_reads_as_measured(self):
+        h = Horizon([100, 120, 140, 160, 200, 300])
+        assert h.basis(0) == "measured"
+        assert h.remaining(0) != DEFAULT_REMAINING
+
+    def test_a_thin_tail_reads_as_prior(self):
+        h = Horizon([20, 25, 27, 30, 40])
+        assert h.basis(30) == "prior"
+        assert h.remaining(30) == DEFAULT_REMAINING
+
+    def test_no_history_is_prior_everywhere(self):
+        h = Horizon([])
+        assert h.basis(0) == "prior"
+        assert h.measured_through() == 0
+
+    def test_measured_through_marks_where_the_fit_stops(self):
+        h = Horizon([20, 25, 27, 30, 40])
+        through = h.measured_through()
+        assert h.basis(through) == "measured"
+        # Past the boundary it must not claim a fit. `measured_through` is
+        # documented as a floor, so the guarantee is about the far side.
+        assert h.basis(max(h.lengths)) == "prior"
+
+    def test_basis_agrees_with_the_number_it_describes(self):
+        # The contract every report leans on: "prior" iff the prior is what
+        # comes back. A drift between these two is invisible in the output.
+        h = Horizon([10, 12, 15, 40, 80, 400])
+        for n in (0, 5, 11, 39, 79, 399, 1000):
+            assert (h.basis(n) == "prior") == (h.remaining(n) == DEFAULT_REMAINING)

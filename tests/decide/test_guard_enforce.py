@@ -56,7 +56,7 @@ def sizes():
 @pytest.fixture
 def big(tmp_path):
     f = tmp_path / "a.py"
-    f.write_text("x" * 40_000)
+    f.write_text(("x" * 79 + "\n") * 500)
     return f
 
 
@@ -137,7 +137,7 @@ class TestTheCertainClass:
     def test_a_read_after_an_edit_is_still_allowed(self, sizes, tmp_path):
         import os
         f = tmp_path / "a.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         state = _seen(f)
         f.write_text("y" * 40_000)
         os.utime(f, (0, 0))
@@ -153,7 +153,7 @@ class TestTheCertainClass:
         the only test it has to pass is that it beats the cost of its own
         sentence."""
         f = tmp_path / "small.py"
-        f.write_text("x" * 12_000)                     # ~3K tokens, under the floor
+        f.write_text(("x" * 79 + "\n") * 150)                     # ~3K tokens, under the floor
         cfg = Settings(min_tokens=100_000, enforce="certain")
         assert _read(f, _seen(f), cfg, sizes).action == "deny"
 
@@ -207,6 +207,46 @@ class TestRefusingIsSurvivable:
                         target=f"Read:{big}"))
         back = GuardState.from_json(state.to_json())
         assert f"Read:{big}" in back.denied and back.prevented == pytest.approx(1.5)
+
+
+class TestAWriteThatNeverLanded:
+    """A Write is recorded when it is issued, before it runs, and it can fail:
+    Claude Code rejects a Write to an existing file the session has not read,
+    and the user can deny one. The Read that follows is the correct move, and
+    refusing it as "written by this session" was a false claim."""
+
+    def _state_after_write(self, f, when):
+        from adder.decide.guard import GuardState, Verdict, observe
+
+        st = GuardState()
+        observe("Write", {"file_path": str(f), "content": "new"}, st, Verdict(False, ""),
+                now=when)
+        return st
+
+    def test_an_older_file_is_not_the_write(self, tmp_path):
+        import os
+        import time
+
+        from adder.decide.guard import _already_known
+
+        f = tmp_path / "old.py"
+        f.write_text("old")
+        now = time.time()
+        os.utime(f, (now - 600, now - 600))
+        assert _already_known(str(f), self._state_after_write(f, now)) == ""
+
+    def test_a_write_that_landed_is(self, tmp_path):
+        import os
+        import time
+
+        from adder.decide.guard import _already_known
+
+        f = tmp_path / "new.py"
+        now = time.time()
+        f.write_text("new")
+        os.utime(f, (now + 0.5, now + 0.5))
+        assert "written by this session" in _already_known(
+            str(f), self._state_after_write(f, now))
 
 
 class TestTheFullLevel:

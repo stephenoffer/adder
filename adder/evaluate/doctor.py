@@ -159,7 +159,7 @@ def check_reread(root, sessions, total: float) -> Check:
         recoverable,
         scan,
     )
-    from adder.util.render import money
+    from adder.util.render import clip_path, money
 
     rep = scan(root)
     if not rep.admissions:
@@ -185,11 +185,11 @@ def check_reread(root, sessions, total: float) -> Check:
     worst = max(files, key=lambda p: p.unchanged_tokens, default=None)
     detail = []
     if worst:
-        detail.append(f"worst file: {worst.path[-60:]} "
+        detail.append(f"worst file: {clip_path(worst.path, 60)} "
                       f"({worst.calls} reads via {'+'.join(worst.tools)})")
     top_ident = max(repeats, key=lambda r: r.redundant_tokens, default=None)
     if top_ident:
-        detail.append(f"worst identity: {top_ident.ident[:70]} "
+        detail.append(f"worst identity: {clip_path(top_ident.ident, 70)} "
                       f"({top_ident.calls} calls)")
     return Check(
         "reread", not _material(waste, total),
@@ -204,7 +204,11 @@ def check_reread(root, sessions, total: float) -> Check:
 
 def check_compact(sessions, total: float) -> Check:
     """Sessions that carried a full context past the point of compacting it."""
-    from adder.measure.window.compact import analyse, breakeven_remaining
+    from adder.measure.window.compact import (
+        analyse,
+        breakeven_remaining,
+        breakeven_sentence,
+    )
     from adder.util.render import money
 
     rep = analyse(sessions)
@@ -214,9 +218,7 @@ def check_compact(sessions, total: float) -> Check:
         "compact", not _material(missed, total),
         f"{rep.n} compactions on record · {len(rep.misses)} sessions carried a "
         f"near-full context and never compacted ({money(missed)})",
-        action=f"`adder compact` — compact when more than ~{need} "
-               f"turn{'' if need == 1 else 's'} remain{'s' if need == 1 else ''}, "
-               "not when the bar looks full",
+        action=f"`adder compact` — {breakeven_sentence(need, rep.mean_kept())}",
         dollars=missed,
         detail=[f"median compaction kept {rep.mean_kept():.0%} of the context"],
     )
@@ -318,6 +320,10 @@ MIN_HISTORY_DAYS = 14
 # fiction on this machine. Two-fold either way, the same band `adder guard`
 # already draws its `Nx out` verdict at.
 PRIOR_BAND = 2.0
+# Where to ask whether the horizon is fitted. Turn 50 rather than turn 0,
+# because a corpus of very short sessions answers turn 0 from real data and
+# then falls back to the prior everywhere a cost actually accumulates.
+HORIZON_PROBE_TURN = 50
 
 
 def check_history(root, sessions) -> Check:
@@ -361,6 +367,26 @@ def check_history(root, sessions) -> Check:
         if len(load_outcomes()) < 12:
             shipped.append("`p_fail`, behind every escalation gate "
                            "(`adder outcomes import --write`)")
+    except Exception:
+        pass
+
+    # The horizon was the one prior this check never named, and it is the one
+    # that matters most: remaining-turns multiplies every carry dollar, every
+    # delegation verdict and the `adder live` projection. A machine with a few
+    # short sessions gets the shipped flat constant and a report that reads
+    # exactly like a fitted one.
+    try:
+        from adder.measure.session.horizon import Horizon
+
+        h = Horizon.from_sessions(sessions)
+        if h.basis(HORIZON_PROBE_TURN) != "measured":
+            through = h.measured_through()
+            where = (f"past turn {through:,}" if through
+                     else "at every turn index")
+            shipped.append(
+                f"the remaining-turns horizon {where} — it multiplies every "
+                "carry dollar here, and only elapsed sessions fit it "
+                "(`adder horizon`)")
     except Exception:
         pass
 
@@ -486,6 +512,8 @@ def check_guard(root=None) -> Check:
     was never learned, and a correctly working guard all produce exactly the
     same experience.
     """
+    from adder.core import harness as _harness
+    from adder.core import settings as _settings
     from adder.core.shapes import load_model
     from adder.decide.guard import Settings, installed_in
     from adder.decide.guard import ledger as guard_ledger
@@ -493,7 +521,38 @@ def check_guard(root=None) -> Check:
 
     cfg = Settings.resolve()
     sizes = load_model()
-    if not installed_in():
+    h = _harness.get(_settings.get("harness"))
+    if not h.supports_hooks:
+        # Not a failure, and not an action. Telling a Codex user to run
+        # `adder auto on` is telling them to install three hooks their runtime
+        # will never call, and this check used to do exactly that because it
+        # asked whether the hook was installed without ever asking whether
+        # anything could run it.
+        return Check(
+            "guard", True,
+            f"not available on {h.name} — it runs no pre-tool-call hook, so "
+            "nothing here can prevent spend",
+            detail=["every report still works; `adder policy` still answers "
+                    "placement. Enforcement needs a harness that can refuse a "
+                    "tool call"],
+            skipped=True)
+    from adder.decide.auto import plugin_enabled
+
+    plugin = plugin_enabled()
+    declared = installed_in()
+    if plugin and declared:
+        # Claude Code merges plugin hooks with settings.json hooks and does not
+        # deduplicate, so this is every hook running twice: twice the latency
+        # on every tool call, twice the overhead, and a ledger that counts each
+        # refusal twice and so overstates what the guard has been worth.
+        return Check(
+            "guard", False,
+            "declared twice — by the adder plugin and in "
+            + ", ".join(str(p) for p in declared) + ", so every hook runs twice",
+            action="`adder auto on` — with the plugin enabled it removes the "
+                   "settings.json copy and keeps your enforcement level",
+        )
+    if not declared and not plugin:
         # Reported as a failure, because it is the only finding in `doctor`
         # about money that has not been spent yet. Everything else here is a
         # post-mortem.
@@ -623,6 +682,125 @@ def check_budget(sessions) -> Check:
     )
 
 
+def check_ladder() -> Check:
+    """Can the configured harness dispatch to the rungs it would be sent?
+
+    `check_formats` catches a log adder read as the wrong shape. This catches
+    the mirror failure on the way out: a recommendation naming a model the
+    runtime cannot reach. A harness that pins the session to one vendor pins
+    its subagents too, so the shipped Claude ladder is undispatchable on Codex
+    or Gemini CLI -- and `adder policy` said `route-t2 (claude-opus-5)` there
+    anyway, in the same format it uses for an answer somebody can act on.
+
+    The `ladder` setting has always been the fix. Nothing pointed at it.
+    """
+    from adder.core import harness as _harness
+    from adder.core import settings as _settings
+    from adder.decide.route.classify import ladder, ladder_mismatch
+
+    h = _harness.get(_settings.get("harness"))
+    bad = ladder_mismatch()
+    if not bad:
+        rungs = ", ".join(f"{k}={v}" for k, v in ladder().items())
+        # Say when adder chose the rungs, so nobody mistakes a derived ladder
+        # for one they configured and forgot.
+        chosen = (" (derived from the catalog and your newest session; set "
+                  "`ladder` to override)"
+                  if _harness.vendor_ladder(h) and not _settings.get("ladder") else "")
+        return Check("ladder", True, f"dispatch ladder runs on {h.name}: {rungs}{chosen}",
+                     skipped=True)
+    org = bad[0][2]
+    return Check(
+        "ladder", False,
+        f"{len(bad)} of {len(ladder())} dispatch rungs name {org} models, which "
+        f"{h.name} cannot dispatch to",
+        action=(f"set `ladder` (in .adder.json, or ADDER_LADDER) to models "
+                f"{h.name} can reach, as T0=<model>,T1=<model>,T2=<model>; "
+                "until then every `adder policy` answer names a placement that "
+                "does not exist"),
+        detail=[f"{rung}: {model} ({o})" for rung, model, o in bad[:4]],
+    )
+
+
+def check_formats(root, sessions) -> Check:
+    """What adder thinks it just read, and whether anything went unread.
+
+    Everything else in this report assumes the transcripts parsed. For a
+    Claude Code user that assumption is safe enough to leave unstated, and for
+    anyone else it is the first thing they need to know: point adder at a
+    Codex, Gemini or proxy log and every downstream number depends on which
+    adapter `ingest.sniff` picked, with no way to see what it picked. A wrong
+    adapter does not error -- it silently reads the cached prefix under the
+    wrong convention and reports a plausible bill that is roughly double.
+
+    The other half is the silent zero. A directory of files adder cannot read
+    produces an empty report, and an empty report and a cheap month look
+    identical. `classify_files` separates them.
+    """
+    from adder.core.ingest import CLAUDE_CODE, classify_files
+    from adder.core.trace import transcripts
+
+    try:
+        paths = transcripts(Path(root).expanduser())
+    except Exception:
+        return Check("formats", True, "could not list transcripts", skipped=True)
+    if not paths:
+        return Check("formats", True, "no transcripts to classify", skipped=True)
+
+    tally, silent = classify_files(paths)
+    n = sum(tally.values())
+    shapes = ", ".join(f"{c:,} {k}" for k, c in
+                       sorted(tally.items(), key=lambda kv: -kv[1]))
+    detail: list[str] = []
+    if silent:
+        detail.append(f"{len(silent):,} file{'s' if len(silent) != 1 else ''} "
+                      "carried no usage record adder could read, e.g. "
+                      f"{silent[0].name}")
+    foreign = {k: v for k, v in tally.items() if k != CLAUDE_CODE}
+    if foreign:
+        detail.append("a foreign log is priced from its own provider's cache "
+                      "rules; `adder trace --by model` is where a mis-read "
+                      "shows up first")
+        # Reading a Codex log while still claiming to be Claude Code makes
+        # every placement answer wrong in the one direction nobody checks: the
+        # gate offers Claude models as main-session candidates and refuses
+        # OpenAI ones, which is exactly backwards. Nothing else prompts for
+        # this setting, so the report that first proves the logs are foreign
+        # is where it belongs.
+        from adder.core import harness as _harness
+        from adder.core import settings as _settings
+        from adder.core.native import agents as _agents
+
+        h = _harness.get(_settings.get("harness"))
+        if h.name == CLAUDE_CODE and CLAUDE_CODE not in tally:
+            # When the files are one agent's own transcripts the right value
+            # is known, so name it rather than listing every harness.
+            own = [k for k in tally if k in _agents()]
+            want = own[0] if len(own) == 1 else "codex/gemini-cli/opencode/aider/custom"
+            detail.append("harness is still 'claude-code' while none of these "
+                          f"are — set ADDER_HARNESS={want} (or `harness` in "
+                          ".adder.json) so placement stops assuming the wrong "
+                          "vendor")
+
+    # A silent file is the only failing case. A foreign format is not a
+    # defect -- it is the feature working -- so it reports without failing.
+    if silent and not n:
+        return Check("formats", False,
+                     f"none of {len(silent):,} files carried a usage record "
+                     "adder could read",
+                     action="`adder trace <file>` on one of them prints why; "
+                            "the reader handles Claude Code, Codex CLI, Gemini "
+                            "CLI and OpenCode transcripts, the Anthropic, "
+                            "OpenAI and Gemini APIs, and OTel",
+                     detail=detail)
+    return Check("formats", not silent,
+                 f"{n:,} transcript{'s' if n != 1 else ''} read as {shapes}",
+                 action=("`adder trace <file>` on one of the unread files "
+                         "prints why") if silent else "",
+                 detail=detail,
+                 skipped=not foreign and not silent)
+
+
 def run(root: Path | str, sessions=None, *, on: date | None = None) -> list[Check]:
     """Every check, in dollar order, with the informational ones last."""
     from adder.core.trace import load_sessions
@@ -650,6 +828,8 @@ def run(root: Path | str, sessions=None, *, on: date | None = None) -> list[Chec
         check_ledger(),
         check_evidence(),
         check_horizon(sessions),
+        check_formats(root, sessions),
+        check_ladder(),
     ]
     # Actionable and expensive first; skipped last. A stable order matters
     # because this output gets diffed between runs.
@@ -738,10 +918,28 @@ def main(argv: list[str] | None = None) -> int:
         # you have already paid for, and a machine with no history has none. The
         # part that needs no history is the part that prevents spend instead of
         # reporting it, so say so here rather than in the README only.
+        from adder.core.trace import unread_count
+
+        n_files, example = unread_count(root)
         print(f"No sessions under {root} yet.\n")
         if window.active:
             print(f"  Nothing matched {window.describe()}. Try it without the "
                   "window flags.\n")
+        elif n_files:
+            # Files are sitting right there and none of them parsed. Telling
+            # this person to come back after a session or two is advice to wait
+            # for a problem that waiting does not fix, and it is the first
+            # thing anyone not running Claude Code used to see.
+            print(f"  {n_files:,} file{'s' if n_files != 1 else ''} "
+                  f"{'are' if n_files != 1 else 'is'} there, but none carried a "
+                  "usage record this reader\n  recognised. That is a format "
+                  "problem rather than an empty history.\n")
+            print("  Handled: Claude Code, Codex CLI, Gemini CLI and OpenCode "
+                  "transcripts, the\n  Anthropic, OpenAI and Gemini APIs, "
+                  "OpenTelemetry `gen_ai.usage.*` spans,\n  and any record "
+                  "carrying plain input/output token counts.\n")
+            print(f"      adder trace {example}\n")
+            print("  on one file prints what the reader made of it.\n")
         else:
             print("  Every check here reads a transcript you have already paid "
                   "for, so on a\n  fresh machine there is nothing to measure. "
@@ -751,7 +949,8 @@ def main(argv: list[str] | None = None) -> int:
             print("  That installs the hooks that price a call before its "
                   "result lands in your\n  context. Run this again after a "
                   "session or two and it will have numbers.\n")
-            print(f"  Transcripts somewhere else? `adder doctor <dir>`, or set "
+            print("  Transcripts somewhere else? `adder doctor codex` (or claude, "
+                  "gemini, opencode,\n  or a directory), or set "
                   f"`root` in\n  {settings.PROJECT_FILE} (`adder config --init` "
                   "prints a template).\n")
         return 1

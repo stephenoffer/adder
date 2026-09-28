@@ -131,6 +131,37 @@ def duration(seconds: float) -> str:
     return f"{s / 86_400:.1f}d"
 
 
+def clip_path(path: str, width: int = 60, *, home: str | None = None) -> str:
+    """A path cut to `width` at a separator, with the file name always kept.
+
+    `path[-60:]` cut wherever the count landed, so `wolfgang-v2/.claude/...`
+    printed as `v2/.claude/...`, a directory that does not exist, and
+    `ident[:70]` kept the tool and the home directory and dropped the file
+    the finding was about. The head goes first, then whole leading segments,
+    and a leading `…/` says something was removed. `home` abbreviates to `~`;
+    it defaults to the current one, looked up when called.
+
+    A `Tool:` prefix (`Read:/path`) is kept whole and the rest clipped.
+    """
+    tool, sep, rest = path.partition(":")
+    if sep and rest.startswith(("/", "~")) and "/" not in tool:
+        return tool + ":" + clip_path(rest, max(1, width - len(tool) - 1), home=home)
+    home = os.path.expanduser("~") if home is None else home
+    if home and home != "/" and (path == home or path.startswith(home + "/")):
+        path = "~" + path[len(home):]
+    if len(path) <= width:
+        return path
+    parts = path.split("/")
+    kept = parts[-1]
+    for seg in reversed(parts[:-1]):
+        if len(seg) + 1 + len(kept) + 2 > width:
+            break
+        kept = seg + "/" + kept
+    if len(kept) + 2 > width:
+        return "…" + kept[-(width - 1):]
+    return "…/" + kept
+
+
 def bar(fraction: float, width: int = 20, *, fill: str = "█", empty: str = "·") -> str:
     """A proportion as a fixed-width bar. Clamped, so a >100% share cannot overflow."""
     f = max(0.0, min(1.0, fraction))
@@ -216,33 +247,59 @@ def wrap(text: str, width: int = 78, indent: str = "  ") -> list[str]:
     return lines
 
 
-def nothing_found(subject: str, root: str, *, window: str = "") -> str:
+def nothing_found(subject: str, root: str, *, window: str = "",
+                  unread: int = 0, example: str = "") -> str:
     """The empty report: what was looked for, where, and the way forward.
 
     Six commands each printed their own bare sentence here, and a run that
     finds nothing is exactly when a bare sentence is least useful. "No priced
     turns found under /Users/x/.claude/projects" reads as a bug when the real
-    answer is usually one of two mundane things: the window excluded every
-    turn, or the transcripts are somewhere this invocation did not look. So
-    the message names which of those it is rather than leaving the reader to
-    guess, and a first run that lands here gets a next command instead of a
-    full stop.
+    answer is usually one of three mundane things: the window excluded every
+    turn, the transcripts are somewhere this invocation did not look, or there
+    are transcripts right there that the reader could not parse.
 
-    `window` is `Window.describe()`. It is passed as a string rather than a
-    `Window` because `util` sits below `core` and may not import it.
+    That third case is the one worth separating, and it used to print as the
+    first. Point adder at a directory of logs it does not understand and the
+    answer was "nothing here has been priced yet ... this fills in after a
+    session or two" -- advice to wait, given to somebody whose files are
+    already on disk and whose real problem is a format. Anyone not running
+    Claude Code met that message first.
+
+    `window` is `Window.describe()` and `unread` the number of candidate files
+    that produced no turn. Both are passed as plain values rather than a
+    `Window` or a list of paths because `util` sits below `core` and may not
+    import it.
     """
     filtered = bool(window) and window != "everything on disk"
     out = [f"No {subject} found under {root}" + (f" matching {window}." if filtered else ".")]
     if filtered:
         out += ["", *wrap("Every turn on disk was excluded by that filter. Widen it, or "
                           "drop --since/--project to see what is there.")]
+    elif unread:
+        out += ["", *wrap(f"{unread:,} file{'s' if unread != 1 else ''} "
+                          f"{'are' if unread != 1 else 'is'} there, but none carried "
+                          "a usage record this reader recognised, so there is nothing "
+                          "to price. This is a format problem, not an empty history."),
+                "",
+                *wrap("Handled: Claude Code, Codex CLI, Gemini CLI and OpenCode "
+                      "transcripts, the Anthropic and OpenAI APIs (chat and "
+                      "responses), the Gemini API, OpenTelemetry "
+                      "`gen_ai.usage.*` spans, and any record with plain "
+                      "input/output token counts. A log with no token counts in "
+                      "it cannot be priced by anything."),
+                ""]
+        if example:
+            out += [f"      adder trace {example}", "",
+                    *wrap("on a single file is the quickest way to see what it made "
+                          "of one.")]
     else:
-        out += ["", *wrap("Nothing here has been priced yet. Claude Code writes a "
-                          "transcript per project, so this fills in after a session "
+        out += ["", *wrap("Nothing here has been priced yet. Your agent writes a "
+                          "transcript per session, so this fills in after a session "
                           "or two."),
                 "",
-                *wrap("Transcripts somewhere else? Pass the directory as the first "
-                      "argument, or set `root` in .adder.json "
+                *wrap("Transcripts somewhere else? Name the agent (`claude`, "
+                      "`codex`, `gemini`, `opencode`) or the directory as the "
+                      "first argument, or set `root` in .adder.json "
                       "(`adder config --init` prints a template)."),
                 "",
                 *wrap("What does not need history is the half that prevents spend "

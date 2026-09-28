@@ -29,6 +29,30 @@ SONNET = "claude-sonnet-5"
 START = datetime(2026, 8, 1, 9, 0, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_home(request, tmp_path_factory, monkeypatch):
+    """Every test gets an empty HOME unless it says it needs real transcripts.
+
+    Three defaults now look at the disk under HOME rather than just naming a
+    path there: `root` picks whichever agent has sessions, `harness` follows
+    it, and `model` is read off the newest session. A test that did not ask
+    for `isolated_home` used to be safe from all of that because nothing read
+    the files; now it would inherit the developer's newest model and pass or
+    fail on what that machine last ran. `isolated_home` still layers its own
+    HOME on top of this one.
+    """
+    from adder.core import native, settings
+
+    if request.node.get_closest_marker("transcripts") is None:
+        home = tmp_path_factory.mktemp("home")
+        monkeypatch.setenv("HOME", str(home))
+    settings.clear_arguments()
+    native.forget_latest_model()
+    yield
+    settings.clear_arguments()
+    native.forget_latest_model()
+
+
 @pytest.fixture
 def make_turn():
     def _make(*, model=OPUS, session="s", project="proj", read=20_000, write=0,

@@ -89,6 +89,23 @@ def _swallow(exc: BaseException) -> int:
     return 0
 
 
+def context_key(payload: dict) -> str:
+    """Whose context this call lands in: the session's, or one subagent's.
+
+    Claude Code sends a subagent's tool calls with the *parent's* `session_id`
+    and adds `agent_id`. Keyed on the session alone, the guard pooled every
+    context in a session into one memory, and it was wrong in both directions:
+    a subagent reading a file the main session had read was refused with
+    "already in this context" about a context that had never seen it, and a
+    file only a subagent had read was refused to the main session, which held
+    the subagent's summary and not the file. Both were observed, not inferred:
+    a general-purpose subagent's first read of `notes.md` was refused.
+    """
+    session_id = str(payload.get("session_id") or "")
+    agent_id = str(payload.get("agent_id") or "")
+    return f"{session_id}:{agent_id}" if session_id and agent_id else session_id
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -124,7 +141,7 @@ def main() -> int:
     # what lets the guard catch the *read back* of the same file later.
     if tool not in guard.GUARDED:
         try:
-            session_id = str(payload.get("session_id") or "")
+            session_id = context_key(payload)
             state = guard.load_state(session_id)
             guard.observe(tool, inp, state, guard.Verdict(False, "watched only"), cwd=cwd)
             guard.save_state(session_id, state)
@@ -132,8 +149,9 @@ def main() -> int:
             return _swallow(e)
         return 0
 
+    in_subagent = bool(payload.get("agent_id"))
     try:
-        session_id = str(payload.get("session_id") or "")
+        session_id = context_key(payload)
         state = guard.load_state(session_id)
         sizes = load_model()
         if not guard.needs_pricing(tool, inp, sizes=sizes, state=state,
@@ -185,13 +203,23 @@ def main() -> int:
                            remaining_turns=r.carry_turns,
                            sizes=sizes, state=state, carry=fitted,
                            context_tokens=getattr(r, "context", 0), cwd=cwd)
+        if in_subagent and not verdict.certain:
+            # Everything but a duplicate is priced on the transcript found for
+            # `cwd`, which is the main session's: its horizon, its context, its
+            # model. None of those describe a subagent's short throwaway
+            # context, so advice priced on them is a confident wrong number. A
+            # duplicate needs no price to be right -- the subagent's own memory
+            # says the content is there -- so it is the one thing kept.
+            verdict = guard.Verdict(False, "subagent: only a certain duplicate is acted on")
         guard.observe(tool, inp, state, verdict, sizes=sizes, cwd=cwd)
         guard.save_state(session_id, state)
         if verdict.fire:
             # Recorded so `adder guard` can later ask whether saying it changed
             # anything. It is the only way the 0.5 uptake assumption ever stops
             # being an assumption.
-            guard.record_fire(session_id, tool, inp, verdict)
+            # The session, not the context key: `uptake` joins fires to
+            # transcripts by session id, and a subagent's is its parent's.
+            guard.record_fire(str(payload.get("session_id") or ""), tool, inp, verdict)
     except Exception as e:
         return _swallow(e)              # a hook must never break the turn
 

@@ -253,7 +253,7 @@ class TestItRemembersReads:
             self, guard, monkeypatch, capsys, tmp_path):
         _wire(monkeypatch, remaining=300)
         f = tmp_path / "big.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         payload = {"tool_name": "Read", "session_id": "s1",
                    "tool_input": {"file_path": str(f)}}
         _run(guard, payload, monkeypatch, capsys)
@@ -272,12 +272,76 @@ class TestItRemembersReads:
             self, guard, monkeypatch, capsys, tmp_path):
         _wire(monkeypatch, remaining=300)
         f = tmp_path / "big.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         _run(guard, {"tool_name": "Read", "session_id": "s1",
                      "tool_input": {"file_path": str(f)}}, monkeypatch, capsys)
         other = _run(guard, {"tool_name": "Read", "session_id": "s2",
                              "tool_input": {"file_path": str(f)}}, monkeypatch, capsys)
         assert other is None or "already in this context" not in json.dumps(other)
+
+
+class TestEachContextHasItsOwnMemory:
+    """A subagent's calls arrive with its parent's `session_id` and an
+    `agent_id`. Pooled under the session, the guard refused a subagent's first
+    read of a file only its parent had read -- observed in a real session."""
+
+    @pytest.fixture
+    def enforcing(self, guard, monkeypatch):
+        monkeypatch.setenv("ADDER_GUARD_ENFORCE", "certain")
+        return guard
+
+    @staticmethod
+    def _payload(f, agent=None):
+        p = {"tool_name": "Read", "session_id": "s1", "tool_input": {"file_path": str(f)}}
+        if agent:
+            p.update(agent_id=agent, agent_type="general-purpose")
+        return p
+
+    def _big(self, tmp_path):
+        f = tmp_path / "big.py"
+        f.write_text(("x" * 79 + "\n") * 500)
+        return f
+
+    def test_a_subagent_may_read_what_its_parent_read(
+            self, enforcing, monkeypatch, capsys, tmp_path):
+        _wire(monkeypatch, remaining=300)
+        f = self._big(tmp_path)
+        _run(enforcing, self._payload(f), monkeypatch, capsys)
+        assert _run(enforcing, self._payload(f, "a1"), monkeypatch, capsys) is None
+
+    def test_the_parent_may_read_what_a_subagent_read(
+            self, enforcing, monkeypatch, capsys, tmp_path):
+        _wire(monkeypatch, remaining=300)
+        f = self._big(tmp_path)
+        _run(enforcing, self._payload(f, "a1"), monkeypatch, capsys)
+        got = _run(enforcing, self._payload(f), monkeypatch, capsys) or {}
+        out = got.get("hookSpecificOutput", {})
+        assert out.get("permissionDecision") != "deny"
+        assert "already in this context" not in str(out)
+
+    def test_two_subagents_do_not_share(self, enforcing, monkeypatch, capsys, tmp_path):
+        _wire(monkeypatch, remaining=300)
+        f = self._big(tmp_path)
+        _run(enforcing, self._payload(f, "a1"), monkeypatch, capsys)
+        assert _run(enforcing, self._payload(f, "a2"), monkeypatch, capsys) is None
+
+    def test_a_subagent_re_reading_its_own_copy_is_still_refused(
+            self, enforcing, monkeypatch, capsys, tmp_path):
+        _wire(monkeypatch, remaining=300)
+        f = self._big(tmp_path)
+        _run(enforcing, self._payload(f, "a1"), monkeypatch, capsys)
+        again = _run(enforcing, self._payload(f, "a1"), monkeypatch, capsys)
+        assert again["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_a_subagent_gets_no_advice_priced_on_its_parent(
+            self, guard, monkeypatch, capsys, tmp_path):
+        """Size advice uses the main session's horizon, which a subagent does
+        not have. Without the rule the same huge read in the parent is advised."""
+        _wire(monkeypatch, remaining=300)
+        f = tmp_path / "huge.py"
+        f.write_text("x" * 400_000)
+        assert _run(guard, self._payload(f, "a1"), monkeypatch, capsys) is None
+        assert _run(guard, self._payload(f), monkeypatch, capsys) is not None
 
 
 class TestItRefusesThroughTheHook:
@@ -304,7 +368,7 @@ class TestItRefusesThroughTheHook:
             self, enforcing, monkeypatch, capsys, tmp_path):
         _wire(monkeypatch, remaining=300)
         f = tmp_path / "big.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         _run(enforcing, self._payload(f), monkeypatch, capsys)
         again = _run(enforcing, self._payload(f), monkeypatch, capsys)
         out = again["hookSpecificOutput"]
@@ -317,7 +381,7 @@ class TestItRefusesThroughTheHook:
         session that cannot finish, and the model cannot argue with it."""
         _wire(monkeypatch, remaining=300)
         f = tmp_path / "big.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         for _ in range(2):
             _run(enforcing, self._payload(f), monkeypatch, capsys)
         third = _run(enforcing, self._payload(f), monkeypatch, capsys)
@@ -329,7 +393,7 @@ class TestItRefusesThroughTheHook:
         monkeypatch.setenv("ADDER_GUARD_ENFORCE", "off")
         _wire(monkeypatch, remaining=300)
         f = tmp_path / "big.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         _run(guard, self._payload(f), monkeypatch, capsys)
         again = _run(guard, self._payload(f), monkeypatch, capsys)
         assert "permissionDecision" not in again["hookSpecificOutput"]
@@ -338,7 +402,7 @@ class TestItRefusesThroughTheHook:
             self, enforcing, monkeypatch, capsys, tmp_path):
         _wire(monkeypatch, remaining=300)
         f = tmp_path / "big.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         _run(enforcing, self._payload(f), monkeypatch, capsys)
         _run(enforcing, self._payload(f), monkeypatch, capsys)
         state = json.loads((tmp_path / "guard.json").read_text())["s1"]
@@ -352,7 +416,7 @@ class TestItRefusesThroughTheHook:
         refusing are gone."""
         _wire(monkeypatch, remaining=300)
         f = tmp_path / "big.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         _run(enforcing, self._payload(f), monkeypatch, capsys)
         learner = _load("precompact_learn")
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "s1"})))
@@ -383,7 +447,7 @@ class TestItWatchesWrites:
                                                   tmp_path):
         state_path = tmp_path / "guard.json"
         f = tmp_path / "new.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         got = _run(guard, {"tool_name": "Write", "session_id": "s1",
                            "tool_input": {"file_path": str(f), "content": "x"}},
                    monkeypatch, capsys)
@@ -394,7 +458,7 @@ class TestItWatchesWrites:
                                                         capsys, tmp_path):
         _wire(monkeypatch, remaining=300)
         f = tmp_path / "new.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         _run(guard, {"tool_name": "Write", "session_id": "s1",
                      "tool_input": {"file_path": str(f), "content": "x"}},
              monkeypatch, capsys)
@@ -616,7 +680,7 @@ class TestItRemembersBeforeItCanPrice:
                             classmethod(lambda cls, **kw: lib.Settings(
                                 state_path=state_path)))
         f = tmp_path / "f.py"
-        f.write_text("x" * 400_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         payload = {"tool_name": "Read", "session_id": "s1",
                    "tool_input": {"file_path": str(f)}}
         assert _run(guard, payload, monkeypatch, capsys) is None

@@ -316,6 +316,29 @@ def breakeven_context(model: str, remaining_turns: int, *, read_mult: float = 0.
     return MIN_CONTEXT if remaining_turns >= need else 0
 
 
+# Below this the break-even is not a threshold anyone can act on. A compaction
+# that keeps 8% of the context rebuilds 8% and stops paying rent on the other
+# 92%, so it repays inside one turn -- correct arithmetic, and useless as the
+# sentence "compact when more than ~1 turn remains". Under this many turns the
+# advice is stated as a conclusion instead of a number.
+TRIVIAL_BREAKEVEN = 5
+
+
+def breakeven_sentence(need: int, kept: float) -> str:
+    """The rule in words, which is not always a threshold.
+
+    `need` collapses towards zero as `kept` does, and a threshold of one turn
+    reads as a broken number rather than as the strong result it is.
+    """
+    if need <= TRIVIAL_BREAKEVEN:
+        return (f"compacting always pays here — it keeps {kept:.0%} of the "
+                f"context, so it rebuilds {kept:.0%} and stops paying rent on "
+                f"the other {1 - kept:.0%}, which repays within "
+                f"{max(1, need)} turn{'' if need <= 1 else 's'}")
+    return (f"compact when more than ~{need:,} turns remain, not when the bar "
+            f"looks full")
+
+
 def breakeven_remaining(*, read_mult: float = 0.10, kept: float = 0.35,
                         ttl: str = "5m", model: str | None = None) -> int:
     """Turns that must remain before a compaction can pay for itself.
@@ -404,10 +427,12 @@ def report(rep: CompactReport, sessions, *, top: int = 10,
         f"median kept {rep.mean_kept():.0%} · re-read multiplier "
         f"{rep.read_mult:.3f}x ({rep.source})",
         "",
-        f"  The rule: a compaction pays for itself with more than ~{need} turns "
-        "left.",
-        "    Below that the rebuild costs more than the carry it avoids, so the "
-        "cheaper move is to finish.",
+        f"  The rule: {breakeven_sentence(need, rep.mean_kept())}.",
+        ("    Below that the rebuild costs more than the carry it avoids, so "
+         "the cheaper move is to finish."
+         if need > TRIVIAL_BREAKEVEN else
+         "    The cost of compacting scales with what it keeps, and yours "
+         "keeps very little."),
         "",
     ]
 
@@ -513,8 +538,11 @@ def main(argv: list[str] | None = None) -> int:
         if a.json:
             print(json.dumps({"sessions": 0, "compactions": 0}))
             return 0
+        from adder.core.trace import unread_count
         from adder.util.render import nothing_found
-        print(nothing_found("sessions", a.root, window=window.describe()))
+        n_files, example = unread_count(a.root)
+        print(nothing_found("sessions", a.root, window=window.describe(),
+                            unread=n_files, example=example))
         return 1
 
     rep = analyse(sessions)

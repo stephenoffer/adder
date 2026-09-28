@@ -252,7 +252,7 @@ class TestDuplicateReads:
 
     def test_a_re_read_of_an_unchanged_file_fires(self, cfg, sizes, tmp_path):
         f = tmp_path / "a.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
                    sizes=sizes, state=self._seen(f), cfg=cfg)
         assert v.fire and v.kind == "duplicate"
@@ -262,7 +262,7 @@ class TestDuplicateReads:
         """Re-reading a file you just changed is the correct thing to do, and a
         guard that nags about it is a guard people uninstall."""
         f = tmp_path / "a.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         state = self._seen(f)
         f.write_text("y" * 40_000)                     # edited: mtime moves
         import os
@@ -273,7 +273,7 @@ class TestDuplicateReads:
 
     def test_a_first_read_is_not_a_duplicate(self, cfg, sizes, tmp_path):
         f = tmp_path / "a.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
                    sizes=sizes, state=GuardState(), cfg=cfg)
         assert v.kind != "duplicate"
@@ -281,7 +281,7 @@ class TestDuplicateReads:
     def test_a_bounded_re_read_is_not_a_duplicate(self, cfg, sizes, tmp_path):
         """`offset`/`limit` asks for a different slice; it is not the same read."""
         f = tmp_path / "a.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         v = decide("Read", {"file_path": str(f), "limit": 50}, model=OPUS,
                    remaining_turns=300, sizes=sizes, state=self._seen(f), cfg=cfg)
         assert v.kind != "duplicate"
@@ -297,7 +297,7 @@ class TestDuplicateReads:
                                                                    tmp_path):
         """Nothing has to be delegated: the tokens are already there."""
         f = tmp_path / "a.py"
-        f.write_text("x" * 400_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
                    sizes=sizes, state=self._seen(f), cfg=cfg)
         assert v.saving == pytest.approx(v.inline) and v.delegated == 0.0
@@ -449,7 +449,7 @@ class TestReadAfterWrite:
 
     def test_reading_back_a_file_this_session_wrote_fires(self, cfg, sizes, tmp_path):
         f = tmp_path / "new.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         state = self._wrote(f, when=f.stat().st_mtime)
         v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
                    sizes=sizes, state=state, cfg=cfg)
@@ -459,7 +459,7 @@ class TestReadAfterWrite:
     def test_a_file_changed_after_our_write_is_worth_reading(self, cfg, sizes, tmp_path):
         """Something outside the session touched it; the context is stale."""
         f = tmp_path / "new.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         state = self._wrote(f, when=f.stat().st_mtime - 3_600)
         v = decide("Read", {"file_path": str(f)}, model=OPUS, remaining_turns=300,
                    sizes=sizes, state=state, cfg=cfg)
@@ -470,7 +470,7 @@ class TestReadAfterWrite:
         edited file can be the only way to see the rest of it. Advising against
         that would be advising against the correct move."""
         f = tmp_path / "a.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         state = GuardState()
         observe("Edit", {"file_path": str(f)}, state, Verdict(False, "watched"))
         assert not state.wrote
@@ -481,7 +481,7 @@ class TestReadAfterWrite:
     def test_writing_supersedes_an_earlier_read(self, cfg, sizes, tmp_path):
         """The read memory is about a version of the file that no longer exists."""
         f = tmp_path / "a.py"
-        f.write_text("x" * 40_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         state = GuardState()
         observe("Read", {"file_path": str(f)}, state, Verdict(False, "first"))
         observe("Write", {"file_path": str(f)}, state, Verdict(False, "watched"),
@@ -826,6 +826,25 @@ class TestReplay:
                         into=tmp_path / "proj")
         r = replay(d, cfg=Settings())
         assert r.calls == 3 and r.fires >= 1
+
+    def test_a_subagent_is_its_own_context(self, write_jsonl, tmp_path, isolated_home):
+        """A subagent transcript is recorded under its parent's session id.
+        Pooled, its first read of a file the parent read was booked as a
+        prevented duplicate -- a refusal that would have been wrong."""
+        from adder.decide.guard import replay
+
+        f = tmp_path / "big.py"
+        f.write_text(("x" * 79 + "\n") * 500)
+        main = self._records([("Read", {"file_path": str(f)})])
+        sub = [{**r, "agentId": "a1", "isSidechain": True}
+               for r in self._records([("Read", {"file_path": str(f)})])]
+        sub[0]["message"] = {**sub[0]["message"], "id": "sub0"}
+        sub[0]["message"]["content"] = [{**sub[0]["message"]["content"][0], "id": "subu0"}]
+        d = write_jsonl(main, into=tmp_path / "proj")
+        write_jsonl(sub, name="agent-a1.jsonl", into=tmp_path / "proj" / "s1" / "subagents")
+        r = replay(d, cfg=Settings(enforce="certain"))
+        assert r.calls == 2
+        assert r.by_kind.get("duplicate", 0) == 0 and r.refusals == 0
 
     def test_it_never_writes_state(self, write_jsonl, tmp_path, isolated_home):
         """Replaying must not disturb a live session's memory."""
@@ -1175,7 +1194,7 @@ class TestABoundedReadIsNotAWholeRead:
 
     def _file(self, tmp_path):
         f = tmp_path / "big.py"
-        f.write_text("x" * 400_000)
+        f.write_text(("x" * 79 + "\n") * 500)
         return f
 
     def test_a_limited_read_is_not_remembered_as_the_file(self, tmp_path):

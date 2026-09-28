@@ -78,3 +78,57 @@ def test_mixed_naive_and_aware_stamps_do_not_raise():
     naive.ts = (START + timedelta(minutes=30)).replace(tzinfo=None).isoformat()
     s.turns.append(naive)
     assert analyse({"s": s}).n_turns == 2
+
+
+# ---------------------------------------------------------------------------
+# Rebuilds on providers that cache automatically. OpenAI and Google report no
+# cache write: the prefix that missed arrives as plain uncached input, and that
+# is where the cache is rebuilt. Reading only `cache_write` made a Codex history
+# report a 100% hit rate and "$0.00 spent rebuilding prefixes" on sessions that
+# had re-sent their prefix at full price.
+# ---------------------------------------------------------------------------
+
+GPT = "gpt-5.3-codex"
+
+
+def _session(make_turn, rows, model=GPT):
+    s = Session("s", "p")
+    for i, (uncached, read) in enumerate(rows):
+        s.turns.append(make_turn(model=model, uncached=uncached, read=read,
+                                 write=0, minutes=i, ttl="auto"))
+    return s
+
+
+class TestAutomaticCaching:
+    def test_uncached_input_counts_against_the_hit_rate(self, make_turn):
+        s = _session(make_turn, [(40_000, 0), (1_000, 40_000), (1_000, 41_000)])
+        rep = analyse({"s": s})
+        assert rep.missed_tokens == 42_000
+        assert 0.6 < rep.hit_rate < 0.7
+
+    def test_a_rebuilt_prefix_is_a_miss(self, make_turn):
+        s = _session(make_turn, [(40_000, 0), (1_000, 40_000), (45_000, 0)])
+        rep = analyse({"s": s})
+        assert len(rep.misses) == 1
+        assert rep.misses[0].tokens == 45_000
+        assert rep.waste > 0
+
+    def test_the_turn_rebuilt_property_follows_the_provider(self, make_turn):
+        gpt = make_turn(model=GPT, uncached=30_000, read=0, write=0)
+        claude = make_turn(model="claude-opus-5", uncached=30_000, read=0, write=0)
+        assert gpt.rebuilt == 30_000
+        assert claude.rebuilt == 0         # explicit caching: no write, no rebuild
+
+    def test_session_cache_misses_sees_them_too(self, make_turn):
+        s = _session(make_turn, [(40_000, 0), (1_000, 40_000), (45_000, 0)])
+        assert len(s.cache_misses()) == 1
+
+
+class TestExplicitCachingIsUnchanged:
+    def test_claude_uncached_input_is_not_a_miss(self, make_turn):
+        s = Session("s", "p")
+        for i in range(3):
+            s.turns.append(make_turn(model="claude-opus-5", uncached=20_000,
+                                     read=40_000, write=0, minutes=i))
+        rep = analyse({"s": s})
+        assert rep.missed_tokens == 0 and rep.hit_rate == 1.0 and not rep.misses

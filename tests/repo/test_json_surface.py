@@ -24,6 +24,7 @@ from adder.cli import COMMANDS
 # Extra argv each command needs before `--json` will do anything useful.
 EXTRA: dict[str, list[str]] = {
     "verify": ["--since", "2026-08-01"],
+    "mcp": ["--list"],
     "policy": ["read the config file"],
     "classify": ["read the config file"],
     "pick": ["summarise a file"],
@@ -49,7 +50,9 @@ NO_ROOT = {"policy", "classify", "pick", "models", "config", "outcomes", "ledger
            # transcript root. Its first positional is on/off/status.
            "auto",
            # `hook` takes a hook name and reads the event off stdin.
-           "hook"}
+           "hook",
+           # `mcp` serves stdin until it closes; `--list` is its report.
+           "mcp"}
 
 # `export` offers JSON through `--format json` rather than `--json`, so the
 # discovery below does not see it; `TestExportSurface` covers it directly.

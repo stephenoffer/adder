@@ -176,8 +176,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sessions, window = load_window(a)
     if not sessions:
+        from adder.core.trace import unread_count
         from adder.util.render import nothing_found
-        print(nothing_found("sessions", a.root, window=window.describe()))
+        n_files, example = unread_count(a.root)
+        print(nothing_found("sessions", a.root, window=window.describe(),
+                            unread=n_files, example=example))
         return 1
 
     rows = rank(sessions, a.sort)

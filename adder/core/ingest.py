@@ -100,6 +100,25 @@ def _int(v: Any) -> int:
     return n if n > 0 else 0
 
 
+# The public name, for the sibling readers in `native` that share the contract.
+count = _int
+
+
+def admit(t: Turn, *, skip_unknown: bool, unknown: dict[str, int] | None) -> bool:
+    """Keep this turn? Tallies a model the registry cannot price either way.
+
+    One rule for every reader that is not `trace`: an unpriceable model is
+    counted into `unknown` so the report can name it, and dropped only when the
+    caller asked for that. Written once because the per-record path here and
+    the per-file path in `native` both need it and must not drift.
+    """
+    if is_known(t.model):
+        return True
+    if unknown is not None:
+        unknown[t.model] = unknown.get(t.model, 0) + 1
+    return not skip_unknown
+
+
 def _first(d: dict, *keys: str) -> Any:
     if not isinstance(d, dict):
         return None
@@ -240,7 +259,7 @@ class Usage:
             ttl=str(self.ttl or _default_ttl(self.model)),
             speed=str(self.speed or "standard"),
             msg_id=str(self.msg_id or ""),
-            tools=tuple(str(x) for x in (self.tools or ())),
+            tools=tuple(dict.fromkeys(str(x) for x in (self.tools or ()))),
             effort=str(self.effort or ""),
         )
 
@@ -352,8 +371,10 @@ def _from_gemini(d: dict) -> Usage | None:
 
     Gemini also reports `thoughtsTokenCount` *outside* `candidatesTokenCount`,
     unlike every other provider here, where reasoning is part of the output
-    count. Adding thinking to output on top would double-count it, so it is
-    recorded on the side and the output count is left alone.
+    count. Thinking is billed at the output rate, so it is added to output --
+    leaving it out would under-bill every thinking turn -- and recorded on the
+    side in `thinking` as well. Adding it for OpenAI would double-count, which
+    is why only this adapter does it.
     """
     u = _sub(d, "usageMetadata") or _sub(d, "usage_metadata")
     prompt = _int(_first(u, "promptTokenCount", "prompt_token_count"))
@@ -621,6 +642,15 @@ def iter_turns(path: Path, *, fmt: str | None = None,
     caught. Records with no id are kept in order and never merged, since
     without an id there is no way to tell a duplicate from a second call.
     """
+    # An agent CLI's own transcript carries its model and its usage in
+    # different records, so no per-record adapter below can price it. Those
+    # files go to `native`, which reads them whole.
+    from adder.core.native import iter_turns as _iter_native
+
+    got = _iter_native(path, skip_unknown=skip_unknown, unknown=unknown)
+    if got is not None:
+        yield from got
+        return
     project = path.parent.name
     best: dict[str, Turn] = {}
     order: list[Turn] = []
@@ -634,11 +664,8 @@ def iter_turns(path: Path, *, fmt: str | None = None,
         t = turn_from(d, session=path.stem, project=project, fmt=fmt)
         if t is None:
             continue
-        if not is_known(t.model):
-            if unknown is not None:
-                unknown[t.model] = unknown.get(t.model, 0) + 1
-            if skip_unknown:
-                continue
+        if not admit(t, skip_unknown=skip_unknown, unknown=unknown):
+            continue
         if not t.msg_id:
             order.append(t)
             continue
@@ -668,3 +695,132 @@ def detect_formats(paths: Iterable[Path]) -> dict[str, int]:
             kind = sniff(d) or "unrecognised"
             tally[kind] = tally.get(kind, 0) + 1
     return tally
+
+
+# Agreeing records after which a file's shape is settled. A transcript is
+# written by one client; this is a tie-break budget, not a sample size.
+DECISIVE = 5
+
+
+def _head_records(path: Path, n: int) -> Iterator[dict]:
+    """Up to `n` records from the front of `path`, reading no further.
+
+    `iter_records` calls `read_text()` before it yields anything, which is the
+    right shape for pricing a whole log and catastrophic for sniffing one.
+    `classify_files` wants fifty records per file; going through
+    `iter_records` it read 278 transcripts end to end to get them and put 22
+    seconds onto every `adder doctor`. The cap has to be enforced at the read,
+    not at the consumer.
+
+    Two shapes cannot be answered from a prefix and fall back to the full
+    reader: a top-level array, and a pretty-printed single object. Neither is
+    in the hot path -- under the Claude Code root a `.json` file is
+    configuration and `transcripts()` does not return it.
+    """
+    from itertools import islice
+
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            if fh.read(64).lstrip()[:1] == "[":
+                yield from islice(iter_records(path), n)
+                return
+            fh.seek(0)
+            count = 0
+            for line in fh:
+                if count >= n:
+                    return
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(row, dict):
+                    count += 1
+                    yield row
+                elif isinstance(row, list):
+                    for r in row:
+                        if isinstance(r, dict):
+                            count += 1
+                            yield r
+    except OSError:
+        return
+    if not count:
+        # Nothing line-delimited came out. A single object spread over many
+        # lines looks exactly like this, and calling it unreadable would
+        # report a perfectly good log as silent.
+        yield from islice(iter_records(path), n)
+
+
+def classify_files(paths: Iterable[Path], *, sample: int = 50
+                   ) -> tuple[dict[str, int], list[Path]]:
+    """Modal record shape per file, and the files that carried no usage at all.
+
+    `detect_formats` counts records, which is the right grain for a fixture and
+    the wrong one for a person: told "48,000 claude-code records and 12
+    unrecognised" nobody can say whether a log was understood. The question
+    being asked is per file -- *did adder read my Codex logs, and as what?* --
+    so this answers at that grain.
+
+    Only the first `sample` records of each file are inspected. A transcript is
+    written by one client, so its shape does not change halfway down; the cap
+    is what keeps this affordable to run over a whole history on every
+    `adder doctor`. A proxy log genuinely interleaving providers is the case
+    this under-reports, and `detect_formats` is the per-record answer for it.
+    """
+    tally: dict[str, int] = {}
+    silent: list[Path] = []
+    from adder.core.native import detect as _native
+
+    for p in paths:
+        agent = _native(p)
+        if agent:
+            tally[agent] = tally.get(agent, 0) + 1
+            continue
+        seen: dict[str, int] = {}
+        for d in _head_records(p, sample):
+            kind = sniff(d)
+            if kind:
+                seen[kind] = seen.get(kind, 0) + 1
+                # One client writes one transcript, so a handful of agreeing
+                # records settles it. The `sample` cap is the guard against a
+                # file that opens with records carrying no usage at all; this
+                # is the common case, and taking it cuts the scan fourfold.
+                if seen[kind] >= DECISIVE:
+                    break
+        if not seen:
+            silent.append(p)
+            continue
+        best = max(seen, key=lambda k: seen[k])
+        tally[best] = tally.get(best, 0) + 1
+    return tally, silent
+
+
+def records_tool_calls(root) -> bool:
+    """Does this corpus carry tool-call detail, or only token totals?
+
+    Claude Code transcripts record every tool call and its result. None of the
+    other formats do: an OpenAI or Gemini usage record is token counts and a
+    model id, and that is all. So `adder tools` and `adder context` come back
+    empty on a foreign log for a reason that has nothing to do with the
+    workload -- and "tool results 0.0%" reads as "your tool output is free",
+    which is the opposite of true on the corpus this tool was built from,
+    where `Bash` alone was 80% of context growth.
+
+    False means the reports cannot see tool calls here, not that there are
+    none. Cheap: it classifies the head of each file, the same scan
+    `adder doctor` already runs.
+    """
+    from pathlib import Path as _Path
+
+    from adder.core.trace import transcripts
+
+    try:
+        paths = transcripts(_Path(root).expanduser())
+    except Exception:
+        return True                      # unknown: do not add a caveat
+    if not paths:
+        return True
+    tally, _ = classify_files(paths)
+    return not tally or CLAUDE_CODE in tally

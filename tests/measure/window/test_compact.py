@@ -194,8 +194,21 @@ class TestOutput:
     def test_report_states_the_rule(self, session, make_sessions):
         rep = compact.analyse({"s": session([900_000] * 2 + [40_000] * 50)})
         text = compact.report(rep, {})
-        assert "pays for itself" in text
+        # Tied to the shared sentence rather than to a substring of one phrasing
+        # of it, so the report and `adder doctor` cannot drift into stating the
+        # same rule two different ways.
+        need = compact.breakeven_remaining(read_mult=rep.read_mult,
+                                           kept=rep.mean_kept(), model=rep.model)
+        assert compact.breakeven_sentence(need, rep.mean_kept()) in text
         assert "Not priced" in text
+
+    def test_the_rule_is_never_a_bare_one_turn_threshold(self, session):
+        # This corpus keeps ~4%, which drives the break-even to a single turn.
+        # Printed as "more than ~1 turns left" it reads as a broken field.
+        rep = compact.analyse({"s": session([900_000] * 2 + [40_000] * 50)})
+        text = compact.report(rep, {})
+        assert "~1 turns" not in text
+        assert "always pays" in text
 
     def test_report_says_so_when_nothing_compacted(self, make_sessions):
         text = compact.report(compact.analyse(make_sessions(2, 20)), {})
@@ -292,3 +305,33 @@ class TestCompactionsAreMainChainOnly:
         s.turns += [self._turn(30, 20_000, side=True, model="claude-haiku-4-5")]
         s.turns += [self._turn(i, 700_000) for i in range(31, 61)]
         assert [m.session for m in find_misses({"s3": s})] == ["s3"]
+
+
+class TestBreakevenSentence:
+    """A threshold of one turn is a correct number and useless advice.
+
+    `need` collapses towards zero as `kept` does, so a workload whose
+    compactions keep 8% gets "compact when more than ~1 turn remains", which
+    reads as a broken field rather than as the strong result it is.
+    """
+
+    def test_a_degenerate_threshold_is_stated_as_a_conclusion(self):
+        s = compact.breakeven_sentence(1, 0.08)
+        assert "always pays" in s
+        assert "8%" in s and "92%" in s
+        assert "more than ~1 turn" not in s
+
+    def test_a_real_threshold_stays_a_threshold(self):
+        s = compact.breakeven_sentence(120, 0.35)
+        assert "more than ~120 turns" in s
+        assert "always pays" not in s
+
+    def test_the_boundary_is_inclusive(self):
+        assert "always pays" in compact.breakeven_sentence(
+            compact.TRIVIAL_BREAKEVEN, 0.20)
+        assert "always pays" not in compact.breakeven_sentence(
+            compact.TRIVIAL_BREAKEVEN + 1, 0.20)
+
+    def test_it_never_claims_a_zero_turn_payback(self):
+        # `need` can round to 0; "repays within 0 turns" is not a sentence.
+        assert "0 turn" not in compact.breakeven_sentence(0, 0.05)

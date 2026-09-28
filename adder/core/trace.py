@@ -56,7 +56,7 @@ def cache_path() -> Path:
         return configured_path("trace_cache", CACHE_PATH)
     except Exception:
         return CACHE_PATH
-CACHE_VERSION = 9  # bumped when subagent files stopped being project "subagents"
+CACHE_VERSION = 10  # bumped when Codex, Gemini CLI and OpenCode transcripts became readable
 
 
 # Directories people keep repositories in. `project_name` drops one of these
@@ -179,6 +179,24 @@ class Turn:
     def total_tokens(self) -> int:
         """Everything billed this turn, both directions."""
         return self.context + self.out
+
+    @property
+    def rebuilt(self) -> int:
+        """Tokens this turn wrote into the cache, however the provider reports it.
+
+        Explicit caching (Anthropic) reports the write as `cache_write`.
+        Automatic caching (OpenAI, Google) reports none: the prefix that missed
+        is billed as plain input, and that is where the cache gets rebuilt.
+        Reading only `cache_write` made every rebuild on those providers
+        invisible, so `adder cache` on a Codex history found no misses and a
+        100% hit rate on sessions that had re-sent their prefix at full price.
+        """
+        if self.cache_write:
+            return self.cache_write
+        from adder.pricing.providers import AUTOMATIC
+        from adder.pricing.registry import provider_for
+
+        return self.uncached_in if provider_for(self.model).cache_style == AUTOMATIC else 0
 
     @property
     def cache_hit_rate(self) -> float:
@@ -434,7 +452,7 @@ class Session:
         out: list[Turn] = []
         for chain in (self.main_turns, [t for t in self.turns if t.sidechain]):
             for t in chain[1:]:
-                if t.cache_write > t.cache_read and t.cache_write > 10_000:
+                if t.rebuilt > t.cache_read and t.rebuilt > 10_000:
                     out.append(t)
         return out
 
@@ -672,6 +690,22 @@ def iter_file(path: Path, *, skip_unknown: bool = True,
         yield t
 
 
+def unread_count(root: Path | str = DEFAULT_ROOT) -> tuple[int, str]:
+    """How many candidate files are there, and one of them by name.
+
+    For the empty-report path. A caller that loaded no sessions cannot tell
+    "this directory is empty" from "this directory is full of logs I could not
+    parse", and those two want opposite advice: wait, versus check the format.
+    Counting the files costs a glob, which is what the caller was about to
+    print a paragraph of guesswork instead of.
+    """
+    try:
+        found = transcripts(root)
+    except Exception:
+        return 0, ""
+    return len(found), (str(found[0]) if found else "")
+
+
 def iter_turns(root: Path | str = DEFAULT_ROOT, *,
                skip_unknown: bool = True,
                unknown: dict[str, int] | None = None) -> Iterator[Turn]:
@@ -687,6 +721,11 @@ def transcripts(root: Path | str = DEFAULT_ROOT) -> list[Path]:
     of them forgot that a caller may point at a single `.jsonl`.
     """
     root = Path(root).expanduser()
+    if not root.exists():
+        # The commands that bypass `filters.root_of` still take an agent name.
+        from adder.core.native import root_for
+
+        root = root_for(str(root)) or root
     if root.is_file():
         return [root]
     try:

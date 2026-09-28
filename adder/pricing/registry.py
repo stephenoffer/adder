@@ -133,6 +133,9 @@ class ModelSpec:
         if self.cache_read_abs is not None:
             return self.cache_read_abs
         mult = self.provider.cache_read_mult
+        if self.first_party:
+            own = _p.resolve(self.id).cache_read_mult
+            mult = mult if own is None else own
         if not self.provider.caches or mult is None:
             return inp
         return inp * mult
@@ -244,6 +247,7 @@ def reset_cache() -> None:
     """
     _catalog_for.cache_clear()
     _resolve_cached.cache_clear()
+    _first_party_cached.cache_clear()
 
 
 def _from_first_party(model: str) -> ModelSpec | None:
@@ -434,7 +438,16 @@ def resolve(model: str) -> ModelSpec:
     """
     if not model:
         raise UnknownModelError("empty model id")
-    return _resolve_cached(model, _cache_key())
+    # First-party wins and reads nothing `_cache_key` covers, so it is looked up
+    # before the key is built: the key calls `getcwd`, and a `plan` replay
+    # resolves models 1.5M times -- 25 of its 40 seconds were that syscall.
+    spec = _first_party_cached(model)
+    return spec if spec is not None else _resolve_cached(model, _cache_key())
+
+
+@lru_cache(maxsize=512)
+def _first_party_cached(model: str) -> ModelSpec | None:
+    return _from_first_party(model)
 
 
 def is_known(model: str) -> bool:

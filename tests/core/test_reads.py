@@ -198,7 +198,49 @@ class TestWholeReads:
         assert reads.tool_targets("Bash", cmd)[0].whole is True
         assert reads.whole_reads("Bash", cmd, max_chars=30_000) == []
 
-    def test_a_read_tool_is_not_size_checked(self):
-        # `Read` reports its own size and the harness paginates it; the ceiling
-        # here is a fact about shell output, so it must not be applied to both.
-        assert reads.whole_reads("Read", {"file_path": "/nowhere/a.py"}) == ["/nowhere/a.py"]
+    @pytest.mark.parametrize(("command", "want"), [
+        ("cat a.py", True), ("cat a.py | head -5", True), ("sed -n 1,20p a.py", True),
+        ("head -50 a.py b.py", True), ("sed s/a/b/ a.py", False),
+        ("sed -n /foo/p a.py", False), ("grep -n foo a.py", False),
+        ("cat a.py && pytest", False), ("diff a.py b.py", False),
+        ("tail -f log", False), ("awk 1 a.py", False), ("", False)])
+    def test_only_prints_files(self, command, want):
+        assert reads.only_prints_files(command) is want
+
+    def test_the_shell_ceiling_is_not_applied_to_read(self, tmp_path):
+        # The Bash ceiling is a fact about shell output. A file over it that the
+        # Read tool returns whole is still a whole read.
+        f = tmp_path / "a.py"
+        f.write_text(("x" * 79 + "\n") * 500)
+        assert reads.whole_reads("Read", {"file_path": str(f)}, max_chars=1_000) == [str(f)]
+
+    def test_a_read_the_tool_truncates_is_not_whole(self, tmp_path):
+        """The harness paginates Read: 2,000 lines, 2,000 characters a line,
+        and an error past its token ceiling. None of those put the file in the
+        context, and remembering one as read refuses the offset read that
+        would have got the rest."""
+        long = tmp_path / "long.py"
+        long.write_text("x\n" * 2_001)
+        wide = tmp_path / "wide.py"
+        wide.write_text("x" * 2_001)
+        huge = tmp_path / "huge.py"
+        huge.write_text(("x" * 79 + "\n") * 1_900)
+        for f in (long, wide, huge):
+            assert reads.whole_reads("Read", {"file_path": str(f)}) == [], f.name
+
+    def test_exactly_the_line_ceiling_is_whole(self, tmp_path):
+        f = tmp_path / "a.py"
+        f.write_text("x\n" * 2_000)
+        assert reads.whole_reads("Read", {"file_path": str(f)}) == [str(f)]
+
+    def test_a_missing_or_binary_file_is_not_whole(self, tmp_path):
+        png = tmp_path / "a.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\n\0\0")
+        assert reads.whole_reads("Read", {"file_path": str(png)}) == []
+        assert reads.whole_reads("Read", {"file_path": str(tmp_path / "nope.py")}) == []
+
+    def test_the_token_ceiling_follows_the_harness_setting(self, tmp_path, monkeypatch):
+        f = tmp_path / "a.py"
+        f.write_text(("x" * 79 + "\n") * 500)            # 40,000 chars
+        monkeypatch.setenv("CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS", "5000")
+        assert reads.whole_reads("Read", {"file_path": str(f)}) == []

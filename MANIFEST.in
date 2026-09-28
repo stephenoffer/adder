@@ -9,6 +9,8 @@ include adder/py.typed
 recursive-include adder/pricing/data *.json
 # The agent definitions activation installs; see pyproject's package-data.
 recursive-include adder/decide/agents *.md
+recursive-include adder/decide/skills *.md
+include adder/decide/hooks/hooks.json
 recursive-include tests *.py
 recursive-include docs *.md
 

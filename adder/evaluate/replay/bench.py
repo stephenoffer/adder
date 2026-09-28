@@ -400,8 +400,11 @@ def report(root: Path | str = DEFAULT_ROOT, *, min_cost: float = 0.25,
     b = run(sessions, min_cost=min_cost, handoff_tokens=handoff_tokens,
             min_tokens=min_tokens, on=on, dups=duplicate_admissions(root))
     if not b.measured:
+        from adder.core.trace import unread_count
         from adder.util.render import nothing_found
-        print("\n" + nothing_found("priced turns", str(root)) + "\n")
+        n_files, example = unread_count(root)
+        print("\n" + nothing_found("priced turns", str(root),
+                                   unread=n_files, example=example) + "\n")
         return 1
 
     print(f"\n  Measured spend            ${b.measured:>10,.0f}   "

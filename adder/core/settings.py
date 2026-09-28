@@ -63,6 +63,27 @@ def _home(*parts: str) -> Callable[[], str]:
     return lambda: str(Path.home().joinpath(*parts))
 
 
+def _default_root() -> str:
+    """Claude Code's transcript directory, unless only another agent has sessions.
+
+    The default used to be `~/.claude/projects` unconditionally, so somebody
+    who runs Codex and not Claude Code got "no priced turns found" from every
+    command on first run, with their sessions sitting in `~/.codex/sessions`.
+    Claude Code keeps first place whenever it has anything, so the answer for
+    the people this tool was built on cannot change underneath them.
+    """
+    from adder.core.native import CLAUDE_CODE, discover, has_sessions
+
+    found = discover()
+    claude = found.get(CLAUDE_CODE)
+    if claude is not None and has_sessions(claude):
+        return str(claude)
+    for name, path in found.items():
+        if name != CLAUDE_CODE and has_sessions(path):
+            return str(path)
+    return str(Path.home() / ".claude" / "projects")
+
+
 @dataclass(frozen=True)
 class Setting:
     name: str
@@ -98,14 +119,17 @@ class Setting:
 
 # Ordered for display: the ones a person changes first come first.
 SETTINGS: tuple[Setting, ...] = (
-    Setting("root", _home(".claude", "projects"), _as_path,
-            "transcript directory every report reads"),
+    Setting("root", lambda: _default_root(), _as_path,
+            "transcript directory every report reads. Unset, it is Claude Code's, "
+            "or else whichever of Codex, Gemini CLI or OpenCode has sessions here"),
     Setting("model", "claude-opus-5", str,
-            "model assumed for the session when a report cannot read one"),
+            "model assumed for the session when a report cannot read one. Unset, "
+            "it is the model your newest session under `root` ran on"),
     Setting("harness", "claude-code", str,
             "agent runtime driving the session: claude-code, codex, gemini-cli, "
-            "aider, openhands, custom, or any. Harnesses that pin the main "
-            "session to one vendor make other vendors subagent-only"),
+            "aider, openhands, opencode, custom, or any. Harnesses that pin the "
+            "main session to one vendor make other vendors subagent-only. Unset, "
+            "it follows `root`: a Codex root means codex"),
     Setting("classify_terms", "", str,
             "vocabulary this project has that the shipped classifier does not, "
             "as `cheap=map_batches,placement group; hard=autoscaler,preemption`. "
@@ -269,12 +293,45 @@ class Resolved:
         return self.source != "default"
 
 
+# Values the command line supplied, the layer above the environment. Only
+# `filters.root_of` writes here: a report run as `adder doctor codex` has said
+# which directory it reads, and every setting derived from the root -- the
+# harness, the session model -- has to follow that argument rather than the
+# configured root the argument replaced. Process-scoped, because a CLI run is
+# one process; the test suite clears it between tests.
+_ARGUMENTS: dict[str, Any] = {}
+
+
+def set_argument(name: str, value: Any) -> None:
+    """Record a value the command line gave for setting `name`."""
+    if name not in BY_NAME:
+        raise KeyError(f"unknown setting {name!r}")
+    _ARGUMENTS[name] = value
+
+
+def clear_arguments() -> None:
+    _ARGUMENTS.clear()
+
+
+# Settings whose derived value reads another one. `_derive_harness` and
+# `_derive_model` both follow `root`, so asking for either alone resolves it too.
+_NEEDS: dict[str, frozenset[str]] = {"harness": frozenset({"root"}),
+                                     "model": frozenset({"root"})}
+
+
 def resolve(*, cwd: Path | str | None = None,
-            env: dict[str, str] | None = None) -> dict[str, Resolved]:
+            env: dict[str, str] | None = None,
+            derive_model: bool = False,
+            names: frozenset[str] | None = None) -> dict[str, Resolved]:
     """Every setting, with its effective value and where it came from.
 
     `env` is injectable so the tests do not have to mutate `os.environ` -- a
     mutation that leaks into whatever test runs next.
+
+    `names` limits the work to those settings and what they derive from. `get`
+    passes it: the `root` default walks every agent's transcript directory,
+    and computing all thirty-odd defaults to answer one lookup is what made a
+    per-turn `Tier.model` cost a millisecond.
     """
     env = os.environ if env is None else env
     user = _read_json(USER_FILE) if USER_FILE.is_file() else {}
@@ -283,6 +340,8 @@ def resolve(*, cwd: Path | str | None = None,
 
     out: dict[str, Resolved] = {}
     for s in SETTINGS:
+        if names is not None and s.name not in names:
+            continue
         value, source = s.initial, "default"
         # An env-only setting skips the file layers rather than reporting a
         # value nothing will read. See `Setting.env_only`.
@@ -294,12 +353,86 @@ def resolve(*, cwd: Path | str | None = None,
         raw = env.get(s.env_var)
         if raw is not None and raw != "":
             value, source = raw, f"${s.env_var}"
+        if s.name in _ARGUMENTS:
+            value, source = _ARGUMENTS[s.name], "command line"
         try:
             value = s.cast(value)
         except (TypeError, ValueError) as e:
             raise ConfigError(f"{s.name} from {source}: {e}") from e
         out[s.name] = Resolved(s, value, source)
+    _derive_harness(out)
+    _derive_enforce(out, cwd)
+    if derive_model:
+        _derive_model(out)
     return out
+
+
+def _derive_model(out: dict[str, Resolved]) -> None:
+    """An unset `model` is the model the newest session under `root` ran on.
+
+    The `model` setting answers "what does this machine run?", and it used to
+    be answered by whoever remembered to write it down -- which nobody did, so
+    a Codex user was priced as `claude-opus-5` everywhere a report had no turn
+    to read the model from. The transcripts already say. A configured value
+    still wins; this only replaces the shipped default.
+
+    Opt-in per call (`get("model")` asks for it) because it reads the disk,
+    and every other setting is resolved dozens of times per command.
+    """
+    m, root = out.get("model"), out.get("root")
+    if m is None or root is None or m.source != "default":
+        return
+    from adder.core.native import latest_model
+
+    found = latest_model(Path(str(root.value)))
+    if found:
+        out["model"] = Resolved(m.setting, found, "your newest session")
+
+
+def _derive_harness(out: dict[str, Resolved]) -> None:
+    """An unset `harness` follows the transcript directory it is reading.
+
+    Someone who sets `root` to `~/.codex/sessions` has said which agent they
+    run; making them say it a second time in `harness` is a step nobody knows
+    to take, and the cost of missing it is the placement gate offering Claude
+    models to a Codex session and refusing OpenAI ones. An explicit `harness`
+    always wins, and a root that is no agent's own leaves the default alone.
+    """
+    h, root = out.get("harness"), out.get("root")
+    if h is None or root is None or h.source != "default":
+        return
+    from adder.core import native
+
+    name = native.agent_of_root(Path(str(root.value)))
+    agent = native.get(name) if name else None
+    if agent is not None and agent.harness != h.value:
+        out["harness"] = Resolved(h.setting, agent.harness,
+                                  f"derived from root ({root.source})")
+
+
+# What an unset `guard_enforce` means once the plugin is installed. `certain`
+# refuses only a call that admits nothing new -- a re-read of an unchanged file
+# the context already holds, or of one this session wrote -- and never the same
+# call twice, so a wrong refusal costs one turn. Installing a cost plugin is
+# asking for it to cut cost; left at `off`, every dollar it could save was
+# multiplied by a guess about whether its advice would be taken.
+PLUGIN_ENFORCE = "certain"
+
+
+def _derive_enforce(out: dict[str, Resolved], cwd: Path | str | None) -> None:
+    """An unset `guard_enforce` is `certain` when the adder plugin is enabled.
+
+    Only the default moves. Any value in a config file or the environment
+    still wins, which is how `adder auto off` turns the plugin's guard back to
+    advice: it writes `off` explicitly.
+    """
+    g = out.get("guard_enforce")
+    if g is None or g.source != "default":
+        return
+    from adder.core.claude import plugin_enabled
+
+    if plugin_enabled(cwd):
+        out["guard_enforce"] = Resolved(g.setting, PLUGIN_ENFORCE, "the adder plugin")
 
 
 def ignored_in_files(*, cwd: Path | str | None = None,
@@ -325,7 +458,9 @@ def get(name: str, *, cwd: Path | str | None = None,
     """
     if name not in BY_NAME:
         raise KeyError(f"unknown setting {name!r}; known: {sorted(BY_NAME)}")
-    return resolve(cwd=cwd, env=env)[name].value
+    wanted = frozenset({name}) | _NEEDS.get(name, frozenset())
+    return resolve(cwd=cwd, env=env, derive_model=name == "model",
+                   names=wanted)[name].value
 
 
 # --------------------------------------------------------------------------
@@ -390,7 +525,12 @@ def sub_model() -> str:
         rung, _, model = part.partition("=")
         if rung.strip().upper() == "T0" and model.strip():
             return model.strip()
-    return "claude-haiku-4-5"
+    # No ladder written: the T0 a vendor-pinned harness can reach, the same
+    # one `classify.ladder` derives, so a Codex estimate is not priced on Haiku.
+    from adder.core import harness as _harness
+
+    derived = _harness.vendor_ladder(_harness.get(harness()))
+    return derived["T0"] if derived else "claude-haiku-4-5"
 
 
 def harness() -> str:

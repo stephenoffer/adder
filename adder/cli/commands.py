@@ -162,6 +162,8 @@ COMMANDS: tuple[Command, ...] = (
             "run adder between your turns: install the hooks, enforce the levers"),
     Command("hook", "adder.decide.hooks.run", "Setup", "NAME",
             "run one harness hook; Claude Code calls this, you do not"),
+    Command("mcp", "adder.cli.mcp", "Setup", "[--print-config AGENT] [--list]",
+            "serve the read-only reports as MCP tools, for Codex, Gemini, Cursor"),
     Command("config", "adder.cli.config", "Setup", "[name] [--json] [--init]",
             "settings in effect, and which layer set each one"),
     Command("completion", "adder.cli.completion", "Setup", "[bash|zsh|fish]",

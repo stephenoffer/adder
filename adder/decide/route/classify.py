@@ -57,6 +57,45 @@ DEFAULT_LADDER: dict[str, str] = {
 }
 
 
+def ladder_mismatch(harness_name: str | None = None) -> list[tuple[str, str, str]]:
+    """Rungs the configured harness cannot actually dispatch to.
+
+    `harness.py` stops a report offering a main-session model the runtime
+    cannot run. The ladder is the same question one level down and was missing
+    the same guard: a harness that pins the session to a vendor pins its
+    subagents too, so on Codex every rung of the shipped Claude ladder names a
+    model that cannot be dispatched. `adder policy` answered `route-t2
+    (claude-opus-5)` there, which is an agent that does not exist running a
+    model that cannot be reached, stated with the same confidence as a correct
+    answer.
+
+    Returns `(rung, model, org)` for each unusable rung, empty when the ladder
+    is fine or the harness pins nothing. An unknown model is not reported: the
+    gate exists to catch a definite mismatch, and failing on a model the
+    catalog has not heard of would fire on every newly launched rung.
+    """
+    from adder.core import harness as _harness
+    from adder.core import settings as _settings
+    from adder.pricing.registry import is_known, provider_for
+
+    h = _harness.get(harness_name if harness_name is not None
+                     else _settings.get("harness"))
+    if not h.pins_main_session:
+        return []
+    out: list[tuple[str, str, str]] = []
+    for rung, model in ladder().items():
+        # `is_known` rather than a try/except: `provider_for` does not raise on
+        # an unrecognised id, it answers `unknown`, and "unknown" != "openai"
+        # is a comparison that reports every newly launched rung as a
+        # mismatch. The gate is for a *definite* conflict.
+        if not is_known(model):
+            continue
+        org = (provider_for(model).name or "").lower()
+        if org and org != "unknown" and org != h.main_session_org:
+            out.append((rung, model, org))
+    return out
+
+
 def ladder() -> dict[str, str]:
     """The ladder in effect, from the `ladder` setting if one is set.
 
@@ -71,15 +110,23 @@ def ladder() -> dict[str, str]:
     pointing at nothing. Unparseable entries are ignored: a typo in a config
     file must not silently repoint dispatch either.
     """
-    from adder.core.settings import get as _setting
+    from adder.core import harness as _harness
+    from adder.core import settings as _settings
 
+    # The base is the ladder this harness can reach: the shipped Claude one,
+    # or on a harness pinned to another vendor one derived from the catalog
+    # and the model this machine runs (`harness.vendor_ladder`). An override
+    # is applied on top, so a partial one on Codex keeps OpenAI rungs rather
+    # than falling back to Claude models it cannot dispatch to.
     out = dict(DEFAULT_LADDER)
     try:
-        raw = str(_setting("ladder") or "").strip()
+        derived = _harness.vendor_ladder(_harness.get(_settings.harness()))
+        raw = str(_settings.get("ladder") or "").strip()
     except (KeyError, OSError, ValueError):
         # A broken config file must not take dispatch down with it. The pinned
         # default is always a working ladder.
         return out
+    out.update(derived or {})
     if not raw:
         return out
     for part in raw.split(","):
@@ -221,7 +268,15 @@ class Tier(IntEnum):
 
     @property
     def agent(self) -> str:
-        return {0: "route-t0", 1: "route-t1", 2: "route-t2", 3: "route-t2"}[int(self)]
+        """The `subagent_type` to dispatch, as this machine names it.
+
+        `adder:route-t1` when only the plugin supplies the tier agents, since a
+        plugin's agents are namespaced and the bare name reaches nothing.
+        """
+        from adder.core.claude import dispatch_name
+
+        return dispatch_name(
+            {0: "route-t0", 1: "route-t1", 2: "route-t2", 3: "route-t2"}[int(self)])
 
 
 # How hard the work at each rung is, as a multiplier on an Elo gap. A lookup

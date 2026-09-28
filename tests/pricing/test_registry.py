@@ -255,3 +255,14 @@ class TestCacheInvalidation:
         registry.reset_cache()
         assert registry.resolve("only-me").inp == 9
         assert not registry.is_known("gpt-5")      # replaced the whole stack
+
+
+class TestFirstPartySkipsTheCatalogKey:
+    def test_a_claude_model_resolves_without_building_the_key(self, monkeypatch):
+        """The key calls `getcwd`; a replay resolves models over a million times."""
+        registry.reset_cache()
+        def boom():
+            raise AssertionError("first-party lookup built the catalog key")
+        monkeypatch.setattr(registry, "_cache_key", boom)
+        assert registry.resolve("claude-opus-5-5[1m]").id == "claude-opus-5-5"
+        registry.reset_cache()

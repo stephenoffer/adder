@@ -133,6 +133,25 @@ class TestTheSecondShellRead:
                    sizes=sizes, state=state, cwd=str(repo))
         assert v.fire and v.kind == "duplicate"
 
+    @pytest.mark.parametrize("command", [
+        "grep -n 'x = 1' pyproject.toml",      # a search, not the bytes
+        "cat pyproject.toml && pytest",        # the test run is new
+        "cat pyproject.toml; git status",
+        "diff pyproject.toml other.py",        # a comparison
+        "awk '{print $1}' pyproject.toml",
+        "tail -f pyproject.toml",              # what is appended next
+    ])
+    def test_a_command_that_computes_something_is_never_a_duplicate(
+            self, command, repo, cfg, sizes):
+        """Refusing these made the model search, compare or re-run in its head,
+        or dropped a test run along with the `cat` in front of it."""
+        state = GuardState()
+        for f in ("pyproject.toml", "other.py"):
+            observe("Read", {"file_path": str(repo / f)}, state, Verdict(False, "read"),
+                    cwd=str(repo))
+        v = run(command, state, cfg, sizes, repo)
+        assert not (v.deny and v.kind == "duplicate"), command
+
     def test_a_cat_after_a_read_is_caught_too(self, repo, cfg, sizes):
         state = GuardState()
         observe("Read", {"file_path": str(repo / "pyproject.toml")}, state,

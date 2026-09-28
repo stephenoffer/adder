@@ -901,7 +901,12 @@ def main(argv: list[str] | None = None) -> int:
     # is a typo to correct -- not a traceback, and emphatically not a silent
     # zero for the term that dominates the comparison.
     try:
-        _session_entry(cat, need, cat.get(a.reference) or Entry(key="_", id="_"))
+        if cat.get(a.reference) is None:
+            # The default is the session's model, so this is reachable without
+            # a typo: a model newer than the catalog snapshot and the price table.
+            raise KeyError(f"reference model {a.reference!r} is not in the catalog; "
+                           "pass --reference with one that is")
+        _session_entry(cat, need, cat.get(a.reference))
     except (KeyError, UnpricedEntryError) as exc:
         print(f"adder pick: {exc.args[0] if exc.args else exc}", file=sys.stderr)
         print("Try `adder models list` to see what the catalog holds.",

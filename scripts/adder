@@ -1,32 +1,39 @@
 #!/usr/bin/env bash
 # Launcher so adder works from a git checkout, with or without `pip install`.
-# All command dispatch, help, and error handling live in adder/cli.py — this
+# All command dispatch, help, and error handling live in adder/cli/ — this
 # script only resolves the interpreter and puts the repo on PYTHONPATH.
+#
+# It is also what the Claude Code plugin's hooks run, on every tool call, so
+# finding the interpreter has to be cheap and has to survive the stock macOS
+# `python3`, which is 3.9 and cannot import the package. A versioned name is
+# new enough by construction and is exec'd without a probe; only a bare
+# `python3` or `python` pays for one.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
 export PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}"
 
-py="${ADDER_PYTHON:-}"
-if [[ -z "$py" ]]; then
-  for candidate in python3 python; do
-    if command -v "$candidate" >/dev/null 2>&1; then py="$candidate"; break; fi
-  done
-fi
-if [[ -z "$py" ]]; then
-  echo "adder: no python3 on PATH. Install Python 3.10+ or set ADDER_PYTHON." >&2
-  exit 127
+if [[ -n "${ADDER_PYTHON:-}" ]]; then
+  exec "$ADDER_PYTHON" -m adder "$@"
 fi
 
-"$py" - <<'PYCHECK' || exit 1
-import sys
-if sys.version_info < (3, 10):
-    sys.stderr.write(
-        f"adder: needs Python 3.10+, found {sys.version.split()[0]}. "
-        "Set ADDER_PYTHON to a newer interpreter.\n"
-    )
-    raise SystemExit(1)
-PYCHECK
+for v in 3.14 3.13 3.12 3.11 3.10; do
+  if command -v "python$v" >/dev/null 2>&1; then exec "python$v" -m adder "$@"; fi
+done
 
-exec "$py" -m adder "$@"
+found=""
+for candidate in python3 python; do
+  command -v "$candidate" >/dev/null 2>&1 || continue
+  found="$candidate"
+  if "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' 2>/dev/null; then
+    exec "$candidate" -m adder "$@"
+  fi
+done
+
+if [[ -n "$found" ]]; then
+  echo "adder: needs Python 3.10+, found $("$found" -c 'import sys; print(sys.version.split()[0])'). Install a newer Python or set ADDER_PYTHON." >&2
+  exit 1
+fi
+echo "adder: no python3 on PATH. Install Python 3.10+ or set ADDER_PYTHON." >&2
+exit 127

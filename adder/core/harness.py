@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,17 @@ class Harness:
     # Does the harness expose the prompt cache as something to place
     # breakpoints in, or is it handled for you?
     exposes_cache_control: bool = True
+    # Can this harness run a pre-tool-call hook that may refuse the call?
+    # Everything in this repo that *prevents* spend rather than reporting it
+    # rests on that one capability, so `adder auto on` has to ask before it
+    # writes anything. It used to write Claude Code's hook block whatever was
+    # driving: a Codex user got a success message, three hooks nothing would
+    # ever fire, and none of the saving the command promises.
+    #
+    # False is the honest default for a harness nobody has described. Claiming
+    # a hook that does not exist installs dead configuration; declining one
+    # that does costs an explanation and a flag.
+    supports_hooks: bool = False
     notes: str = ""
 
     @property
@@ -101,6 +113,7 @@ class Harness:
             "supports_effort": self.supports_effort,
             "supports_model_switch": self.supports_model_switch,
             "exposes_cache_control": self.exposes_cache_control,
+            "supports_hooks": self.supports_hooks,
             "notes": self.notes,
         }
 
@@ -113,6 +126,7 @@ class Harness:
             supports_effort=bool(d.get("supports_effort", True)),
             supports_model_switch=bool(d.get("supports_model_switch", True)),
             exposes_cache_control=bool(d.get("exposes_cache_control", True)),
+            supports_hooks=bool(d.get("supports_hooks", False)),
             notes=str(d.get("notes", "")),
         )
 
@@ -124,6 +138,7 @@ CLAUDE_CODE = Harness(
     supports_effort=True,
     supports_model_switch=True,
     exposes_cache_control=True,
+    supports_hooks=True,
     notes="main session is a Claude model; other vendors reachable as subagents "
           "or MCP tools",
 )
@@ -151,6 +166,9 @@ GEMINI_CLI = Harness(
 AIDER = Harness(name="aider", supports_subagents=False,
                 notes="single conversation, no subagent placement to recommend")
 OPENHANDS = Harness(name="openhands", notes="routes across vendors")
+OPENCODE = Harness(name="opencode",
+                   notes="routes across vendors; any configured provider can be "
+                         "the main session or a subagent")
 CUSTOM = Harness(name="custom", notes="a loop you wrote; nothing is assumed")
 
 ANY_HARNESS = Harness(
@@ -160,19 +178,22 @@ ANY_HARNESS = Harness(
 
 _BUILTIN: dict[str, Harness] = {
     h.name: h for h in (CLAUDE_CODE, CODEX, GEMINI_CLI, AIDER, OPENHANDS,
-                        CUSTOM, ANY_HARNESS)
+                        OPENCODE, CUSTOM, ANY_HARNESS)
 }
 
+# Spellings of "no harness". Every agent's own spellings (`claude`, `cc`,
+# `codex-cli`, `gemini`, ...) come from `native.AGENTS`, the one place an agent
+# is described, so a name that works as `adder trace <name>` works here too.
 _ALIASES = {
-    "claude": "claude-code",
-    "claude-cli": "claude-code",
-    "cc": "claude-code",
-    "openai-codex": "codex",
-    "codex-cli": "codex",
-    "gemini": "gemini-cli",
     "": ANY,
     "none": ANY,
 }
+
+
+def _alias(key: str) -> str:
+    from adder.core.native import aliases
+
+    return _ALIASES.get(key) or aliases().get(key, key)
 
 
 def _overrides() -> dict[str, Harness]:
@@ -217,8 +238,7 @@ def get(name: str | None) -> Harness:
     alternative is a cost report that refuses to run over a spelling. It does
     not silently pin anything, so the worst case is a gate that does not fire.
     """
-    key = (name or "").strip().lower()
-    key = _ALIASES.get(key, key)
+    key = _alias((name or "").strip().lower())
     return all_harnesses().get(key, ANY_HARNESS)
 
 
@@ -264,3 +284,65 @@ def infer_from_models(models: list[str]) -> Harness:
         if h.main_session_org == org:
             return h
     return ANY_HARNESS
+
+
+# Input-price ceilings ($/Mtok) for the two cheap rungs, shared with
+# `adder models ladder` so the report and the dispatcher cannot disagree.
+LADDER_BANDS = (("T0", 1.5), ("T1", 3.5))
+
+
+def vendor_ladder(h: Harness, anchor: str | None = None) -> dict[str, str] | None:
+    """A dispatch ladder a vendor-pinned harness can actually reach, or None.
+
+    The shipped ladder is Claude, and on Codex or Gemini CLI every rung of it
+    names a model that cannot be dispatched. The fix used to be a setting the
+    user had to write by hand, with model ids they had to go and look up; this
+    derives it instead, from the same catalog `adder models ladder` reads.
+
+    The top rungs are `anchor` -- the model the user's own sessions run, which
+    is the one placement known to work for them -- when it belongs to the
+    pinned vendor, and otherwise that vendor's best-rated model. Each lower
+    rung is the best-rated tool-capable model in its price band that is also
+    strictly cheaper than the rung above it, so a ladder can never route "down"
+    to something that costs more. A rung with no such model repeats the one
+    above it rather than pointing at nothing.
+
+    None when the harness pins nothing, or pins Anthropic, whose shipped ladder
+    is the one the measurements were taken on.
+    """
+    org = h.main_session_org
+    if not org or org == "anthropic":
+        return None
+    if anchor is None:
+        # Asked for here, not by the caller, so a Claude Code run -- which
+        # returns above -- never pays for the transcript scan behind it.
+        from adder.core.settings import session_model
+
+        anchor = session_model()
+    return _vendor_ladder(org, anchor)
+
+
+@lru_cache(maxsize=16)
+def _vendor_ladder(org: str, anchor: str) -> dict[str, str] | None:
+    from adder.pricing.catalog import load
+
+    try:
+        cat = load()
+        pool = [e for e in cat.find(needs_tools=True, priced_only=True, rated_only=True,
+                                    min_context=100_000)
+                if (e.org or "").lower() == org and e.inp is not None]
+    except Exception:
+        # The catalog is an input to a suggestion, never a reason to fail.
+        return None
+    if not pool:
+        return None
+    pool.sort(key=lambda e: -(e.rating() or 0))
+    top = next((e for e in pool if e.id == anchor), None) or pool[0]
+    ladder = {"T3": top.id, "T2": top.id}
+    above = top
+    for rung, ceiling in reversed(LADDER_BANDS):
+        pick = next((e for e in pool if e.inp <= ceiling and e.inp < above.inp), None)
+        if pick is not None:
+            above = pick
+        ladder[rung] = above.id
+    return {k: ladder[k] for k in ("T0", "T1", "T2", "T3")}

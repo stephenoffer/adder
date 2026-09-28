@@ -26,7 +26,7 @@ from adder.core.settings import (
 def report(*, cwd: Path | str | None = None) -> str:
     from adder.util.render import table
 
-    res = resolve(cwd=cwd)
+    res = resolve(cwd=cwd, derive_model=True)
     rows = []
     for s in SETTINGS:
         r = res[s.name]
@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        res = resolve()
+        res = resolve(derive_model=True)
     except ConfigError as e:
         print(f"adder config: {e}", file=sys.stderr)
         return 1

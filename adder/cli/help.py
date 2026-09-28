@@ -18,7 +18,7 @@ import textwrap
 
 from adder.cli.commands import COMMANDS, GROUP_BLURB, GROUPS, START_HERE
 
-TAGLINE = "adder — what your Claude Code sessions cost, and how to spend less"
+TAGLINE = "adder — what your coding-agent sessions cost, and how to spend less"
 
 
 def _short() -> str:
@@ -37,9 +37,11 @@ def _short() -> str:
         "  adder help <command>   what one command does, and its flags",
         "  adder help --all       every command with a one-line description",
         "",
-        "Everything is computed locally from the transcripts Claude Code already keeps.",
-        "No account, no model calls, no network (except `adder models refresh`, when you",
-        "run it), and nothing under ~/.claude/projects is ever modified.",
+        "Reads the transcripts Claude Code, Codex CLI, Gemini CLI and OpenCode already",
+        "keep, and finds them on its own. `adder trace codex` picks one agent; any path",
+        "picks a directory or a single API/proxy log. No account, no model calls, no",
+        "network (except `adder models refresh`, when you run it), and no transcript is",
+        "ever modified.",
     ]
     return "\n".join(out)
 

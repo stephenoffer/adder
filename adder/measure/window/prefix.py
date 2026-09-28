@@ -387,6 +387,112 @@ def weighted_median_turns(sessions) -> int:
     return rows[-1][0]
 
 
+# Characters per token for the itemised parts. An estimate, and printed as one:
+# the transcript records the text of these parts but not their token counts.
+CHARS_PER_TOKEN = 4.0
+_HEAD_RECORDS = 80
+
+
+@dataclass
+class Composition:
+    """What a session's opening context holds, as far as the transcript says.
+
+    The opening's size is measured: the first main-chain turn's context. Two of
+    its parts are recorded as text -- the system prompt (`prompt_snapshot`) and
+    every instructions file loaded, CLAUDE.md and memory, by path -- and the
+    rest is not: tool definitions, the skill list and MCP instructions arrive
+    without a trace. So the remainder is exactly that, a remainder, and it is
+    where the trimming a smaller prefix needs mostly has to come from.
+    """
+    sessions: int = 0
+    opening: int = 0                  # median opening context, tokens (measured)
+    system: int = 0                   # median system prompt, tokens (estimated)
+    files: dict[str, int] | None = None   # median per instructions file (estimated)
+
+    @property
+    def listed(self) -> int:
+        return self.system + sum((self.files or {}).values())
+
+    @property
+    def remainder(self) -> int:
+        return max(0, self.opening - self.listed)
+
+
+def composition(root: Path | str = DEFAULT_ROOT) -> Composition:
+    """Median opening composition over the main-session transcripts under `root`."""
+    import json
+    import statistics
+
+    from adder.core.trace import transcripts
+
+    openings, systems = [], []
+    files: dict[str, list[int]] = {}
+    for path in transcripts(root):
+        if path.parent.name == "subagents":
+            continue
+        sys_chars, file_chars, ctx = None, {}, None
+        try:
+            with path.open(encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh):
+                    if n > _HEAD_RECORDS:
+                        break
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(d, dict):
+                        continue
+                    a = d.get("attachment")
+                    if isinstance(a, dict) and a.get("type") == "prompt_snapshot":
+                        parts = a.get("systemPrompt")
+                        if isinstance(parts, list):
+                            sys_chars = sum(len(str(x)) for x in parts)
+                    elif isinstance(a, dict) and a.get("type") == "instructions":
+                        for f in a.get("files") or []:
+                            if isinstance(f, dict) and f.get("path"):
+                                file_chars[str(f["path"])] = len(str(f.get("content") or ""))
+                    elif d.get("type") == "assistant" and not d.get("isSidechain"):
+                        u = (d.get("message") or {}).get("usage") or {}
+                        if isinstance(u, dict):
+                            ctx = sum(int(u.get(k) or 0) for k in (
+                                "input_tokens", "cache_read_input_tokens",
+                                "cache_creation_input_tokens"))
+                        break
+        except OSError:
+            continue
+        if not ctx or sys_chars is None:
+            continue
+        openings.append(ctx)
+        systems.append(int(sys_chars / CHARS_PER_TOKEN))
+        for k, c in file_chars.items():
+            files.setdefault(k, []).append(int(c / CHARS_PER_TOKEN))
+    if not openings:
+        return Composition()
+    n = len(openings)
+    # A file loaded in only some sessions is weighted by how often it is there.
+    per_file = {k: int(statistics.median(v) * len(v) / n) for k, v in files.items()}
+    return Composition(n, int(statistics.median(openings)),
+                       int(statistics.median(systems)),
+                       dict(sorted(per_file.items(), key=lambda kv: -kv[1])))
+
+
+def render_composition(c: Composition) -> list[str]:
+    if not c.sessions:
+        return []
+    out = ["", f"  What an opening holds (median of {c.sessions:,} sessions that "
+               "recorded it):",
+           f"    opening context    {c.opening:>8,} tok   measured",
+           f"    system prompt      {c.system:>8,} tok   estimated from its text"]
+    for path, tok in list((c.files or {}).items())[:6]:
+        out.append(f"    {Path(path).name:<18} {tok:>8,} tok   {path}")
+    out.append(f"    everything else    {c.remainder:>8,} tok   tool definitions, the skill "
+               "list, MCP servers --")
+    out.append("                                    not itemised by the transcript")
+    out.append("  The remainder is where a smaller prefix comes from: every MCP server,")
+    out.append("  plugin and skill you do not use is carried on every turn.")
+    return out
+
+
 def report(root: Path | str = DEFAULT_ROOT, *, model: str | None = None,
            ttl: str = "1h", handoff_tokens: int = DEFAULT_HANDOFF,
            on: date | None = None) -> str:
@@ -417,6 +523,7 @@ def report(root: Path | str = DEFAULT_ROOT, *, model: str | None = None,
                  f"-- the part that is this session's")
     if op.uncached_tokens:
         lines.append(f"    uncached        {op.uncached_tokens:>10,} tok")
+    lines += render_composition(composition(root))
 
     warm = op.cost(model, ttl=ttl, handoff_tokens=handoff_tokens, on=on)
     cold = op.rebuild_cost(model, ttl=ttl, handoff_tokens=handoff_tokens, on=on)

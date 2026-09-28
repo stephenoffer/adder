@@ -206,9 +206,10 @@ new work. It was context already paid for once, being re-read.
 
 These are substitutes, not addends — they all attack the same pool. The largest
 is session length, and no hook can pull it: nothing here can restart a session
-for you. That gap is exactly the difference between the 3.1x adder delivers and
-the 6.4x available, and the tool prints both rather than the flattering one. At
-the pessimistic corner of its three softest assumptions, 6.4x becomes 3.3x.
+for you. That gap is exactly the difference between the 1.1x adder delivers on
+its own and the 2.6x available once you restart when it says to, and the tool
+prints both rather than the flattering one. At the pessimistic corner of its
+three softest assumptions, 2.6x becomes 2.2x.
 
 → [levers.md](levers.md)
 
@@ -240,8 +241,10 @@ you'd rather it only refuse the reads that provably admit nothing new.
 
 ## How much to trust any of it
 
-Every dollar figure on this page comes from one machine's transcripts: 118
-sessions, 33,192 turns, 34,592 tool calls, dominated by one workload. Your
+Every dollar figure on this page comes from one machine's transcripts,
+dominated by one workload: 118 sessions and 33,192 turns for the tables above,
+and 69 sessions and 45,217 turns for the benchmark multiples, which were
+re-measured on 2026-09-28 after the replay's delegation model was corrected. Your
 absolute numbers will differ. The shares are what drive the advice, and even
 those are worth re-checking on your own history, which is the entire point of
 the tool.

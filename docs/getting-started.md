@@ -32,11 +32,12 @@ That is the setup. No account, no API key, no configuration file to write. adder
 never calls a model and never opens a network connection, with one exception:
 `adder models refresh`, which only runs when you type it.
 
-Enforcement is the step that changes the bill. Everything else on this page
-is a report, and a report saves nothing until somebody acts on it. Replaying the
-author's recorded turns, activation alone — installed, working the same way —
-priced a $7,888 bill at $2,567, which is 3.1x, and that is the whole reason this
-page starts with installation rather than with a number. ([benchmark.md](benchmark.md))
+Enforcement is the only step that changes the bill without you, and it is a
+modest one. Everything else on this page is a report, and a report saves
+nothing until somebody acts on it. Replaying the author's recorded turns,
+activation alone — installed, working the same way — priced an $8,593 bill at
+$7,690, about 1.1x. Restarting when the tool says to takes it to $3,364, 2.6x,
+and that one is yours. ([benchmark.md](benchmark.md))
 
 You can also run it from a checkout with no install step at all:
 

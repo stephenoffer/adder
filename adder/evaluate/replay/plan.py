@@ -132,6 +132,13 @@ class Regime:
     # same way would put an uptake assumption behind the one saving that has
     # none.
     refuse_duplicates: bool = False
+    # The always-loaded prefix -- system prompt, tool definitions, CLAUDE.md,
+    # memory, the skill list -- trimmed to this many tokens. Every main-chain
+    # turn carries it, so at a short restart cadence it is most of what is
+    # left: here sessions open at ~49K, and a lean headless Claude Code opens
+    # at ~21K. MODELLED: how far a given setup can actually be trimmed is a
+    # property of what it loads, which the transcript does not itemise.
+    prefix_tokens: int | None = None
 
     @property
     def effort_mult(self) -> float:
@@ -269,6 +276,16 @@ class Step:
     # Folded into `write_cost` and scaled by admission, it was untouched by a
     # restart -- $624 of $8,747 here, 7% of the bill, credited to no lever.
     rebuild_cost: float = 0.0
+    # Of `read_cost`, the uncached input; the rest is cache reads. And this
+    # turn's own cache-read and cache-write rates, $/MTok. A different session
+    # model re-prices each part at its own rate. Scaling the whole input bill
+    # by the ratio of input rates is right only between models that read cache
+    # at the same fraction of input: Opus 5 -> Opus 5.5 reads go from 0.10x to
+    # 0.05x, and the swap priced them at 0.8 of what they were instead of 0.4,
+    # on the term that is four fifths of the bill.
+    uncached_cost: float = 0.0
+    read_rate: float = 0.0
+    write_rate: float = 0.0
 
     @property
     def tool_part(self) -> int:
@@ -319,7 +336,10 @@ def prepare(sessions, on: date | None = None,
                               t.output_cost(on),
                               t.context, adm[i], r.inp, r.out, t.model, t.ttl,
                               t.pricing_date(on), dup, side=bool(t.sidechain),
-                              own=min(adm[i], prev_out[i]), rebuild_cost=rebuilt))
+                              own=min(adm[i], prev_out[i]), rebuild_cost=rebuilt,
+                              uncached_cost=t.uncached_in * r.inp / M,
+                              read_rate=r.cache_read,
+                              write_rate=w_rate * M if w_rate else r.cache_write))
         out.append((start_ctx, floor_ctx, steps))
     return out
 
@@ -360,6 +380,27 @@ def cheapest_tier(read_tokens: int, summary_tokens: int, *, p_fail: float,
     return best
 
 
+def swapped_input(st: Step, cheap: str, *, context_scale: float, kept_frac: float) -> float:
+    """This turn's input bill, as the regime leaves it, at `cheap`'s rates.
+
+    Each part at its own rate: uncached input at the input rate, carried
+    context at the cache-read rate, writes at the cache-write rate. A part
+    whose recorded rate is zero -- a free endpoint, or a turn recorded
+    before the rates were kept -- falls back to the input-rate ratio.
+    """
+    cr = Rates.for_model(cheap, ttl=st.ttl, on=st.on)
+    by_inp = cr.inp / st.inp if st.inp else 1.0
+
+    def ratio(new: float, old: float) -> float:
+        return new / old if old > 0 else by_inp
+
+    cached = max(0.0, st.read_cost - st.uncached_cost)
+    return (st.uncached_cost * context_scale * by_inp
+            + cached * context_scale * ratio(cr.cache_read, st.read_rate)
+            + (st.rebuild_cost * context_scale + st.write_cost * kept_frac)
+            * ratio(cr.cache_write, st.write_rate))
+
+
 def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHARE,
            on: date | None = None) -> Result:
     """Re-price every recorded turn under `regime`.
@@ -395,7 +436,11 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
     keep_adm = output_share * keep_out + (1.0 - output_share) * (1.0 - regime.tool_discipline)
 
     for start_ctx, floor_ctx, steps in prepared:
-        ctx, real_prev = float(start_ctx), 0
+        # What trimming the prefix removes from every context this session
+        # carries: the part of its smallest context above the target.
+        trim = (max(0, floor_ctx - regime.prefix_tokens)
+                if regime.prefix_tokens is not None else 0)
+        ctx, real_prev = float(start_ctx - trim), 0
         # What re-opening this session costs, taken from what opening it cost.
         # `steps[0].in_cost` is the recorded bill for the turn that established
         # this session's prefix -- mostly a cache read of a floor that other
@@ -403,6 +448,8 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
         # over-states it ~3x; assuming zero, which is what this replay used to
         # do, under-states it by all of it.
         reopen = steps[0].in_cost if steps else 0.0
+        if trim and start_ctx:
+            reopen *= (start_ctx - trim) / start_ctx
         # Main-chain turns still to come after each step: how many times an
         # admission would be re-read. This is the session's real horizon, which
         # the guard only estimates, so the delegation gate below decides with
@@ -442,15 +489,20 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
                 # open smaller than an opening. It also has to be told what the
                 # last one knew, which is written in at the cache-write rate.
                 handoff = regime.handoff_tokens
-                ctx = float(max(start_ctx, floor_ctx) + handoff)
+                ctx = float(max(start_ctx, floor_ctx) + handoff - trim)
                 cost = reopen + handoff * Rates.for_model(
                     st.model, ttl=st.ttl, on=st.on).cache_write / M
-                if (cheap and cheap != st.model and st.inp > 0
+                if (cheap and cheap != st.model and not st.side and st.inp > 0
                         and fits(cheap, int(ctx))):
                     # `st.inp > 0`: the catalog carries free endpoints, and a
                     # recorded turn on one has an input rate of zero. Rescaling
-                    # by a ratio of rates divides by it.
-                    cost *= rate(cheap, st.on).inp / st.inp
+                    # by a ratio of rates divides by it. The opening is
+                    # re-priced part by part, like every other turn below.
+                    s0 = steps[0]
+                    cost = (swapped_input(s0, cheap, context_scale=1.0, kept_frac=1.0)
+                            if s0.model == st.model else reopen * rate(cheap, st.on).inp / st.inp)
+                    cost += handoff * Rates.for_model(cheap, ttl=st.ttl,
+                                                      on=st.on).cache_write / M
                 res.restart += cost
                 res.restarts += 1
 
@@ -557,13 +609,18 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
             # on the recorded accounting -- no cache rebuild, because there was
             # never a prefix on the expensive model to lose. It only applies to
             # turns the cheaper model could actually have held.
-            if (cheap and cheap != st.model and st.inp > 0 and st.out_rate > 0
+            # Main chain only: a subagent's turns run on the model its tier
+            # names, not the session's, and swapping them put Haiku subagent
+            # turns on Opus rates the moment the session model was Opus 5.5.
+            if (cheap and cheap != st.model and not st.side
+                    and st.inp > 0 and st.out_rate > 0
                     and fits(cheap, int(max(ctx, st.real_ctx)))):
                 # Both rates strictly positive: the substitution below is a
                 # ratio, and a turn recorded on a free endpoint (the catalog
                 # carries sixteen) has a rate of zero on one or both sides.
                 cr = rate(cheap, st.on)
-                res.main_input += in_cost * (cr.inp / st.inp)
+                res.main_input += swapped_input(st, cheap, context_scale=scale,
+                                                kept_frac=kept_frac)
                 res.main_out += out_cost * (cr.out / st.out_rate)
                 res.session_rework += regime.session_rework * (in_cost + out_cost)
                 res.reprised += 1
@@ -579,7 +636,8 @@ def replay(sessions, regime: Regime, *, output_share: float = DEFAULT_OUTPUT_SHA
 def ladder(delegate_above: int = 5_000, split_turns: int = 300,
            effort: str = "medium", session_model: str = "claude-sonnet-5",
            session_rework: float = 0.20,
-           handoff_tokens: int = DEFAULT_HANDOFF) -> list[Regime]:
+           handoff_tokens: int = DEFAULT_HANDOFF,
+           prefix_tokens: int | None = None) -> list[Regime]:
     steps = [Regime()]
     # Placement first, price second, and deliberately in that order: the first
     # row delegates to the model the session was already on, so it measures the
@@ -592,6 +650,10 @@ def ladder(delegate_above: int = 5_000, split_turns: int = 300,
                          right_size=True))
     steps.append(replace(steps[-1], label=f"+ split sessions at {split_turns} turns",
                          split_turns=split_turns, handoff_tokens=handoff_tokens))
+    if prefix_tokens is not None:
+        steps.append(replace(steps[-1],
+                             label=f"+ trim the loaded prefix to {prefix_tokens:,} tok",
+                             prefix_tokens=prefix_tokens))
     steps.append(replace(steps[-1], label=f"+ effort high -> {effort}", effort=effort))
     steps.append(replace(steps[-1], label="+ 30% terser, 40% less tool output",
                          terseness=0.30, tool_discipline=0.40))
@@ -713,7 +775,7 @@ def report(root: Path | str = DEFAULT_ROOT, *, target: float = 10.0,
            delegate_above: int | None = None, split_turns: int | None = None,
            effort: str = "medium", session_model: str = "claude-sonnet-5",
            session_rework: float = 0.20, handoff_tokens: int = DEFAULT_HANDOFF,
-           on: date | None = None) -> int:
+           prefix_tokens: int | None = None, on: date | None = None) -> int:
     from adder.measure.spend.debt import output_share_of_growth
 
     sessions = load_sessions(root, use_cache=True)
@@ -738,7 +800,7 @@ def report(root: Path | str = DEFAULT_ROOT, *, target: float = 10.0,
         delegate_above, threshold_note = recommended_threshold(
             sessions, split_turns=split_turns, on=on)
     steps = ladder(delegate_above, split_turns, effort, session_model,
-                   session_rework, handoff_tokens)
+                   session_rework, handoff_tokens, prefix_tokens)
     results = [replay(prepared, r, output_share=share, on=on) for r in steps]
     base = results[0]
 
@@ -1014,7 +1076,7 @@ def _json_report(a) -> int:
             sessions, split_turns=split_turns)
 
     steps = ladder(delegate_above, split_turns, a.effort, a.session_model,
-                   a.session_rework, a.handoff)
+                   a.session_rework, a.handoff, a.prefix)
     results = [replay(prepared, r, output_share=share) for r in steps]
     base, result = results[0], results[-1]
     solved, solved_res, severity = solve(
@@ -1089,6 +1151,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--session-rework", type=float, default=0.20, metavar="F",
                     help="modelled share of the session redone on the original "
                          "model (default: 0.20)")
+    ap.add_argument("--prefix", type=int, default=None, metavar="TOK",
+                    help="what-if: the always-loaded prefix (system prompt, tools, "
+                         "CLAUDE.md, skills) trimmed to TOK tokens. MODELLED")
     ap.add_argument("--json", action="store_true", help="machine-readable")
     a = ap.parse_args(argv)
     # `root_of`: the argument if one was given, else the `root`
@@ -1102,7 +1167,8 @@ def main(argv: list[str] | None = None) -> int:
     rc = report(a.root, target=a.target, delegate_above=a.delegate_above,
                 split_turns=a.split_turns, effort=a.effort,
                 handoff_tokens=a.handoff,
-                session_model=a.session_model, session_rework=a.session_rework)
+                session_model=a.session_model, session_rework=a.session_rework,
+                prefix_tokens=a.prefix)
     print()
     return rc
 

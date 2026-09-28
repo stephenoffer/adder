@@ -305,3 +305,49 @@ class TestPrefixSaysWhyItIsThePrior:
         assert "too few sessions (n=0 of 2 opened within 300s" in few.describe()
         assert "need >=5" in few.describe()
         assert "no local transcripts" in measure({}).describe()
+
+
+class TestWhatAnOpeningHolds:
+    """The system prompt and every loaded instructions file are recorded as text;
+    tools, skills and MCP servers are not, so they are the remainder."""
+
+    def _write(self, d, sid, sys_chars, claude_chars, opening):
+        import json
+
+        recs = [
+            {"type": "attachment", "sessionId": sid,
+             "attachment": {"type": "prompt_snapshot", "systemPrompt": ["x" * sys_chars]}},
+            {"type": "attachment", "sessionId": sid,
+             "attachment": {"type": "instructions", "files": [
+                 {"path": "/r/CLAUDE.md", "type": "Project", "content": "y" * claude_chars}]}},
+            {"type": "assistant", "sessionId": sid, "timestamp": "2026-09-01T10:00:00Z",
+             "message": {"id": f"{sid}-m", "model": "claude-opus-5", "content": [],
+                         "usage": {"input_tokens": 10, "cache_read_input_tokens": opening - 10,
+                                   "output_tokens": 5}}},
+        ]
+        (d / f"{sid}.jsonl").write_text("\n".join(json.dumps(r) for r in recs))
+
+    def test_the_parts_and_the_remainder(self, tmp_path):
+        from adder.measure.window.prefix import composition
+
+        for i in range(3):
+            self._write(tmp_path, f"s{i}", 8_000, 4_000, 30_000)
+        c = composition(tmp_path)
+        assert (c.sessions, c.opening, c.system) == (3, 30_000, 2_000)
+        assert c.files == {"/r/CLAUDE.md": 1_000}
+        assert c.remainder == 27_000
+
+    def test_subagent_transcripts_are_not_openings(self, tmp_path):
+        from adder.measure.window.prefix import composition
+
+        sub = tmp_path / "s0" / "subagents"
+        sub.mkdir(parents=True)
+        self._write(sub, "agent-1", 100, 100, 5_000)
+        assert composition(tmp_path).sessions == 0
+
+    def test_it_is_printed_with_the_remainder_named(self, tmp_path):
+        from adder.measure.window.prefix import composition, render_composition
+
+        self._write(tmp_path, "s0", 8_000, 4_000, 30_000)
+        text = "\n".join(render_composition(composition(tmp_path)))
+        assert "everything else" in text and "estimated" in text and "measured" in text

@@ -170,14 +170,15 @@ class TestTextSurface:
     being written.
     """
 
-    # `ab` runs a live A/B against the API; `plan` runs a regime solver that
+    # `ab` runs a live A/B against the API, and `trial` real headless sessions
+    # (its dry run and its report are covered in its own tests); `plan` runs a regime solver that
     # takes twenty seconds on real data and is covered by its own tests;
     # `bench` belongs to a different change in flight. `hook` is not a report at
     # all -- it reads a harness event off stdin and writes a decision to stdout,
     # so "prints something when handed a transcript root" is not a promise it
     # makes. `tests/decide/hooks/test_run.py` covers it.
     RUNNABLE: ClassVar[list[str]] = [
-        c.name for c in COMMANDS if c.name not in {"ab", "bench", "plan", "hook"}]
+        c.name for c in COMMANDS if c.name not in {"ab", "trial", "bench", "plan", "hook"}]
 
     def test_the_list_covers_most_of_the_table(self):
         assert len(self.RUNNABLE) > 20

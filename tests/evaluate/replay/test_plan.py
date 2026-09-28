@@ -125,6 +125,28 @@ class TestSessionModel:
         assert res.reprised == 0
         assert res.total == pytest.approx(replay(sess, Regime()).total)
 
+    def test_each_part_of_the_input_is_priced_at_the_target_rate(self):
+        """Opus 5 reads cache at 0.10x of $5, Opus 5.5 at 0.05x of $4: reads go
+        to 0.4 of what they were. Scaling the whole input bill by input rates
+        priced them at 0.8, on the term that is most of every real bill."""
+        sess = _sessions()
+        base = replay(sess, Regime())
+        swapped = replay(sess, Regime(session_model="claude-opus-5-5", session_rework=0.0))
+        assert swapped.main_input == pytest.approx(base.main_input * 0.2 / 0.5, rel=1e-6)
+        assert swapped.main_out == pytest.approx(base.main_out * 20 / 25, rel=1e-6)
+
+    def test_a_subagent_keeps_its_own_model(self):
+        """Swapping sidechain turns put Haiku subagents on the session's rates."""
+        s = Session("s", "proj")
+        for i in range(50):
+            s.turns.append(Turn("s", "proj", HAIKU, 0, 20_000 + 1_000 * i, 0, 400, 0, True,
+                                ts=f"2026-08-14T10:{i % 60:02d}:00Z"))
+        sess = {"s": s}
+        base = replay(sess, Regime())
+        res = replay(sess, Regime(session_model="claude-opus-5-5", session_rework=0.0))
+        assert res.reprised == 0
+        assert res.total == pytest.approx(base.total)
+
     def test_enough_rework_makes_it_a_loss(self):
         sess = _sessions()
         assert (replay(sess, Regime(session_model=SONNET, session_rework=1.5)).total
@@ -531,3 +553,24 @@ class TestARebuildScalesWithTheContextItRewrites:
         # Without the split, the input side cannot fall by more than the reads
         # plus the rebuilds; with it, some of the rebuild money has to go too.
         assert base.main_input - split.main_input > 0.5 * rebuilt
+
+
+class TestTrimmingThePrefix:
+    """Every main-chain turn carries the always-loaded prefix, so at a short
+    restart cadence it is most of what is left to pay for."""
+
+    def test_a_smaller_prefix_carries_less(self):
+        sess = _sessions(base=40_000)
+        base = replay(sess, Regime(split_turns=30))
+        lean = replay(sess, Regime(split_turns=30, prefix_tokens=20_000))
+        assert lean.main_input < base.main_input
+        assert lean.restart < base.restart
+
+    def test_a_target_above_the_floor_changes_nothing(self):
+        sess = _sessions(base=20_000)
+        assert replay(sess, Regime(prefix_tokens=50_000)).total == pytest.approx(
+            replay(sess, Regime()).total)
+
+    def test_it_is_a_row_only_when_asked_for(self):
+        assert not any(r.prefix_tokens for r in ladder())
+        assert any(r.prefix_tokens == 25_000 for r in ladder(prefix_tokens=25_000))

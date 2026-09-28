@@ -107,3 +107,39 @@ class TestTheReport:
         out = tmp_path / "r.jsonl"
         out.write_text(json.dumps(vars(self._r("baseline", "a", False, 0.5))) + "\n")
         assert trial.load(out)[0].cost == 0.5
+
+
+class TestTheCascade:
+    """Cheap first, and the strong model only when the tests a person can see
+    still fail. Never decided on the hidden tests."""
+
+    def _fake(self, monkeypatch, visible):
+        from types import SimpleNamespace
+
+        models = []
+
+        def run(cmd, **kw):
+            models.append(cmd[cmd.index("--model") + 1])
+            return SimpleNamespace(stdout=json.dumps({"total_cost_usd": 0.1, "num_turns": 3}))
+
+        monkeypatch.setattr(trial.subprocess, "run", run)
+        monkeypatch.setattr(trial, "visible_pass", lambda work: visible)
+        monkeypatch.setattr(trial, "grade", lambda work, task: (True, "ok"))
+        return models
+
+    def test_it_escalates_only_when_the_visible_tests_fail(self, monkeypatch, tmp_path):
+        task = next(t for t in TASKS if not t.multi)
+        models = self._fake(monkeypatch, visible=False)
+        r = trial.run_one(task, trial.ALL_ARMS["adder-cascade"], 0, workroot=tmp_path)
+        assert models == ["claude-haiku-4-5", "claude-sonnet-5"]
+        assert r.sessions == 2 and r.cost == pytest.approx(0.2) and "escalated" in r.detail
+
+    def test_a_passing_cheap_run_is_not_escalated(self, monkeypatch, tmp_path):
+        task = next(t for t in TASKS if not t.multi)
+        models = self._fake(monkeypatch, visible=True)
+        trial.run_one(task, trial.ALL_ARMS["adder-cascade"], 0, workroot=tmp_path)
+        assert models == ["claude-haiku-4-5"]
+
+    def test_haiku_arms_set_no_effort(self, tmp_path):
+        cmd = trial.command(trial.ALL_ARMS["adder-haiku"], "x", tmp_path / "s.json", 1.0)
+        assert "--effort" not in cmd

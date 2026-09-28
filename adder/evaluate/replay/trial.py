@@ -63,6 +63,11 @@ class Arm:
     # how a lever `plan` models but adder does not ship yet gets measured,
     # quality included, before anything installs it.
     system: str = ""
+    # A model to hand the task to when the visible tests still fail after this
+    # arm's sessions -- the cascade `adder cascade` prices. Decided on the
+    # tests the agent was shown, never the hidden ones: a user sees the first,
+    # and deciding on the second would be grading with the answer key.
+    escalate: str = ""
 
 
 ARMS: dict[str, Arm] = {
@@ -78,6 +83,17 @@ TERSE = ("Work tersely. Do not narrate what you are about to do or summarise wha
 CANDIDATES: dict[str, Arm] = {
     "adder-sonnet-terse": Arm("adder-sonnet-terse", "claude-sonnet-5", "medium",
                               True, True, TERSE),
+    # One continuous session, like the baseline. On `sprawl` a restart per part
+    # cost more than it saved: 16 openings of a ~21K-token prefix, against a
+    # baseline whose narrow reads never let its context grow. `plan` solves a
+    # 34-turn cadence from exactly that trade-off; a restart every part is not
+    # what it recommends, and this arm measures the gap.
+    "adder-sonnet-cont": Arm("adder-sonnet-cont", "claude-sonnet-5", "medium",
+                             True, False, TERSE),
+    # Haiku 4.5 rejects `effort`, so neither Haiku arm sets one.
+    "adder-haiku": Arm("adder-haiku", "claude-haiku-4-5", None, True, True, TERSE),
+    "adder-cascade": Arm("adder-cascade", "claude-haiku-4-5", None, True, True, TERSE,
+                         escalate="claude-sonnet-5"),
 }
 ALL_ARMS: dict[str, Arm] = {**ARMS, **CANDIDATES}
 
@@ -164,6 +180,13 @@ def command(arm: Arm, prompt: str, settings: Path, cap: float) -> list[str]:
     return cmd
 
 
+def visible_pass(work: Path) -> bool:
+    """Do the tests the agent can see pass? What a person would check."""
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                        "tests"], cwd=work, capture_output=True, text=True, timeout=300)
+    return r.returncode == 0
+
+
 def grade(work: Path, task: Task) -> tuple[bool, str]:
     """Hidden tests in, then the visible and hidden suites together."""
     _write(work, task.hidden)
@@ -175,14 +198,14 @@ def grade(work: Path, task: Task) -> tuple[bool, str]:
 
 
 def run_one(task: Task, arm: Arm, repeat: int, *, cap: float = SESSION_CAP_USD,
-            spend_left: float = float("inf")) -> Result:
+            spend_left: float = float("inf"), workroot: Path | None = None) -> Result:
     """Run `task` under `arm` in a throwaway directory. Spends money."""
     start = time.monotonic()
     # A fixed directory per task and arm, not a fresh temp name. Claude Code
     # keys a project entry on the working directory even when nothing is
     # persisted, and a random name per run left one empty entry in
     # `~/.claude/projects` for every run; a fixed one leaves one per pair.
-    tmp = Path(tempfile.gettempdir()) / "adder-trial" / f"{task.id}-{arm.name}"
+    tmp = (workroot or Path(tempfile.gettempdir()) / "adder-trial") / f"{task.id}-{arm.name}"
     shutil.rmtree(tmp, ignore_errors=True)
     work, state = tmp / "repo", tmp / "state"
     work.mkdir(parents=True)
@@ -217,10 +240,29 @@ def run_one(task: Task, arm: Arm, repeat: int, *, cap: float = SESSION_CAP_USD,
         turns += int(out.get("num_turns") or 0)
         if out.get("is_error"):
             note = f"session error: {str(out.get('subtype') or out.get('result'))[:80]}"
+    if arm.escalate and not note.startswith("budget") and not visible_pass(work):
+        up = Arm(arm.name, arm.escalate, "medium", arm.adder, False, arm.system)
+        body = "\n".join(f"- {p}" for p in task.parts)
+        prompt = (_preamble() + "An earlier session attempted the tasks below and "
+                  "left tests failing. Finish them:\n" + body)
+        session_cap = min(cap, spend_left - cost)
+        if session_cap > 0.05:
+            try:
+                done = subprocess.run(command(up, prompt, settings, session_cap),
+                                      cwd=work, env=_env(up, state),
+                                      stdin=subprocess.DEVNULL, capture_output=True,
+                                      text=True, timeout=TIMEOUT_S)
+                out = json.loads(done.stdout or "{}")
+                sessions += 1
+                cost += float(out.get("total_cost_usd") or 0.0)
+                turns += int(out.get("num_turns") or 0)
+                note = "escalated"
+            except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+                note = f"escalation failed: {type(e).__name__}"
     passed, last = grade(work, task)
     return Result(task.id, arm.name, repeat, passed and not note.startswith("budget"),
                   round(cost, 6), sessions, turns, round(time.monotonic() - start, 1),
-                  note or last)
+                  f"{note}; {last}" if note else last)
 
 
 def load(path: Path) -> list[Result]:
@@ -241,13 +283,13 @@ def report(results: list[Result]) -> str:
         by.setdefault(r.arm, []).append(r)
     if not results:
         return "  No results."
-    lines = [f"  {'arm':<16}{'runs':>6}{'passed':>9}{'95% CI':>15}{'total':>11}"
-             f"{'per run':>10}", "  " + "-" * 67]
+    lines = [f"  {'arm':<20}{'runs':>6}{'passed':>9}{'95% CI':>15}{'total':>11}"
+             f"{'per run':>10}", "  " + "-" * 71]
     for name, rs in by.items():
         k, n = sum(r.passed for r in rs), len(rs)
         lo, hi = wilson_interval(k, n)
         total = sum(r.cost for r in rs)
-        lines.append(f"  {name:<16}{n:>6}{k:>5}/{n:<3}{lo:>7.0%}-{hi:<6.0%}"
+        lines.append(f"  {name:<20}{n:>6}{k:>5}/{n:<3}{lo:>7.0%}-{hi:<6.0%}"
                      f"{money(total, width=11)}{money(total / n, width=10)}")
     base = by.get("baseline", [])
     if base:

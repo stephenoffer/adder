@@ -95,7 +95,18 @@ class TestTheAllowlist:
 class TestArguments:
     def test_flags_and_the_positional_become_argv(self):
         t = mcp.BY_TOOL['doctor']
-        assert t.argv({'root': 'codex', 'since': '7d'}) == ['codex', '--since', '7d']
+        assert t.argv({'root': 'codex', 'since': '7d'}) == ['--since=7d', '--', 'codex']
+
+    @pytest.mark.parametrize(('tool', 'args'), [
+        ('policy', {'task': '--record'}), ('doctor', {'root': '--help'}),
+        ('trace', {'since': '--help'})])
+    def test_a_value_can_never_become_a_flag(self, tool, args, isolated_home, tmp_path):
+        """`{"task": "--record"}` used to reach `policy` as the flag and write
+        the ledger through a server whose whole promise is that it reads."""
+        before = sorted(isolated_home.rglob('*'))
+        text, _ = mcp.run_tool(mcp.BY_TOOL[tool], args)
+        assert sorted(isolated_home.rglob('*')) == before
+        assert 'show this help message' not in text
 
     def test_an_unknown_argument_is_an_error_result(self):
         text, err = mcp.run_tool(mcp.BY_TOOL['trace'], {'yes': 'please'})
@@ -155,6 +166,10 @@ class TestPrintedConfig:
     def test_claude_gets_the_one_line_command(self):
         assert mcp.config_snippet('claude', exe='/x/adder') == \
             'claude mcp add adder -- /x/adder mcp\n'
+
+    def test_a_path_with_a_space_survives_the_paste(self):
+        got = mcp.config_snippet('claude', exe='/my tools/adder')
+        assert got == "claude mcp add adder -- '/my tools/adder' mcp\n"
 
     def test_printing_writes_nothing(self, isolated_home, capsys):
         before = sorted(p for p in isolated_home.rglob('*'))

@@ -44,15 +44,21 @@ check: lint test ## What CI runs: lint + tests
 .PHONY: smoke
 # The command list is read from adder/cli/commands.py rather than restated here, so a
 # new command is covered by this target the moment it is registered.
+# It is read into a variable, not piped: a PY that cannot import adder printed
+# a traceback, the pipe's status was the loop's, the loop saw no lines, and
+# the target passed having checked nothing. An empty list is a failure too.
 smoke: ## Every subcommand answers --help without importing the world
 	./scripts/adder help >/dev/null
 	./scripts/adder version
-	@$(PY) -c "from adder.cli import COMMANDS; print(' '.join(c.name for c in COMMANDS))" \
-	  | tr ' ' '\n' | while read -r c; do \
-	      ./scripts/adder "$$c" --help >/dev/null 2>&1 \
-	        || { echo "FAIL: adder $$c --help"; exit 1; }; \
-	    done
-	@echo "all subcommands respond to --help"
+	@cmds=$$($(PY) -c "from adder.cli import COMMANDS; print(' '.join(c.name for c in COMMANDS))") \
+	  || { echo "FAIL: $(PY) cannot read the command table"; exit 1; }; \
+	  [ -n "$$cmds" ] || { echo "FAIL: the command table is empty"; exit 1; }; \
+	  n=0; for c in $$cmds; do \
+	    ./scripts/adder "$$c" --help >/dev/null 2>&1 \
+	      || { echo "FAIL: adder $$c --help"; exit 1; }; \
+	    n=$$((n + 1)); \
+	  done; \
+	  echo "all $$n subcommands respond to --help"
 
 .PHONY: doctor
 doctor: ## Run every check against your own transcripts, ranked by dollars

@@ -13,6 +13,15 @@ recursive-include adder/decide/skills *.md
 include adder/decide/hooks/hooks.json
 recursive-include tests *.py
 recursive-include docs *.md
+# What the shipped tests read. `tests/repo` checks the plugin manifest, the two
+# launchers its hooks run and the governance files, so an sdist that carried
+# the tests without these failed its own suite on a clean extract. They are
+# not plumbing like `.claude/`: `.claude-plugin/` is the plugin itself.
+include CLAUDE.md
+include CODE_OF_CONDUCT.md
+recursive-include .claude-plugin *.json
+include bin/adder
+include scripts/adder
 
 # Never ship repo plumbing or caches.
 prune .github

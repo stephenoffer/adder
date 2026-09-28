@@ -19,11 +19,18 @@ from adder.core.settings import configured_path, get
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    (tmp_path / ".adder.json").write_text(json.dumps({
+    # The user's file, not `.adder.json`: these are paths adder writes (and,
+    # for `trace_cache`, unpickles), so a repository may not choose them.
+    # `tests/cli/test_config.py` holds that half.
+    from adder.core import settings
+
+    user = tmp_path / "adder.json"
+    user.write_text(json.dumps({
         "log": str(tmp_path / "mine-outcomes.jsonl"),
         "ledger": str(tmp_path / "mine-ledger.jsonl"),
         "trace_cache": str(tmp_path / "mine-cache"),
     }), encoding="utf-8")
+    monkeypatch.setattr(settings, "USER_FILE", user)
     monkeypatch.chdir(tmp_path)
     # The env layer wins over the file, so it must be clear for this test.
     for var in ("ADDER_LOG", "ADDER_LEDGER", "ADDER_TRACE_CACHE"):
@@ -112,3 +119,45 @@ class TestHomeIsReadWhenAsked:
         from adder.core.shapes import load_model
 
         assert load_model().calls == 0
+
+
+class TestNoConstantIsPinnedToImportTimeHome:
+    """Six home-derived constants were built at import, which CLAUDE.md
+    forbids: moving `HOME` afterwards moved none of them, and only the two
+    `isolated_home` patched by name kept the suite off the developer's files."""
+
+    @pytest.fixture
+    def moved(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        for var in ("ADDER_LOG", "ADDER_LEDGER", "ADDER_TRACE_CACHE", "ADDER_UPTAKE_CACHE"):
+            monkeypatch.delenv(var, raising=False)
+        return tmp_path
+
+    def test_each_default_follows_home(self, moved):
+        from adder.core import settings, trace
+        from adder.decide import guard
+        from adder.decide.track.ledger import ledger_path
+        from adder.decide.track.outcomes import log_path
+
+        got = {"root": trace.default_root(), "user file": settings.user_file(),
+               "ledger": ledger_path(), "log": log_path(), "uptake": guard.uptake_path()}
+        if "ADDER_TRACE_CACHE" not in trace.os.environ and \
+                trace._CACHE.at_import == trace.CACHE_PATH:
+            got["trace cache"] = trace.cache_path()
+        for name, path in got.items():
+            assert moved in path.parents, f"{name} still points at {path}"
+
+    def test_the_default_argument_is_resolved_when_used(self, moved):
+        from adder.core.trace import DEFAULT_ROOT, transcripts
+
+        proj = moved / ".claude" / "projects" / "p"
+        proj.mkdir(parents=True)
+        (proj / "s.jsonl").write_text("{}\n")
+        assert transcripts(DEFAULT_ROOT) == [proj / "s.jsonl"]
+
+    def test_a_repointed_constant_still_wins(self, moved, monkeypatch):
+        from adder.core import settings
+
+        monkeypatch.setattr(settings, "USER_FILE", moved / "elsewhere.json")
+        assert settings.user_file() == moved / "elsewhere.json"

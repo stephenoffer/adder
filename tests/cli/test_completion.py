@@ -93,3 +93,77 @@ class TestCli:
 
         with pytest.raises(SystemExit):
             main(["powershell"])
+
+
+class TestBeyondTopLevelFlags:
+    """Positional choices and subcommand flags live off the top-level parser.
+
+    Discovery read only the parser `main` handed to `parse_args`, so `adder
+    auto <Tab>` offered files and `adder models refresh --<Tab>` never offered
+    `--from`.
+    """
+
+    @pytest.mark.parametrize("command, words", [
+        ("auto", {"on", "off", "status"}),
+        ("models", {"list", "show", "ladder", "refresh"}),
+        ("completion", {"bash", "zsh", "fish"}),
+        ("outcomes", {"import", "record"}),
+    ])
+    def test_second_words_are_discovered(self, command, words):
+        from adder.cli.completion import spec_for
+
+        assert words <= set(spec_for(command).words)
+
+    def test_hook_names_are_discovered(self):
+        from adder.cli.completion import spec_for
+        from adder.decide.hooks.run import HOOKS
+
+        assert set(HOOKS) <= set(spec_for("hook").words)
+
+    def test_subcommand_flags_are_discovered_per_subcommand(self):
+        from adder.cli.completion import spec_for
+
+        assert "--from" in spec_for("models").subs["refresh"]
+        assert {"--tier", "--escalated"} <= set(spec_for("outcomes").subs["record"])
+        assert "--from" not in spec_for("models").flags
+
+    def test_flags_for_includes_subcommand_flags(self):
+        assert "--from" in flags_for("models")
+        assert "--tier" in flags_for("outcomes")
+
+    @pytest.mark.parametrize("shell", SHELLS)
+    def test_every_script_carries_the_new_words(self, shell):
+        text = script(shell)
+        for needle in ("status", "refresh", "--from" if shell != "fish" else "'from'",
+                       "--tier" if shell != "fish" else "'tier'"):
+            assert needle in text, (shell, needle)
+
+    @pytest.mark.parametrize("shell", ["bash", "zsh"])
+    def test_script_is_syntactically_valid(self, shell, tmp_path):
+        import shutil
+        import subprocess
+
+        exe = shutil.which(shell)
+        if exe is None:
+            pytest.skip(f"{shell} not installed")
+        path = tmp_path / f"adder.{shell}"
+        path.write_text(script(shell))
+        r = subprocess.run([exe, "-n", str(path)], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+    def test_bash_completes_a_subcommand_flag(self, tmp_path):
+        import shutil
+        import subprocess
+
+        exe = shutil.which("bash")
+        if exe is None:
+            pytest.skip("bash not installed")
+        path = tmp_path / "adder.bash"
+        path.write_text(script("bash"))
+        probe = (f'source "{path}"; '
+                 'COMP_WORDS=(adder models refresh --f); COMP_CWORD=3; '
+                 '_adder_complete; echo "${COMPREPLY[@]}"; '
+                 'COMP_WORDS=(adder auto o); COMP_CWORD=2; '
+                 '_adder_complete; echo "${COMPREPLY[@]}"')
+        r = subprocess.run([exe, "-c", probe], capture_output=True, text=True)
+        assert r.stdout.split("\n")[:2] == ["--from", "off on"], r.stdout

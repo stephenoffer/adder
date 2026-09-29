@@ -7,13 +7,6 @@
 
 <h1 align="center">adder</h1>
 
-<p align="center">
-  <a href="https://github.com/stephenoffer/adder/actions/workflows/ci.yml"><img src="https://github.com/stephenoffer/adder/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://pypi.org/project/adder-cli/"><img src="https://img.shields.io/pypi/v/adder-cli.svg" alt="PyPI"></a>
-  <a href="https://pypi.org/project/adder-cli/"><img src="https://img.shields.io/pypi/pyversions/adder-cli.svg" alt="Python"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-</p>
-
 **Your coding agent's bill is bigger than your dashboard says, and most of it is
 avoidable.**
 

@@ -32,6 +32,54 @@ So the honest summary is two numbers, and the first is small:
 Nearly all of the second number is the restart cadence. Session length is the
 biggest lever in `adder savings`, and no hook event can pull it.
 
+## Measured in real sessions
+
+Every figure above is a replay. `adder trial` runs the experiment instead:
+small repositories with failing tests, a real headless Claude Code session per
+arm, and hidden tests copied in afterwards to decide whether the work was
+done. The baseline is Opus 5, the model 84% of the measured history ran on, at
+its default effort, with no hooks. Run on 2026-09-28, $28.88 in all.
+
+Five short tasks (three of them in three parts), two repeats each:
+
+| arm | passed | cost per run | vs baseline |
+|---|---|---|---|
+| baseline, Opus 5 | 10/10 | $0.413 | 1.0x |
+| Opus 5.5, effort medium, hooks, tier agents | 10/10 | $0.307 | 1.35x |
+| Sonnet 5, the same | 10/10 | $0.205 | 2.02x |
+| Sonnet 5, the same, plus a terseness instruction | 10/10 | $0.180 | 2.29x |
+| Haiku 4.5, the same | 9/10 | $0.166 | 2.49x |
+| Haiku 4.5, escalating to Sonnet when visible tests fail | 9/10 | $0.163 | 2.54x |
+
+On an eight-part task and on `sprawl`, sixteen failing tests across a
+160K-token repository, every arm passed every run and the multiples were the
+same size or smaller: 1.8x to 2.0x for Sonnet on the eight-part task, 1.7x on
+`sprawl` in one session.
+
+Three things this settles, and one it does not.
+
+- **The session model is the lever that holds up.** Sonnet 5 lost nothing
+  measurable against Opus 5 on this work, 10/10 each. With ten runs a loss of
+  up to 28 points is still inside the interval.
+- **Haiku is not cheaper in practice.** It is a fifth of the price per token
+  and took about twice the turns, and it failed a task Sonnet did not.
+- **A restart per part costs more than it saves on tasks like these.** A
+  capable agent reads narrowly, so the baseline's context never grew: on
+  `sprawl` it ran 57 turns in one session for $1.61. Sixteen restarts, each
+  paying a ~21K-token opening, brought Sonnet to 1.18x, against 1.70x for the
+  same model in one session. `plan`'s solved cadence is 34 turns, not one
+  part, and the cost advisor has to make that call on the live context.
+- **Not settled: the long-session carry.** The largest lever in the replay
+  is restarting sessions of the length this history actually has (p90 974
+  turns, peak contexts to 900K). No synthetic task here built context like
+  that, so the 2.8x from restarts is still the replay's, with its 2,000-token
+  handoff modelled.
+
+Put together: measured on real sessions, adder's configuration is 2.0x to
+2.3x cheaper at equivalent output on self-contained tasks. On this history's
+long sessions the replay adds the restart cadence on top of that. Nothing
+measured here reaches 10x.
+
 ## What the earlier 3.1x got wrong
 
 This page used to report 3.1x hands off and 6.4x with restarts, on an older

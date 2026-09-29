@@ -92,10 +92,37 @@ CANDIDATES: dict[str, Arm] = {
                              True, False, TERSE),
     # Haiku 4.5 rejects `effort`, so neither Haiku arm sets one.
     "adder-haiku": Arm("adder-haiku", "claude-haiku-4-5", None, True, True, TERSE),
+    "adder-haiku-cont": Arm("adder-haiku-cont", "claude-haiku-4-5", None, True, False, TERSE),
     "adder-cascade": Arm("adder-cascade", "claude-haiku-4-5", None, True, True, TERSE,
                          escalate="claude-sonnet-5"),
 }
 ALL_ARMS: dict[str, Arm] = {**ARMS, **CANDIDATES}
+
+
+class InfraError(RuntimeError):
+    """A session that did not run: logged out, out of credit, rate limited.
+
+    Scored as a failure it reads as the arm being worse. It is not a fact about
+    the arm at all, so it stops the trial instead: when a login expired mid-run
+    here, 28 sessions came back as $0 errors and were recorded as FAILs, and the
+    report put a 90% quality loss on Haiku that nobody had measured.
+    """
+
+
+_INFRA = ("not logged in", "/login", "authenticat", "unauthorized", "401",
+          "credit balance", "rate limit", "overloaded", "529", "api error")
+
+
+def _infra_failure(out: dict) -> str:
+    """Why this session did not run, or "" if it ran (however badly)."""
+    if not out:
+        return "no output"
+    text = str(out.get("result") or "").lower()
+    if out.get("is_error") and any(k in text for k in _INFRA):
+        return text[:80]
+    if out.get("is_error") and not out.get("total_cost_usd") and int(out.get("num_turns") or 0) <= 1:
+        return f"errored before spending anything: {text[:60]}"
+    return ""
 
 
 @dataclass
@@ -235,6 +262,9 @@ def run_one(task: Task, arm: Arm, repeat: int, *, cap: float = SESSION_CAP_USD,
         except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
             note = f"session failed: {type(e).__name__}"
             break
+        why = _infra_failure(out)
+        if why:
+            raise InfraError(f"{task.id}/{arm.name}: {why}")
         sessions += 1
         cost += float(out.get("total_cost_usd") or 0.0)
         turns += int(out.get("num_turns") or 0)
@@ -253,6 +283,9 @@ def run_one(task: Task, arm: Arm, repeat: int, *, cap: float = SESSION_CAP_USD,
                                       stdin=subprocess.DEVNULL, capture_output=True,
                                       text=True, timeout=TIMEOUT_S)
                 out = json.loads(done.stdout or "{}")
+                why = _infra_failure(out)
+                if why:
+                    raise InfraError(f"{task.id}/{arm.name} escalation: {why}")
                 sessions += 1
                 cost += float(out.get("total_cost_usd") or 0.0)
                 turns += int(out.get("num_turns") or 0)
@@ -371,13 +404,25 @@ def main(argv: list[str] | None = None) -> int:
         print("adder trial: the claude CLI is not on PATH", file=sys.stderr)
         return 1
     before = _transcripts_listing()
-    spent = sum(r.cost for r in load(a.out)) if a.out.is_file() else 0.0
+    done_ = load(a.out) if a.out.is_file() else []
+    spent = sum(r.cost for r in done_)
+    # A run already in --out is not repeated, so a trial that stopped -- on an
+    # expired login, say -- resumes where it left off instead of paying twice.
+    have = {(r.task, r.arm, r.repeat) for r in done_}
     for t, arm, rep in plan_:
+        if (t.id, arm.name, rep) in have:
+            continue
         left = a.budget - spent
         if left < 0.5:
             print(f"  budget reached (${spent:.2f} of ${a.budget:.2f}); stopping")
             break
-        res = run_one(t, arm, rep, cap=a.session_cap, spend_left=left)
+        try:
+            res = run_one(t, arm, rep, cap=a.session_cap, spend_left=left)
+        except InfraError as e:
+            print(f"  STOPPED, nothing recorded for this run: {e}", file=sys.stderr)
+            print("  Fix the cause (`claude` then /login, for an expired login) and "
+                  "re-run; completed runs are kept in --out.", file=sys.stderr)
+            return 1
         spent += res.cost
         with a.out.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(asdict(res)) + "\n")

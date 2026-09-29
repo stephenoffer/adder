@@ -143,3 +143,56 @@ class TestTheCascade:
     def test_haiku_arms_set_no_effort(self, tmp_path):
         cmd = trial.command(trial.ALL_ARMS["adder-haiku"], "x", tmp_path / "s.json", 1.0)
         assert "--effort" not in cmd
+
+
+class TestASessionThatDidNotRunIsNotAFailure:
+    """A login expired mid-run and 28 sessions came back as $0 errors; scored as
+    FAILs they put a 90% quality loss on Haiku that nobody had measured."""
+
+    def _run(self, monkeypatch, tmp_path, out):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(trial.subprocess, "run",
+                            lambda cmd, **kw: SimpleNamespace(stdout=json.dumps(out)))
+        monkeypatch.setattr(trial, "grade", lambda work, task: (False, "failed"))
+        task = next(t for t in TASKS if not t.multi)
+        return trial.run_one(task, trial.ARMS["adder-sonnet"], 0, workroot=tmp_path)
+
+    @pytest.mark.parametrize("out", [
+        {"is_error": True, "result": "Not logged in · Please run /login",
+         "total_cost_usd": 0, "num_turns": 1},
+        {"is_error": True, "result": "Credit balance is too low", "total_cost_usd": 0.02,
+         "num_turns": 2},
+        {}])
+    def test_it_stops_the_trial(self, monkeypatch, tmp_path, out):
+        with pytest.raises(trial.InfraError):
+            self._run(monkeypatch, tmp_path, out)
+
+    def test_a_real_failure_is_still_a_failure(self, monkeypatch, tmp_path):
+        r = self._run(monkeypatch, tmp_path, {"is_error": True, "subtype": "error_max_budget_usd",
+                                               "result": "", "total_cost_usd": 4.0,
+                                               "num_turns": 30})
+        assert not r.passed and r.cost == 4.0
+
+    def test_main_records_nothing_and_exits_nonzero(self, monkeypatch, tmp_path,
+                                                     isolated_home):
+        def boom(*a, **k):
+            raise trial.InfraError("logged out")
+
+        monkeypatch.setattr(trial, "run_one", boom)
+        monkeypatch.setattr(trial.shutil, "which", lambda _: "/bin/claude")
+        out = tmp_path / "r.jsonl"
+        assert trial.main(["--run", "--out", str(out)]) == 1
+        assert not out.exists() or out.read_text() == ""
+
+
+def test_a_recorded_run_is_not_repeated(monkeypatch, tmp_path, isolated_home):
+    ran = []
+    monkeypatch.setattr(trial, "run_one", lambda t, arm, rep, **k: ran.append((t.id, arm.name))
+                        or trial.Result(t.id, arm.name, rep, True, 0.1, 1, 1, 1.0))
+    monkeypatch.setattr(trial.shutil, "which", lambda _: "/bin/claude")
+    out = tmp_path / "r.jsonl"
+    out.write_text(json.dumps(vars(trial.Result("deps", "baseline", 0, True, 0.2, 1, 1, 1.0)))
+                   + "\n")
+    trial.main(["--run", "--tasks", "deps", "--arms", "baseline,adder-sonnet", "--out", str(out)])
+    assert ran == [("deps", "adder-sonnet")]

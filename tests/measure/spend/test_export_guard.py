@@ -56,6 +56,7 @@ class TestRefusesTheTranscriptRoot:
         home = tmp_path / "home"
         (home / ".claude" / "projects").mkdir(parents=True)
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))   # Path.home() on Windows
         dest = home / ".claude" / "projects" / "x.csv"
         assert _run(root, "-o", dest) == 2
         assert not dest.exists()

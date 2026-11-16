@@ -231,6 +231,9 @@ def tz(monkeypatch):
     """
     import time
 
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is POSIX-only")
+
     def _set(name: str):
         monkeypatch.setenv("TZ", name)
         time.tzset()

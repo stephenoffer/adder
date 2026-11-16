@@ -10,6 +10,7 @@ directly rather than through a dollar figure.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -276,6 +277,7 @@ class TestReadOnly:
         assert {p: p.stat().st_mtime_ns for p in root.rglob("*")} == before
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths")
 class TestTheSameFileReadAnotherWay:
     """The blind spot a harness decides the size of.
 
@@ -440,6 +442,7 @@ class TestSayingItCannotSee:
         assert "Read again" in text
         assert "pyproject.toml" in text
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX paths")
     def test_json_carries_the_file_view_and_the_flag(self, root, capsys):
         write(root, [
             ("Bash", {"command": "cat /a.py"}, BIG),

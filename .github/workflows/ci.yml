@@ -186,7 +186,7 @@ jobs:
           cd /tmp
           /tmp/sdist-env/bin/adder version
           /tmp/sdist-env/bin/adder models list --limit 1 > /dev/null
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/

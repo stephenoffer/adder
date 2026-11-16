@@ -342,7 +342,7 @@ class TestFixturesDoNotDependOnTheWallClock:
         pattern = re.compile(r'"refreshed_at"\s*:\s*"(\d{4})-')
         offenders = []
         for path in (REPO / "tests").rglob("test_*.py"):
-            for i, line in enumerate(path.read_text().splitlines(), 1):
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 m = pattern.search(line)
                 # A deliberately ancient date is the "stale" fixture and cannot
                 # rot any further; it is the recent-looking one that expires.
@@ -378,7 +378,7 @@ class TestDocsOnlyNameRealCommands:
         docs = list(REPO.glob("*.md")) + list((REPO / "docs").glob("*.md"))
         for path in docs:
             for name in sorted(set(re.findall(r"`adder ([a-z][a-z0-9-]*)",
-                                              path.read_text()))):
+                                              path.read_text(encoding="utf-8")))):
                 if name not in known:
                     offenders.append(f"{path.relative_to(REPO)}: `adder {name}`")
         assert not offenders, (
@@ -441,7 +441,7 @@ class TestDocsOnlyNameRealFlags:
         offenders = []
         for path in sources:
             for cmd, rest in re.findall(r"`adder ([a-z][a-z0-9-]*)((?: [^`]*)?)`",
-                                        path.read_text()):
+                                        path.read_text(encoding="utf-8")):
                 tokens = rest.split()
                 sub = (tokens[0] if tokens and not tokens[0].startswith("-")
                        and tokens[0].isalpha() else "")
